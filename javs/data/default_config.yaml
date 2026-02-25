@@ -1,0 +1,154 @@
+movie:
+  # Metadata fields to extract and prioritize
+  # If a field is present from multiple scrapers, the first one in the list wins.
+  title:
+    - dmmja
+    - javlibrary
+    - r18dev
+    - javbus
+  actress:
+    - r18dev
+    - dmmja
+    - javlibrary
+    - javbus
+  alternate_title:
+    - javlibraryja
+    - dmmja
+  cover_url:
+    - r18dev
+    - javlibrary
+    - dmmja
+    - javbus
+  description:
+    - dmmja
+    - r18dev
+    - mgstageja
+  director:
+    - r18dev
+    - javlibrary
+    - mgstageja
+  genres:
+    - dmmja
+    - r18dev
+    - javlibrary
+  label:
+    - dmmja
+    - javlibrary
+  maker:
+    - dmmja
+    - javlibrary
+    - r18dev
+  release_date:
+    - dmmja
+    - r18dev
+    - javlibrary
+  runtime_minutes:
+    - dmmja
+    - javlibrary
+  series:
+    - dmmja
+    - javlibrary
+    - r18dev
+  screenshots:
+    - r18dev
+    - javlibrary
+    - dmmja
+  rating:
+    - javlibrary
+    - javbus
+  cid:
+    - dmmja
+  user_rating:
+    - javlibrary
+
+file:
+  scraper_priorities:
+    - r18dev
+    - javlibrary
+    - dmmja
+    - javbus
+  minimum_file_size_mb: 0
+  included_extensions:
+    - .asf
+    - .avi
+    - .flv
+    - .m4v
+    - .mkv
+    - .mp4
+    - .mov
+    - .rmvb
+    - .wmv
+  excluded_patterns: []
+  uncensored_patterns:
+    - uncen
+    - uncensored
+    - 1pon
+    - 1pondo
+    - 10musume
+    - 10mu
+    - heyzo
+    - pacopacomama
+    - pacopaco
+    - paco
+    - muramura
+    - caribbean
+    - carib
+    - tokyohot
+    - tkht
+
+sort:
+  # Base sorting configurations
+  rename_file: true
+  rename_file_format: "<id> - <title>"
+  rename_folder: true
+  rename_folder_format: "<id>"
+  move_to: "" # Empty means don't move
+  create_nfo: true
+  download_cover: true
+  download_screenshots: false
+  max_path_length: 250
+  
+  # Cover/Poster processing rules
+  cover:
+    crop: true
+    convert_to_jpg: true
+    resize: false
+    resize_width: 800
+    resize_height: 1200
+    quality: 90
+
+emby:
+  enabled: false
+  url: "http://localhost:8096"
+  api_key: ""
+  update_library: true
+  refresh_metadata: true
+
+translation:
+  enabled: false
+  engine: "google" # google or deepl
+  target_language: "en"
+  deepl_api_key: ""
+  fields_to_translate:
+    - description
+    - genres
+    - title
+
+scraper_settings:
+  javlibrary:
+    # Optional settings specific to individual scrapers
+    bluray_priority: true
+
+log:
+  enabled: true
+  level: info
+
+cloudflare:
+  # Method: "cloudscraper" (automatic) or "manual" (user-provided cookies)
+  method: cloudscraper
+  # Manual mode only: paste cf_clearance cookie + User-Agent from browser DevTools
+  cf_clearance: ""
+  user_agent: ""
+
+throttle_limit: 1
+sleep: 3
