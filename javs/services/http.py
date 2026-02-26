@@ -162,29 +162,24 @@ class HttpClient:
                     hint="cf_clearance cookie may be expired, refresh it in config",
                 )
 
-        # Layer 2: cloudscraper (handles basic CF JS challenges)
-        import cloudscraper
-
-        def _sync_get() -> str:
-            scraper = cloudscraper.create_scraper(
-                browser={"browser": "chrome", "platform": "windows", "mobile": False}
-            )
-            merged = {**DEFAULT_HEADERS, **(headers or {})}
-            resp = scraper.get(
-                url,
-                headers=merged,
-                cookies=cookies,
-                params=params,
-                allow_redirects=allow_redirects,
-                timeout=self.timeout.total or 30,
-            )
-            resp.raise_for_status()
-            return resp.text
+        # Layer 2: curl_cffi (TLS fingerprint impersonation)
+        from curl_cffi.requests import AsyncSession
 
         try:
             async with self._semaphore:
-                logger.debug("http_get_cf_auto", url=url)
-                return await asyncio.to_thread(_sync_get)
+                logger.debug("http_get_cf_curl", url=url)
+                async with AsyncSession(impersonate="chrome") as s:
+                    merged = {**DEFAULT_HEADERS, **(headers or {})}
+                    resp = await s.get(
+                        url,
+                        headers=merged,
+                        cookies=cookies,
+                        params=params,
+                        allow_redirects=allow_redirects,
+                        timeout=60,
+                    )
+                    resp.raise_for_status()
+                    return resp.text
         except Exception as exc:
             raise CloudflareBlockedError(
                 f"Cloudflare blocked access to {url}. "

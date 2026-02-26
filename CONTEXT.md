@@ -10,7 +10,7 @@
 - **Asyncio / Aiohttp**: High-performance concurrent scraping and networking.
 - **Pydantic**: Strict data modeling and configuration validation.
 - **BeautifulSoup4 / lxml**: HTML/XML parsing for metadata extraction and NFO generation.
-- **cloudscraper / curl_cffi**: Advanced handling for Cloudflare IUAM/Turnstile challenges.
+- **curl_cffi**: Advanced handling for Cloudflare IUAM/Turnstile challenges via TLS impersonation.
 - **Typer & Rich**: CLI interface and beautiful terminal output.
 - **structlog**: Structured JSON logging.
 - **pytest**: Comprehensive testing framework (currently 96/96 tests pass).
@@ -74,10 +74,11 @@
 - Custom `FileScanner` covering standard, multi-part, and obfuscated JAV ID rules.
 - Decorator plugin system (`@ScraperRegistry.register`).
 - Custom robust Async `http` client (`aiohttp` + `tenacity`).
-- **Layered Cloudflare Bypass:** Implemented an intelligent `get_cf()` method supporting manual cookie injection (Turnstile bypass) and `cloudscraper` fallbacks, without blocking the async event loop (`asyncio.to_thread()`).
+- **Layered Cloudflare Bypass:** Implemented an intelligent `get_cf()` method supporting manual cookie injection (Turnstile bypass) and `curl_cffi` AsyncSession fallbacks, without blocking the async event loop.
 - Comprehensive config YAML parser that gracefully falls back to defaults.
 - Smart Aggregator to merge responses from any number of scrapers dynamically.
 - Integration tests simulating End-to-End operations.
+- **GitHub Release Readiness**: Configured `.gitignore` to protect sensitive config data, ran complete code formatting via `ruff`, verified 100% test passing, and successfully pushed the initial `main` branch to the GitHub repository (`LHViet245/javs`).
 
 ### ✅ Completed (Scrapers)
 
