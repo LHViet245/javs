@@ -23,8 +23,9 @@ class BaseScraper(ABC):
     languages: ClassVar[list[str]] = []
     base_url: ClassVar[str] = ""
 
-    def __init__(self, http: HttpClient | None = None) -> None:
+    def __init__(self, http: HttpClient | None = None, use_proxy: bool = False) -> None:
         self.http = http or HttpClient()
+        self.use_proxy = use_proxy
         self.logger = get_logger(f"scraper.{self.name}")
 
     @abstractmethod

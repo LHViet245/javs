@@ -21,23 +21,25 @@ class DmmScraper(BaseScraper):
     """Scraper for DMM.co.jp (English site)."""
 
     name: ClassVar[str] = "dmm"
-    display_name: ClassVar[str] = "DMM (English)"
-    languages: ClassVar[list[str]] = ["en"]
+    display_name: ClassVar[str] = "DMM (Japanese)"
+    languages: ClassVar[list[str]] = ["ja"]
     base_url: ClassVar[str] = "https://www.dmm.co.jp"
 
-    SEARCH_URL = "https://www.dmm.co.jp/en/mono/dvd/-/search/=/searchstr={id}/"
-    DIGITAL_SEARCH_URL = "https://www.dmm.co.jp/en/digital/videoa/-/list/search/=/searchstr={id}/"
+    SEARCH_URL = "https://www.dmm.co.jp/mono/dvd/-/search/=/searchstr={id}/"
+    DIGITAL_SEARCH_URL = "https://www.dmm.co.jp/digital/videoa/-/list/search/=/searchstr={id}/"
 
     async def search(self, movie_id: str) -> str | None:
         """Search DMM for a movie by ID."""
         normalized = self.normalize_id(movie_id)
         content_id = self._id_to_content_id(normalized)
 
+        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
+
         # Try digital first, then physical
         for url_template in [self.DIGITAL_SEARCH_URL, self.SEARCH_URL]:
             search_url = url_template.format(id=content_id)
             try:
-                html = await self.http.get(search_url, cookies=DMM_COOKIES)
+                html = await self.http.get(search_url, cookies=ja_cookies, use_proxy=self.use_proxy)
                 soup = parse_html(html)
 
                 # Find the first result link
@@ -53,8 +55,28 @@ class DmmScraper(BaseScraper):
 
     async def scrape(self, url: str) -> MovieData | None:
         """Scrape movie metadata from DMM detail page."""
+        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
+        
+        # Address new SPA URLs by intercepting and redirecting to the legacy physical page
+        if "video.dmm.co.jp/av/content" in url:
+            match = re.search(r"id=([a-zA-Z0-9]+)", url)
+            if match:
+                content_id = match.group(1)
+                fallback_url = f"https://www.dmm.co.jp/mono/-/detail/get-product-for-another-ajax/?content_id={content_id}"
+                self.logger.debug("dmm_spa_redirect", content_id=content_id, fallback_url=fallback_url)
+                try:
+                    data = await self.http.get_json(fallback_url, cookies=ja_cookies, use_proxy=self.use_proxy)
+                    result_list = data.get("result", [])
+                    if result_list and isinstance(result_list, list):
+                        legacy_url = result_list[0].get("detail_url")
+                        if legacy_url:
+                            self.logger.debug("dmm_spa_resolved", original_url=url, target_url=legacy_url)
+                            url = legacy_url
+                except Exception as exc:
+                    self.logger.warning("dmm_spa_redirect_failed", error=str(exc), url=url)
+
         try:
-            html = await self.http.get(url, cookies=DMM_COOKIES)
+            html = await self.http.get(url, cookies=ja_cookies, use_proxy=self.use_proxy)
         except Exception as exc:
             self.logger.error("dmm_scrape_error", url=url, error=str(exc))
             return None
@@ -197,9 +219,9 @@ class DmmScraper(BaseScraper):
         """Parse actresses from DMM detail page."""
         actresses = []
 
-        # Find actress links
+        # Find actress links (supports both digital and mono patterns)
         matches = re.findall(
-            r'<a.*?href="[^"]*\?actress=(\d+)".*?>([^<]+)</a>',
+            r'<a.*?href="[^"]*(?:\?actress=|article=actress/id=)(\d+)[/"].*?>([^<]+)</a>',
             html,
         )
 
@@ -248,9 +270,11 @@ class DmmScraper(BaseScraper):
         genre_block = block_match[2].split("</tr>")[0]
         genre_links = re.findall(r">([^<]+)<", genre_block)
 
+        import html as pyhtml
+
         for g in genre_links:
-            g = re.sub(r"<[^>]+>", "", g).strip()
-            if g and g not in ("/a", ""):
+            g = pyhtml.unescape(re.sub(r"<[^>]+>", "", g)).strip()
+            if g and g not in ("/a", "---"):
                 genres.append(g)
 
         return genres
@@ -275,72 +299,18 @@ class DmmScraper(BaseScraper):
         return screenshots
 
     def _parse_trailer_url(self, html: str) -> str | None:
+        # Legacy/Standard format: onclick="sampleplay('https://cc3001...')"
         match = re.search(r"onclick.+(?:vr)?sampleplay\('([^']+)'\)", html)
-        return match.group(1) if match else None
-
-
-@ScraperRegistry.register
-class DmmJaScraper(DmmScraper):
-    """DMM scraper for Japanese language."""
-
-    name: ClassVar[str] = "dmmja"
-    display_name: ClassVar[str] = "DMM (Japanese)"
-    languages: ClassVar[list[str]] = ["ja"]
-
-    SEARCH_URL = "https://www.dmm.co.jp/mono/dvd/-/search/=/searchstr={id}/"
-    DIGITAL_SEARCH_URL = "https://www.dmm.co.jp/digital/videoa/-/list/search/=/searchstr={id}/"
-
-    async def search(self, movie_id: str) -> str | None:
-        """Search DMM Japanese site."""
-        normalized = self.normalize_id(movie_id)
-        content_id = self._id_to_content_id(normalized)
-
-        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
-
-        for url_template in [self.DIGITAL_SEARCH_URL, self.SEARCH_URL]:
-            search_url = url_template.format(id=content_id)
-            try:
-                html = await self.http.get(search_url, cookies=ja_cookies)
-                soup = parse_html(html)
-                link = soup.select_one("#list li .tmb a")
-                if link:
-                    href = extract_attr(link, "href")
-                    if href:
-                        return href
-            except Exception:
-                continue
-
+        if match:
+            return match.group(1)
+            
+        # New format (2025+): onclick="gaEventVideoStart('{&quot;video_url&quot;:&quot;https:\/\/cc3001.dmm.co.jp...&quot;}')"
+        # We look for https:\/\/[^&]+.mp4
+        match_new = re.search(r"&quot;video_url&quot;:&quot;(https:\\/\\/[^&]+\.mp4)&quot;", html)
+        if match_new:
+            # We must unescape the JSON slashes
+            url = match_new.group(1).replace(r"\/", "/")
+            return url
+            
         return None
 
-    async def scrape(self, url: str) -> MovieData | None:
-        """Scrape from Japanese DMM."""
-        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
-        try:
-            html = await self.http.get(url, cookies=ja_cookies)
-        except Exception as exc:
-            self.logger.error("dmmja_scrape_error", url=url, error=str(exc))
-            return None
-
-        soup = parse_html(html)
-        movie_id = self._parse_id(url)
-        content_id = self._parse_content_id(url)
-
-        return MovieData(
-            id=movie_id or "",
-            content_id=content_id,
-            title=self._parse_title(soup),
-            description=self._parse_description(soup, html),
-            release_date=self._parse_release_date(html),
-            runtime=self._parse_runtime(html),
-            director=self._parse_director(html),
-            maker=self._parse_maker(html),
-            label=self._parse_label(html),
-            series=self._parse_series(html),
-            rating=self._parse_rating(soup, html),
-            actresses=self._parse_actresses(soup, html),
-            genres=self._parse_genres(soup, html),
-            cover_url=self._parse_cover_url(html),
-            screenshot_urls=self._parse_screenshot_urls(soup),
-            trailer_url=self._parse_trailer_url(html),
-            source=self.name,
-        )

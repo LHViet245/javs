@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from javs.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from javs.config.models import ScraperConfig
+    from javs.config.models import ProxyConfig, ScraperConfig
     from javs.scrapers.base import BaseScraper
     from javs.services.http import HttpClient
 
@@ -62,12 +62,14 @@ class ScraperRegistry:
         cls,
         config: ScraperConfig,
         http: HttpClient | None = None,
+        proxy_config: ProxyConfig | None = None,
     ) -> list[BaseScraper]:
-        """Instantiate and return all enabled scrapers.
+        """Instantiate and return all enabled scrapers with proxy routing.
 
         Args:
             config: Scraper configuration with enabled flags.
             http: Shared HTTP client to use.
+            proxy_config: Proxy configuration for per-scraper routing.
 
         Returns:
             List of instantiated scraper objects.
@@ -75,7 +77,13 @@ class ScraperRegistry:
         enabled = []
         for name, is_enabled in config.enabled.items():
             if is_enabled and name in cls._scrapers:
-                scraper = cls._scrapers[name](http=http)
+                # Determine if this scraper should use proxy
+                should_use_proxy = (
+                    proxy_config is not None
+                    and proxy_config.enabled
+                    and config.use_proxy.get(name, False)
+                )
+                scraper = cls._scrapers[name](http=http, use_proxy=should_use_proxy)
                 enabled.append(scraper)
             elif is_enabled and name not in cls._scrapers:
                 logger.warning("scraper_not_found", name=name)
@@ -86,12 +94,16 @@ class ScraperRegistry:
         cls,
         names: list[str],
         http: HttpClient | None = None,
+        config: ScraperConfig | None = None,
+        proxy_config: ProxyConfig | None = None,
     ) -> list[BaseScraper]:
         """Instantiate scrapers by name list (for CLI override).
 
         Args:
             names: List of scraper names to instantiate.
             http: Shared HTTP client.
+            config: Scraper configuration for proxy settings.
+            proxy_config: Proxy configuration.
 
         Returns:
             List of instantiated scraper objects.
@@ -99,7 +111,13 @@ class ScraperRegistry:
         result = []
         for name in names:
             if name in cls._scrapers:
-                result.append(cls._scrapers[name](http=http))
+                should_use_proxy = (
+                    proxy_config is not None
+                    and proxy_config.enabled
+                    and config is not None
+                    and config.use_proxy.get(name, False)
+                )
+                result.append(cls._scrapers[name](http=http, use_proxy=should_use_proxy))
             else:
                 logger.warning("scraper_not_found", name=name)
         return result

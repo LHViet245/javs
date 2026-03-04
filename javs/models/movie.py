@@ -103,7 +103,6 @@ class ScraperSourceEnum(StrEnum):
     """Enumeration of all supported scraper sources."""
 
     DMM = "dmm"
-    DMM_JA = "dmmja"
     R18DEV = "r18dev"
     JAVLIBRARY = "javlibrary"
     JAVLIBRARY_JA = "javlibraryja"

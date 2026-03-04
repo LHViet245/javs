@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RegexConfig(BaseModel):
@@ -101,25 +101,25 @@ class NfoConfig(BaseModel):
 class MetadataPriorityConfig(BaseModel):
     """Priority order for each metadata field across scrapers."""
 
-    actress: list[str] = Field(default_factory=lambda: ["r18dev", "dmmja", "javlibrary", "javbus"])
-    alternate_title: list[str] = Field(default_factory=lambda: ["javlibraryja", "dmmja"])
+    actress: list[str] = Field(default_factory=lambda: ["r18dev", "dmm", "javlibrary", "javbus"])
+    alternate_title: list[str] = Field(default_factory=lambda: ["javlibraryja", "dmm"])
     cover_url: list[str] = Field(
-        default_factory=lambda: ["r18dev", "javlibrary", "dmmja", "javbus"]
+        default_factory=lambda: ["r18dev", "javlibrary", "dmm", "javbus"]
     )
-    description: list[str] = Field(default_factory=lambda: ["dmmja", "r18dev", "mgstageja"])
+    description: list[str] = Field(default_factory=lambda: ["dmm", "r18dev", "mgstageja"])
     director: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "mgstageja"])
     genre: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
     id: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    content_id: list[str] = Field(default_factory=lambda: ["r18dev", "dmmja"])
+    content_id: list[str] = Field(default_factory=lambda: ["r18dev", "dmm"])
     label: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "mgstageja"])
     maker: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    release_date: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmmja"])
-    rating: list[str] = Field(default_factory=lambda: ["dmmja", "javlibrary", "mgstageja"])
-    runtime: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmmja"])
+    release_date: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
+    rating: list[str] = Field(default_factory=lambda: ["dmm", "javlibrary", "mgstageja"])
+    runtime: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
     series: list[str] = Field(default_factory=lambda: ["r18dev", "mgstageja"])
-    screenshot_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmmja"])
+    screenshot_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
     title: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    trailer_url: list[str] = Field(default_factory=lambda: ["r18dev", "dmmja"])
+    trailer_url: list[str] = Field(default_factory=lambda: ["r18dev", "dmm"])
 
 
 class ThumbCsvConfig(BaseModel):
@@ -181,13 +181,12 @@ class ScraperOptions(BaseModel):
 
 
 class ScraperConfig(BaseModel):
-    """Which scrapers are enabled."""
+    """Which scrapers are enabled and proxy routing."""
 
     enabled: dict[str, bool] = Field(
         default_factory=lambda: {
             "r18dev": True,
-            "dmm": False,
-            "dmmja": True,
+            "dmm": True,
             "javlibrary": False,
             "javlibraryja": False,
             "javlibraryzh": False,
@@ -205,16 +204,78 @@ class ScraperConfig(BaseModel):
             "tokyohotzh": False,
         }
     )
+    use_proxy: dict[str, bool] = Field(
+        default_factory=lambda: {
+            "r18dev": False,
+            "dmm": True,           # Japan region block
+            "javlibrary": False,
+            "javlibraryja": False,
+            "javlibraryzh": False,
+            "javbus": False,
+            "javbusja": False,
+            "javbuszh": False,
+            "javdb": False,
+            "javdbzh": False,
+            "jav321ja": False,
+            "mgstageja": True,     # Japan region block
+            "aventertainment": False,
+            "aventertainmentja": False,
+            "tokyohot": False,
+            "tokyohotja": False,
+            "tokyohotzh": False,
+        }
+    )
     options: ScraperOptions = Field(default_factory=ScraperOptions)
 
 
 class ProxyConfig(BaseModel):
-    """Proxy settings."""
+    """Proxy settings.
+
+    Supports HTTP, HTTPS, SOCKS5, and SOCKS5h protocols.
+    URL format: protocol://[user:pass@]host:port
+    Examples:
+        - http://1.2.3.4:8080
+        - http://myuser:mypass@1.2.3.4:8080
+        - socks5://1.2.3.4:1080
+        - socks5h://1.2.3.4:1080  (proxy-side DNS resolution)
+    """
 
     enabled: bool = False
-    host: str = ""
-    username: str = ""
-    password: str = ""
+    url: str = ""
+    timeout_seconds: int = 15
+    max_retries: int = 3
+
+    @model_validator(mode="after")
+    def validate_proxy(self) -> ProxyConfig:
+        """Validate proxy config: require URL when enabled, require protocol."""
+        if self.enabled and not self.url:
+            raise ValueError("proxy.url is required when proxy.enabled is True")
+        if self.url and "://" not in self.url:
+            raise ValueError(
+                "proxy.url must include protocol "
+                "(http://, https://, socks5://, socks5h://)"
+            )
+        return self
+
+    @property
+    def masked_url(self) -> str:
+        """Return URL with credentials replaced by *** for safe logging."""
+        if not self.url:
+            return ""
+        try:
+            from yarl import URL
+
+            parsed = URL(self.url)
+            if parsed.password:
+                return str(parsed.with_password("***").with_user("***"))
+        except Exception:
+            pass
+        return self.url
+
+    @property
+    def is_socks(self) -> bool:
+        """Check if proxy uses SOCKS protocol."""
+        return self.url.startswith(("socks4", "socks5"))
 
 
 class EmbyConfig(BaseModel):

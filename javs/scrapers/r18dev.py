@@ -65,6 +65,7 @@ class R18DevScraper(BaseScraper):
             data = await self.http.get_json(
                 search_url,
                 headers={"User-Agent": R18_USER_AGENT},
+                use_proxy=self.use_proxy,
             )
         except Exception as exc:
             self.logger.debug("r18dev_search_error", movie_id=normalized, error=str(exc))
@@ -106,6 +107,7 @@ class R18DevScraper(BaseScraper):
             data = await self.http.get_json(
                 url,
                 headers={"User-Agent": R18_USER_AGENT},
+                use_proxy=self.use_proxy,
             )
         except Exception as exc:
             self.logger.error("r18dev_scrape_error", url=url, error=str(exc))

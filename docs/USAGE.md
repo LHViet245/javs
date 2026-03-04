@@ -91,7 +91,7 @@ List all recognized and registered scraper plugins:
 javs scrapers
 ```
 
-Outputs the scraper names (e.g., `dmm`, `dmmja`, `r18dev`, `javlibrary`, `javlibraryja`, `javlibraryzh`) and their active status.
+Outputs the scraper names (e.g., `dmm`, `r18dev`, `javlibrary`, `javlibraryja`, `javlibraryzh`) and their active status.
 
 ---
 
@@ -99,7 +99,7 @@ Outputs the scraper names (e.g., `dmm`, `dmmja`, `r18dev`, `javlibrary`, `javlib
 
 JavS currently includes several high-quality scrapers.
 
-### **DMM (`dmm`, `dmmja`)**
+### **DMM (`dmm`)**
 
 The official DMM store scraper.
 
