@@ -179,7 +179,10 @@ class DmmScraper(BaseScraper):
         return int(match.group(1)) if match else None
 
     def _parse_director(self, html: str) -> str | None:
-        match = re.search(r'href="[^"]*\?director=\d+"[^>]*>([^<]+)</a>', html)
+        match = re.search(
+            r'<a[^>]*href="[^"]*(?:\?director=|/article=director/id=)\d+[^"]*"[^>]*>([\s\S]*?)</a>',
+            html,
+        )
         return match.group(1).strip() if match else None
 
     def _parse_maker(self, html: str) -> str | None:
