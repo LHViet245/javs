@@ -176,3 +176,5 @@ Thumbs.db
 # Project Specific
 javs/data/default_config.yaml  # Important: Ignore user's credentials!
 test_real.py
+# Linter & Formatter caches
+.ruff_cache/

@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from javs.config.models import JavsConfig, ProxyConfig, ScraperConfig
 from javs.services.http import (
-    CloudflareBlockedError,
     HttpClient,
     InvalidProxyAuthError,
-    ProxyConnectionFailedError,
 )
 from javs.utils.logging import MaskProxyCredentialProcessor
-
 
 # ─── ProxyConfig Validation Tests ────────────────────────────────────────
 

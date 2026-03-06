@@ -56,21 +56,21 @@ class DmmScraper(BaseScraper):
     async def scrape(self, url: str) -> MovieData | None:
         """Scrape movie metadata from DMM detail page."""
         ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
-        
+
         try:
             html = await self.http.get(url, cookies=ja_cookies, use_proxy=self.use_proxy)
-            
+
             # If the response is actually the React SPA (even if hit on a legacy URL like digital/videoa)
             # DMM silently serves the SPA container instead of the legacy HTML page.
             if "video.dmm.co.jp/av/" in url or "BAILOUT_TO_CLIENT_SIDE_RENDERING" in html:
                 self.logger.debug("dmm_spa_detected_in_response", url=url)
-                
+
                 # Try to extract content_id from the original url
                 content_id = self._parse_content_id(url)
                 if not content_id:
                      match = re.search(r"id=([a-zA-Z0-9]+)", url)
                      content_id = match.group(1) if match else None
-                
+
                 if content_id:
                     fallback_url = f"https://www.dmm.co.jp/mono/-/detail/get-product-for-another-ajax/?content_id={content_id}"
                     self.logger.debug("dmm_spa_redirect", content_id=content_id, fallback_url=fallback_url)
@@ -250,7 +250,7 @@ class DmmScraper(BaseScraper):
                 r'og:image"?\s+content="([^"]+)"', html
             )
             if og_match:
-                from urllib.parse import unquote, urlparse, parse_qs
+                from urllib.parse import parse_qs, unquote, urlparse
 
                 og_url = og_match.group(1).replace("&amp;", "&")
                 parsed = urlparse(og_url)
@@ -380,19 +380,19 @@ class DmmScraper(BaseScraper):
         if match:
             iframe_path = match.group(1)
             iframe_url = f"https://www.dmm.co.jp{iframe_path}"
-            
+
             # Need specific cookies for embedded players
             cookies = {**DMM_COOKIES, "ckcy": "2", "cklg": "en", "age_check_done": "1"}
             try:
                 iframe_html = await self.http.get(iframe_url, cookies=cookies, use_proxy=self.use_proxy)
-                
+
                 # Check for VR sample player directly inside this iframe
                 if "vr-sample-player" in iframe_url:
                     vr_match = re.search(r"//cc3001\.dmm\.co\.jp/vrsample[^\"]+", iframe_html)
                     if vr_match:
                         url = vr_match.group(0)
                         return f"https:{url}" if url.startswith("//") else url
-                        
+
                 # Standard legacy iframe has another iframe inside it
                 src_match = re.search(r'src="([^"]+)"', iframe_html)
                 if src_match:
@@ -402,7 +402,7 @@ class DmmScraper(BaseScraper):
                         trailer_page_url = f"https:{trailer_page_url}"
                     elif trailer_page_url.startswith("/"):
                         trailer_page_url = f"https://www.dmm.co.jp{trailer_page_url}"
-                        
+
                     trailer_html = await self.http.get(trailer_page_url, cookies=cookies, use_proxy=self.use_proxy)
                     mp4_match = re.search(r"//cc3001\.dmm\.co\.jp/litevideo/freepv[^\"]+", trailer_html)
                     if mp4_match:
@@ -411,7 +411,7 @@ class DmmScraper(BaseScraper):
 
             except Exception as exc:
                 self.logger.warning("dmm_fetch_trailer_failed", iframe_url=iframe_url, error=str(exc))
-            
+
         # New format (2025+): onclick="gaEventVideoStart('{&quot;video_url&quot;:&quot;https:\/\/cc3001.dmm.co.jp...&quot;}')"
         # We look for https:\/\/[^&]+.mp4
         match_new = re.search(r"&quot;video_url&quot;:&quot;(https:\\/\\/[^&]+\.mp4)&quot;", html)
@@ -419,6 +419,6 @@ class DmmScraper(BaseScraper):
             # We must unescape the JSON slashes
             url = match_new.group(1).replace(r"\/", "/")
             return url
-            
+
         return None
 
