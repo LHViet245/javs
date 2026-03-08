@@ -13,7 +13,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-from yarl import URL as YarlURL
+from yarl import URL
 
 from javs.utils.logging import get_logger
 
@@ -94,11 +94,9 @@ class HttpClient:
         if proxy_url:
             self._is_socks = proxy_url.startswith(("socks4", "socks5"))
             try:
-                parsed = YarlURL(proxy_url)
+                parsed = URL(proxy_url)
                 if parsed.password:
-                    self._proxy_masked = str(
-                        parsed.with_password("***").with_user("***")
-                    )
+                    self._proxy_masked = str(parsed.with_password("***").with_user("***"))
                 else:
                     self._proxy_masked = proxy_url
             except Exception:

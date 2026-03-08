@@ -5,12 +5,10 @@ movie:
     - dmm
     - javlibrary
     - r18dev
-    - javbus
   actress:
     - r18dev
     - dmm
     - javlibrary
-    - javbus
   alternate_title:
     - dmm
     - javlibraryja
@@ -18,12 +16,10 @@ movie:
     - r18dev
     - dmm
     - javlibrary
-    - javbus
   cover_url:
     - dmm
     - r18dev
     - javlibrary
-    - javbus
   description:
     - dmm
     - r18dev
@@ -63,7 +59,6 @@ movie:
     - javlibrary
   rating:
     - javlibrary
-    - javbus
   cid:
     - dmm
   user_rating:
@@ -74,7 +69,6 @@ file:
     - dmm
     - r18dev
     - javlibrary
-    - javbus
   minimum_file_size_mb: 0
   included_extensions:
     - .asf
@@ -153,7 +147,6 @@ scraper_proxy:
   dmm: true
   mgstageja: true
   javlibrary: false
-  javbus: false
   r18dev: false
 
 log:

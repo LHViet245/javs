@@ -139,13 +139,7 @@ class ScraperRegistry:
             "javs.scrapers.dmm",
             "javs.scrapers.r18dev",
             "javs.scrapers.javlibrary",
-            "javs.scrapers.javbus",
-            "javs.scrapers.javdb",
-            "javs.scrapers.jav321",
             "javs.scrapers.mgstage",
-            "javs.scrapers.aventertainment",
-            "javs.scrapers.tokyohot",
-            "javs.scrapers.dlgetchu",
         ]
         for module_name in builtin_scrapers:
             try:

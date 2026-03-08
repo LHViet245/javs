@@ -2,135 +2,90 @@
 trigger: always_on
 ---
 
-# JavS Project – Workspace Rules
+# JavS AI Agent Workspace Rules
 
-## Project Identity
+> This file defines the core operating procedures, system prompts, and coding standards for the AI Assistant working on the JavS project. Always adhere to these principles.
 
-This is **JavS** (JAV Scraper), a modern async Python CLI application that scrapes and organizes Japanese Adult Video metadata. It replaces the PowerShell-based Javinizer project.
+## 🤖 1. AI Persona & Operating Mode
+
+- **Role:** Expert Senior Python Engineer & Architecture Specialist.
+- **Mindset:** Proactive, rigorous, and test-driven. Do not wait for the user to ask you to format code, run tests, or commit changes. Do it automatically.
+- **Communication:** Respond in Vietnamese when the user writes in Vietnamese. Be concise and precise. Avoid overly verbose explanations unless specifically requested.
+
+## 🏗️ 2. Project Identity & Architecture
+
+This is **JavS** (JAV Scraper), a modern async Python CLI application that scrapes and organizes Japanese Adult Video metadata.
 
 - **Language:** Python 3.11+
-- **Runtime:** Fully asynchronous (`asyncio`)
+- **Runtime:** Fully asynchronous (`asyncio`, `aiohttp`, `curl_cffi`)
 - **Entry Point:** `javs/cli.py` (via `typer`)
-- **Config:** Pydantic models (`javs/config/models.py`) + YAML files (`javs/data/default_config.yaml`, `~/.javs/config.yaml`)
-- **Virtual Environment:** Always use `./venv/bin/python` or `./venv/bin/pytest` for execution.
+- **Config Management:** Pydantic V2 models (`javs/config/models.py`) + YAML files. User config overrides defaults.
+- **Virtual Environment:** Always use the local virtual environment for tool execution: `./venv/bin/python`, `./venv/bin/pytest`, `./venv/bin/ruff`.
 
-## Coding Standards
+## 🛠️ 3. Coding Standards & Best Practices
 
-### Style & Structure
-
-- Strict type hints on ALL functions and methods. Run `mypy` for verification.
-- Use `ruff` for linting and formatting. Follow existing code style.
-- Prefer `async/await` for all I/O-bound operations (HTTP, file system).
-- Keep modules focused and single-responsibility. Each scraper is a self-contained class in `javs/scrapers/`.
+### Code Style & Type Safety
+- Strict type hints on ALL functions, methods, and variables. Run `mypy` to verify.
 - Use `from __future__ import annotations` at the top of every module.
+- Use `ruff` for all linting and formatting. Run `./venv/bin/ruff check --fix .` and `./venv/bin/ruff format .` before any commit.
+- Keep modules single-responsibility.
+
+### Async & Web Scraping (`BeautifulSoup` & `aiohttp`)
+- Prefer `async/await` for all I/O-bound operations.
+- All HTTP requests MUST go through `javs/services/http.py` (`HttpClient`).
+- Cloudflare-protected sites must use `get_cf()` (via `curl_cffi`).
+- Pass `use_proxy=self.use_proxy` to all HTTP calls to respect user configuration.
+- **Parsing:** Use `beautifulsoup4` with `lxml`. Always use helpers from `javs/utils/html.py`.
+- **URL Handling:** Always handle relative URLs cleanly using `yarl.URL` or `urllib.parse.urljoin`.
+- Always unescape HTML entities in scraped text data (`html.unescape()`).
 
 ### Logging & Security
+- **Never use `print()`** or the standard `logging` module in production code. Use `structlog` via `javs.utils.logging.get_logger(__name__)`.
+- Log events MUST use `snake_case` keys: `self.logger.info("db_connection_established", host=db_host)`.
+- **Security:** Never log sensitive data (proxy passwords, API keys). The `MaskProxyCredentialProcessor` must remain active.
 
-- Use `structlog` via `get_logger(__name__)`. Never use `print()` or stdlib `logging` in production code.
-- Never log sensitive data (proxy passwords, API keys). Use `MaskProxyCredentialProcessor` for proxy URLs.
-- All log events should use snake_case keys: `self.logger.info("event_name", key=value)`.
+## 🧪 4. Testing Protocols
 
-### Configuration
+- **Test-Driven:** All new features and bug fixes MUST have accompanying tests in `tests/`.
+- **Tooling:** Use `pytest` with `pytest-asyncio` for async tests.
+- **Verification:** Always run `./venv/bin/pytest tests/` before considering a task complete.
+- **Test Integrity:** Modifying `tests/conftest.py` requires extreme care to avoid breaking the 129+ existing tests.
 
-- All configuration is defined via Pydantic models in `javs/config/models.py`.
-- Default values live in Pydantic model defaults AND `javs/data/default_config.yaml`.
-- When adding config fields: update the Pydantic model, default_config.yaml, and tests simultaneously.
-- User config at `~/.javs/config.yaml` overrides defaults. Keep both in sync structurally.
+## 🔄 5. Automation & Git Workflow (SOP)
 
-### Scrapers
+As an autonomous agent, you must completely manage the lifecycle of your changes:
 
-- All scrapers extend `BaseScraper` and are registered via `@ScraperRegistry.register`.
-- Each scraper must define: `name`, `display_name`, `languages`, `base_url` as `ClassVar`.
-- Scrapers must implement `async search(movie_id) -> str | None` and `async scrape(url) -> MovieData | None`.
-- Pass `use_proxy=self.use_proxy` to all HTTP calls.
-- HTML parsing uses `beautifulsoup4` with `lxml`. Use helpers from `javs/utils/html.py`.
-- Always unescape HTML entities in scraped text data using `html.unescape()`.
+### Phase 1: Implementation
+1. Analyze the context and codebase.
+2. Implement code changes.
+3. Run tests locally (`./venv/bin/pytest tests/`).
+4. Format code (`./venv/bin/ruff check --fix . && ./venv/bin/ruff format .`).
 
-### HTTP Client
+### Phase 2: Auto-Update Documentation
+Do NOT wait for the user to ask. Automatically update:
+- `CONTEXT.md`: Update project status, feature checklist, test count, and architecture notes.
+- `docs/USAGE.md`: CLI usage, config examples, or newly supported scrapers.
+- `javs/data/default_config.yaml`: Keep inline comments accurate when config structure changes.
 
-- All HTTP requests go through `javs/services/http.py` (`HttpClient`).
-- Cloudflare-protected sites use `get_cf()` (via `curl_cffi`).
-- SOCKS5 proxy support via `aiohttp-socks`. Configured through `ProxyConfig.url`.
-- Connection pooling is enabled (`TCPConnector(limit=100)`).
-
-### Testing
-
-- All new features must have accompanying tests in `tests/`.
-- Use `pytest` with `pytest-asyncio` for async tests.
-- Run tests: `./venv/bin/pytest tests`
-- Current baseline: 129 passing tests, 0 failures.
-- Test fixtures are defined in `tests/conftest.py`.
-
-### Dependencies
-
-- Always update `pyproject.toml` when adding new dependencies.
-- Install in venv: `./venv/bin/pip install -e ".[dev]"`
-
-## Key Architecture Decisions
-
-1. **Single DMM scraper** (`dmm`): Uses Japanese site with `cklg=ja` cookies. No separate English version.
-2. **Proxy per-scraper**: Each scraper has a `use_proxy` flag controlled via config. DMM and MGStage default to `True`.
-3. **Data aggregation**: Multiple scrapers' results are merged by `DataAggregator` using priority lists defined in config.
-4. **Plugin architecture**: Scrapers auto-register via decorator. Adding a new scraper = one new file + `@ScraperRegistry.register`.
-
-## File Reference
-
-| Purpose | Path |
-|---|---|
-| CLI commands | `javs/cli.py` |
-| Main engine | `javs/core/engine.py` |
-| Config models | `javs/config/models.py` |
-| Config loader | `javs/config/loader.py` |
-| Default config | `javs/data/default_config.yaml` |
-| HTTP client | `javs/services/http.py` |
-| Scraper base | `javs/scrapers/base.py` |
-| Scraper registry | `javs/scrapers/registry.py` |
-| DMM scraper | `javs/scrapers/dmm.py` |
-| Data models | `javs/models/movie.py` |
-| Logging setup | `javs/utils/logging.py` |
-| Project context | `CONTEXT.md` |
-| Usage guide | `docs/USAGE.md` |
-
-## Automation Rules
-
-### Auto-Update Documentation
-
-After completing any code change (new feature, bug fix, refactor, config change), **automatically** update the relevant documentation files:
-
-- `CONTEXT.md` – Update project status, feature checklist, test count, and architecture notes.
-- `docs/USAGE.md` – Update CLI usage, config examples, and scraper lists if they changed.
-- `default_config.yaml` comments – Keep inline comments accurate when config structure changes.
-- `README.md` – Update Readme.
-
-Do NOT wait for the user to ask. Documentation updates are part of every task completion.
-
-### Auto Git Commit
-
-After completing a task or a logical unit of work, **automatically** run git commit with a clear, conventional commit message:
-
+### Phase 3: Auto Git Commit
+After tests pass and docs are updated, automatically run:
 ```bash
-cd /home/starfall-fedora/MyApp/MyBuild/JavS/javs && git add -A && git commit -m "<type>: <description>"
+git add -A && git commit -m "<type>: <description>"
 ```
+**Conventional Commit Types:**
+- `feat:` New feature or capability
+- `fix:` Bug fix
+- `refactor:` Code restructuring
+- `docs:` Documentation-only changes
+- `test:` Adding or updating tests
+- `chore:` Build, config, or tooling changes
 
-Commit message format (Conventional Commits):
+## 📝 6. Tooling Constraints & Directives
 
-- `feat: <description>` – New feature or capability.
-- `fix: <description>` – Bug fix.
-- `refactor: <description>` – Code restructuring without behavior change.
-- `docs: <description>` – Documentation-only changes.
-- `test: <description>` – Adding or updating tests.
-- `chore: <description>` – Build, config, or tooling changes.
+- **Absolute Paths:** Always use absolute file paths in your built-in file editing tools.
+- **Search:** Prefer `grep_search` over running `grep` inside bash.
+- **File Edits:** Do not use `sed`, `cat`, or `echo` to modify files in bash. Use `replace_file_content` or `write_to_file`.
+- **Bash Context:** The working directory for commands is generally `/home/starfall-fedora/MyApp/MyBuild/JavS/javs`. 
+- **Context Retrieval:** ALWAYS check existing `javs` structure before creating new utilities.
 
-Examples:
-
-- `feat: add SOCKS5 proxy support with per-scraper routing`
-- `fix: unescape HTML entities in DMM genre parsing`
-- `refactor: merge dmmja into unified dmm scraper`
-- `docs: update CONTEXT.md with proxy integration progress`
-
-Always commit after the documentation has been updated. One commit per logical change.
-
-## Communication
-
-- Respond in Vietnamese when the user writes in Vietnamese.
-- Reference `CONTEXT.md` for up-to-date project status and architecture overview.
+> By following these rules strictly, we ensure the JavS project remains maintainable, secure, and highly performant.

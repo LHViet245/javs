@@ -108,8 +108,14 @@ javs/
 
 ## 6. Next Steps / Pending Features
 
-- Integrate remaining scrapers (JavBus, TokyoHot, etc.).
+- Implement MGStage scraper (`mgstageja` — currently stub).
 - Implement Image/Cover downloading service and processing.
-- Implement Translation service.
+- Implement Translation service (core ready, blocked on async wrappers for googletrans/deepl).
 - Integrate with Emby APIs for automatic library refreshes.
 - Enhance CLI with interactive prompt modes.
+
+## 7. Security Notes
+
+- `HttpClient` uses `ssl=False` for all requests to bypass SSL verification issues on some
+  target scraping sites (DMM, R18). This is a deliberate trade-off documented here.
+  Production deployments should consider narrowing this to specific scrapers only.

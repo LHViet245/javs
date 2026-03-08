@@ -1,4 +1,4 @@
-"""Tests for proxy integration: config validation, credential masking, routing, and failure handling."""
+"""Tests for proxy: config validation, credential masking, routing, failure."""
 
 from __future__ import annotations
 
@@ -121,7 +121,6 @@ class TestScraperConfigUseProxy:
         config = ScraperConfig()
         assert config.use_proxy["r18dev"] is False
         assert config.use_proxy["javlibrary"] is False
-        assert config.use_proxy["javbus"] is False
 
     def test_full_config_proxy_roundtrip(self):
         """Full JavsConfig with proxy should serialize/deserialize correctly."""

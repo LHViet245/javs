@@ -135,9 +135,10 @@ def config(
         console.print(str(path))
 
     elif action == "edit":
+        import os
         import subprocess
 
-        editor = "nano"
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "nano"))
         if not path.exists():
             create_default_config(path)
         subprocess.run([editor, str(path)])

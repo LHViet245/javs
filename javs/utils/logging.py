@@ -24,9 +24,7 @@ class MaskProxyCredentialProcessor:
         self._raw_url: str | None = None
         self._masked_url: str | None = None
         # Pattern to catch userinfo in proxy URLs even when not exact match
-        self._userinfo_pattern = re.compile(
-            r"(https?|socks[45h]*?)://([^:]+):([^@]+)@"
-        )
+        self._userinfo_pattern = re.compile(r"(https?|socks[45h]*?)://([^:]+):([^@]+)@")
 
     def set_proxy_url(self, raw_url: str, masked_url: str) -> None:
         """Register a proxy URL and its masked counterpart.

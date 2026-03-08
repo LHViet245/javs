@@ -101,24 +101,22 @@ class NfoConfig(BaseModel):
 class MetadataPriorityConfig(BaseModel):
     """Priority order for each metadata field across scrapers."""
 
-    actress: list[str] = Field(default_factory=lambda: ["r18dev", "dmm", "javlibrary", "javbus"])
+    actress: list[str] = Field(default_factory=lambda: ["r18dev", "dmm", "javlibrary"])
     alternate_title: list[str] = Field(default_factory=lambda: ["javlibraryja", "dmm"])
-    cover_url: list[str] = Field(
-        default_factory=lambda: ["r18dev", "javlibrary", "dmm", "javbus"]
-    )
+    cover_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
     description: list[str] = Field(default_factory=lambda: ["dmm", "r18dev", "mgstageja"])
     director: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "mgstageja"])
-    genre: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    id: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
+    genre: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
+    id: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
     content_id: list[str] = Field(default_factory=lambda: ["r18dev", "dmm"])
     label: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "mgstageja"])
-    maker: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
+    maker: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
     release_date: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
     rating: list[str] = Field(default_factory=lambda: ["dmm", "javlibrary", "mgstageja"])
     runtime: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
     series: list[str] = Field(default_factory=lambda: ["r18dev", "mgstageja"])
     screenshot_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
-    title: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
+    title: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
     trailer_url: list[str] = Field(default_factory=lambda: ["r18dev", "dmm"])
 
 
@@ -190,39 +188,17 @@ class ScraperConfig(BaseModel):
             "javlibrary": False,
             "javlibraryja": False,
             "javlibraryzh": False,
-            "javbus": False,
-            "javbusja": False,
-            "javbuszh": False,
-            "javdb": False,
-            "javdbzh": False,
-            "jav321ja": False,
             "mgstageja": False,
-            "aventertainment": False,
-            "aventertainmentja": False,
-            "tokyohot": False,
-            "tokyohotja": False,
-            "tokyohotzh": False,
         }
     )
     use_proxy: dict[str, bool] = Field(
         default_factory=lambda: {
             "r18dev": False,
-            "dmm": True,           # Japan region block
+            "dmm": True,  # Japan region block
             "javlibrary": False,
             "javlibraryja": False,
             "javlibraryzh": False,
-            "javbus": False,
-            "javbusja": False,
-            "javbuszh": False,
-            "javdb": False,
-            "javdbzh": False,
-            "jav321ja": False,
-            "mgstageja": True,     # Japan region block
-            "aventertainment": False,
-            "aventertainmentja": False,
-            "tokyohot": False,
-            "tokyohotja": False,
-            "tokyohotzh": False,
+            "mgstageja": True,  # Japan region block
         }
     )
     options: ScraperOptions = Field(default_factory=ScraperOptions)
@@ -252,8 +228,7 @@ class ProxyConfig(BaseModel):
             raise ValueError("proxy.url is required when proxy.enabled is True")
         if self.url and "://" not in self.url:
             raise ValueError(
-                "proxy.url must include protocol "
-                "(http://, https://, socks5://, socks5h://)"
+                "proxy.url must include protocol (http://, https://, socks5://, socks5h://)"
             )
         return self
 

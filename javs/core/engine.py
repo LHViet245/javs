@@ -85,7 +85,9 @@ class JavsEngine:
                 )
             else:
                 scrapers = ScraperRegistry.get_enabled(
-                    self.config.scrapers, self.http, self.config.proxy,
+                    self.config.scrapers,
+                    self.http,
+                    self.config.proxy,
                 )
 
             if not scrapers:
