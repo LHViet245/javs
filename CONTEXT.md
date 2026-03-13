@@ -112,7 +112,6 @@ javs/
 
 ## 6. Next Steps / Pending Features
 
-- Implement MGStage scraper (`mgstageja` — currently stub).
 - Implement Image/Cover downloading service and processing.
 - Integrate with Emby APIs for automatic library refreshes.
 - Enhance CLI with interactive prompt modes.
@@ -122,3 +121,17 @@ javs/
 - `HttpClient` uses `ssl=False` for all requests to bypass SSL verification issues on some
   target scraping sites (DMM, R18). This is a deliberate trade-off documented here.
   Production deployments should consider narrowing this to specific scrapers only.
+
+## 8. Current State (Session Snapshot - GraviVide Branch)
+
+**What we just completed in the last session:**
+1. **MGStage Scraper Implementation**: Developed a robust, fully-functional `mgstageja` scraper, replacing the old PowerShell stub. It successfully proxies requests, bypasses age-verification by injecting the `{"adc": "1"}` cookie, and parses detailed metadata (Title, Actresses, Genres, Runtime, Series, Maker, Label, Cover, and trailer MP4 stream) via `BeautifulSoup`.
+2. **Search Engine Fallback (Soft 404 Handling)**: Discovered that MGStage hides older movies (e.g., `FSDSS-198`) from search results. Implemented a concurrent `asyncio.gather` pipeline to probe directly into Product Detail URLs using 13 common publisher prefixes (e.g., 406, 336, 348), validating results against the raw HTML string to avoid Soft 404 traps.
+3. **Pydantic Model Validation**: Fixed the `ValidationError` by correctly instantiating the `Rating(rating=...)` model instead of assigning raw floats in scrapers.
+4. **Mock Testing**: Added comprehensive pytest coverage for `mgstageja`, using mock `HttpClient.get()` responses loaded from local HTML sample data, validating parser stability for both standard and prefixed film IDs.
+5. **Quality Checks**: Passed 130/130 test suite via Pytest. Verified via manual `javs find FSDSS-198 -s mgstageja` command testing.
+6. **Git Flow**: Safely pushed code to the `GraviVide` branch.
+
+**Immediate Action Items for Next Session:**
+- The workspace is stable, green, and the `mgstageja` scraper is complete.
+- Begin work on Image/Cover downloading service, or other pending features on the `GraviVide` branch.
