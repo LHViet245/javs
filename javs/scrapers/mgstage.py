@@ -81,8 +81,10 @@ class MgstageJaScraper(BaseScraper):
         
         async def check_url(url: str) -> str | None:
             try:
-                await self.http.get(url, cookies={"adc": "1"}, use_proxy=self.use_proxy)
-                return url
+                resp = await self.http.get(url, cookies={"adc": "1"}, use_proxy=self.use_proxy)
+                if c_id in resp:
+                    return url
+                return None
             except Exception:
                 return None
                 
