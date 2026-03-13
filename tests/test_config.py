@@ -14,7 +14,11 @@ class TestJavsConfig:
         assert config.throttle_limit == 1
         assert config.sleep == 3
         assert config.scrapers.enabled["r18dev"] is True
-        assert config.scrapers.enabled["dmmja"] is True
+
+    def test_default_config_scrapers(self) -> None:
+        config = JavsConfig()
+        assert config.scrapers.enabled["dmm"] is True
+        assert config.scrapers.enabled["javlibrary"] is False
 
     def test_match_defaults(self):
         """Match config should have sensible defaults."""
@@ -33,7 +37,11 @@ class TestJavsConfig:
         """Priority lists should have valid scraper names."""
         config = JavsConfig()
         assert "r18dev" in config.sort.metadata.priority.title
-        assert "dmmja" in config.sort.metadata.priority.actress
+
+    def test_default_priority(self) -> None:
+        config = JavsConfig()
+        assert "dmm" in config.sort.metadata.priority.actress
+        assert config.sort.metadata.priority.title[0] == "r18dev"
 
     def test_serialization_roundtrip(self, tmp_path):
         """Config should survive save/load roundtrip."""

@@ -2,7 +2,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 > A fast, async-native Python CLI for scraping, organizing, and managing JAV media libraries.
 
@@ -15,8 +15,9 @@
 - ⚡ **High Performance:** Fully asynchronous scraping (`aiohttp`) fetches from multiple sources simultaneously.
 - 🧩 **Plugin Architecture:** Easily extendable. Write a scraper class and it automatically integrates.
 - 🎯 **Smart Aggregation:** Fetches from multiple sites (DMM, R18Dev, JavLibrary, etc.) and seamlessly merges the best metadata based on your custom priority rules.
-- 🌐 **Multi-Language Support:** Automatically fetches and maps Japanese names, English aliases, and translated descriptions.
-- 🗂️ **Automated Organization:** Identifies IDs in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
+- 🌐 **Translation Service:** Built-in async wrappers for `googletrans` and `deepl` to translate metadata automatically.
+- 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
+- ⚙️ **Config Upgrader:** Safely merge app updates into your local config without losing custom keys or YAML comments using `ruamel.yaml` (`javs config sync`).
 - 🛡️ **Type Safety:** Built on `pydantic` ensuring strict data validation for all metadata and configurations.
 
 ## ⚠️ Quy tắc bắt buộc: Virtual Environment
@@ -48,13 +49,13 @@ python3 -m venv venv
 ./venv/bin/pip install -e ".[dev]"
 ```
 
-1. **Run a Test Search:**
+2. **Run a Test Search:**
 
 ```bash
 ./venv/bin/javs find "ABP-420"
 ```
 
-1. **Organize a Directory:**
+3. **Organize a Directory:**
 
 ```bash
 ./venv/bin/javs sort /path/to/unsorted /path/to/vidstream --recurse
@@ -79,4 +80,4 @@ For detailed guides, please see the [**Usage Guide**](docs/USAGE.md).
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please ensure all tests pass (`pytest tests/`) and code is formatted with `black` and `ruff` before submitting a PR.
+Contributions are welcome! Please ensure all tests pass (`pytest tests/`) and code is formatted with `ruff` before submitting a PR.

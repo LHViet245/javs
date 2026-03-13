@@ -135,12 +135,25 @@ def config(
         console.print(str(path))
 
     elif action == "edit":
+        import os
         import subprocess
 
-        editor = "nano"
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "nano"))
         if not path.exists():
             create_default_config(path)
         subprocess.run([editor, str(path)])
+
+    elif action == "sync":
+        from javs.config.updater import sync_user_config
+        console.print("[yellow]Syncing configuration setup with default template...[/yellow]")
+        success = sync_user_config()
+        if success:
+            console.print(
+                f"[green]Successfully synced and upgraded local config file at {path}[/green]"
+            )
+        else:
+            console.print("[red]Failed to sync configuration. Check logs for details.[/red]")
+            raise typer.Exit(1)
 
     else:
         console.print(f"[red]Unknown action: {action}[/red]")

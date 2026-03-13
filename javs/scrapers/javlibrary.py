@@ -60,12 +60,12 @@ class JavlibraryScraper(BaseScraper):
         search_url = f"{self.base_url}{self._lang_path}vl_searchbyid.php?keyword={normalized}"
 
         try:
-            html = await self.http.get_cf(search_url)
+            html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
         except Exception as exc:
             self.logger.debug("javlib_search_error", movie_id=normalized, error=str(exc))
             # Retry once (Javlibrary has intermittent 500 errors)
             try:
-                html = await self.http.get_cf(search_url)
+                html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
             except Exception:
                 return None
 
@@ -105,7 +105,7 @@ class JavlibraryScraper(BaseScraper):
     async def scrape(self, url: str) -> MovieData | None:
         """Scrape movie metadata from Javlibrary detail page."""
         try:
-            html = await self.http.get_cf(url)
+            html = await self.http.get_cf(url, use_proxy=self.use_proxy)
         except Exception as exc:
             self.logger.error("javlib_scrape_error", url=url, error=str(exc))
             return None
@@ -441,10 +441,10 @@ class JavlibraryJaScraper(JavlibraryScraper):
         search_url = f"{self.base_url}{self._lang_path}vl_searchbyid.php?keyword={normalized}"
 
         try:
-            html = await self.http.get_cf(search_url)
+            html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
         except Exception:
             try:
-                html = await self.http.get_cf(search_url)
+                html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
             except Exception:
                 return None
 
@@ -492,10 +492,10 @@ class JavlibraryZhScraper(JavlibraryScraper):
         search_url = f"{self.base_url}{self._lang_path}vl_searchbyid.php?keyword={normalized}"
 
         try:
-            html = await self.http.get_cf(search_url)
+            html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
         except Exception:
             try:
-                html = await self.http.get_cf(search_url)
+                html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
             except Exception:
                 return None
 

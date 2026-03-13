@@ -18,7 +18,7 @@ from javs.models.movie import MovieData
 from javs.scrapers.registry import ScraperRegistry
 from javs.services.http import HttpClient
 from javs.services.translator import translate_movie_data
-from javs.utils.logging import get_logger, setup_logging
+from javs.utils.logging import get_logger, get_mask_processor, setup_logging
 
 logger = get_logger(__name__)
 
@@ -42,16 +42,18 @@ class JavsEngine:
         )
 
         # Initialize components
-        proxy_url = self.config.proxy.host if self.config.proxy.enabled else None
-        proxy_auth = None
-        if self.config.proxy.enabled and self.config.proxy.username:
-            proxy_auth = (self.config.proxy.username, self.config.proxy.password)
+        proxy_url = self.config.proxy.url if self.config.proxy.enabled else None
+
+        # Register proxy URL with credential masking
+        if proxy_url:
+            mask_proc = get_mask_processor()
+            mask_proc.set_proxy_url(proxy_url, self.config.proxy.masked_url)
 
         self.http = HttpClient(
             proxy_url=proxy_url,
-            proxy_auth=proxy_auth,
             timeout_seconds=self.config.sort.download.timeout_seconds,
             max_concurrent=self.config.throttle_limit * 3,
+            max_retries=self.config.proxy.max_retries if self.config.proxy.enabled else 3,
         )
         self.scanner = FileScanner(self.config.match)
         self.aggregator = DataAggregator(self.config)
@@ -78,9 +80,15 @@ class JavsEngine:
         """
         async with self.http:
             if scraper_names:
-                scrapers = ScraperRegistry.get_by_names(scraper_names, self.http)
+                scrapers = ScraperRegistry.get_by_names(
+                    scraper_names, self.http, self.config.scrapers, self.config.proxy
+                )
             else:
-                scrapers = ScraperRegistry.get_enabled(self.config.scrapers, self.http)
+                scrapers = ScraperRegistry.get_enabled(
+                    self.config.scrapers,
+                    self.http,
+                    self.config.proxy,
+                )
 
             if not scrapers:
                 logger.error("no_scrapers_enabled")

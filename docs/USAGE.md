@@ -51,6 +51,12 @@ To edit the configuration (opens your default text editor):
 javs config edit
 ```
 
+To automatically update and merge your local configuration with the latest defaults (while preserving your customizations and comments):
+
+```bash
+javs config sync
+```
+
 ---
 
 ## 🔎 Key Commands
@@ -78,6 +84,17 @@ javs sort /path/to/unsorted /path/to/vidstream --recurse
 
 1. Scans the input path for supported video extensions (`.mp4`, `.mkv`, etc.).
 2. Extracts potential IDs (e.g., `ABP-420` from `[Thz.la]ABP-420.1080p.mp4`).
+
+   **Supported formats:**
+   - Standard: `ABP-123.mp4`, `SSIS-001.mkv`
+   - Numeric Prefix: `259LUXU-123.mp4`
+   - Multi-part: `ABP-123 cd1.mp4`, `ABP-123 pt2.mp4`, `DVMM-377A.mp4`, `DVMM-377B.mp4`
+   - With Uncensored Tag: `RCTD-717_uncensored.mp4`
+   - Subtitle tags like `-C` will NOT be mistaken for part numbers.
+
+   **Note on Directory Names:**
+   JavS's `sort` command explicitly scans **filenames**, not parent directory names. If your video is generic (e.g., `SGKI-079/video.mp4`), the engine will skip it. Please rename the file itself to contain the ID (e.g., `SGKI-079/video.mp4` -> `SGKI-079/SGKI-079.mp4`) before running the sort command.
+
 3. Fetches best-matched metadata from `dmm`, `r18dev`, `javlibrary`, etc.
 4. Downloads poster/cover images.
 5. Generates Kodi/Emby compatible `<id>.nfo`.
@@ -91,7 +108,7 @@ List all recognized and registered scraper plugins:
 javs scrapers
 ```
 
-Outputs the scraper names (e.g., `dmm`, `dmmja`, `r18dev`, `javlibrary`, `javlibraryja`, `javlibraryzh`) and their active status.
+Outputs the scraper names (e.g., `dmm`, `r18dev`, `javlibrary`, `javlibraryja`, `javlibraryzh`) and their active status.
 
 ---
 
@@ -99,7 +116,7 @@ Outputs the scraper names (e.g., `dmm`, `dmmja`, `r18dev`, `javlibrary`, `javlib
 
 JavS currently includes several high-quality scrapers.
 
-### **DMM (`dmm`, `dmmja`)**
+### **DMM (`dmm`)**
 
 The official DMM store scraper.
 

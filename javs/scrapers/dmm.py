@@ -21,23 +21,25 @@ class DmmScraper(BaseScraper):
     """Scraper for DMM.co.jp (English site)."""
 
     name: ClassVar[str] = "dmm"
-    display_name: ClassVar[str] = "DMM (English)"
-    languages: ClassVar[list[str]] = ["en"]
+    display_name: ClassVar[str] = "DMM (Japanese)"
+    languages: ClassVar[list[str]] = ["ja"]
     base_url: ClassVar[str] = "https://www.dmm.co.jp"
 
-    SEARCH_URL = "https://www.dmm.co.jp/en/mono/dvd/-/search/=/searchstr={id}/"
-    DIGITAL_SEARCH_URL = "https://www.dmm.co.jp/en/digital/videoa/-/list/search/=/searchstr={id}/"
+    SEARCH_URL = "https://www.dmm.co.jp/mono/dvd/-/search/=/searchstr={id}/"
+    DIGITAL_SEARCH_URL = "https://www.dmm.co.jp/digital/videoa/-/list/search/=/searchstr={id}/"
 
     async def search(self, movie_id: str) -> str | None:
         """Search DMM for a movie by ID."""
         normalized = self.normalize_id(movie_id)
         content_id = self._id_to_content_id(normalized)
 
+        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
+
         # Try digital first, then physical
         for url_template in [self.DIGITAL_SEARCH_URL, self.SEARCH_URL]:
             search_url = url_template.format(id=content_id)
             try:
-                html = await self.http.get(search_url, cookies=DMM_COOKIES)
+                html = await self.http.get(search_url, cookies=ja_cookies, use_proxy=self.use_proxy)
                 soup = parse_html(html)
 
                 # Find the first result link
@@ -53,8 +55,47 @@ class DmmScraper(BaseScraper):
 
     async def scrape(self, url: str) -> MovieData | None:
         """Scrape movie metadata from DMM detail page."""
+        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
+
         try:
-            html = await self.http.get(url, cookies=DMM_COOKIES)
+            html = await self.http.get(url, cookies=ja_cookies, use_proxy=self.use_proxy)
+
+            # If the response is actually the React SPA (even if hit on
+            # a legacy URL like digital/videoa) DMM silently serves the
+            # SPA container instead of the legacy HTML page.
+            if "video.dmm.co.jp/av/" in url or "BAILOUT_TO_CLIENT_SIDE_RENDERING" in html:
+                self.logger.debug("dmm_spa_detected_in_response", url=url)
+
+                # Try to extract content_id from the original url
+                content_id = self._parse_content_id(url)
+                if not content_id:
+                    match = re.search(r"id=([a-zA-Z0-9]+)", url)
+                    content_id = match.group(1) if match else None
+
+                if content_id:
+                    fallback_url = f"https://www.dmm.co.jp/mono/-/detail/get-product-for-another-ajax/?content_id={content_id}"
+                    self.logger.debug(
+                        "dmm_spa_redirect", content_id=content_id, fallback_url=fallback_url
+                    )
+                    try:
+                        data = await self.http.get_json(
+                            fallback_url, cookies=ja_cookies, use_proxy=self.use_proxy
+                        )
+                        result_list = data.get("result", [])
+                        if result_list and isinstance(result_list, list):
+                            legacy_url = result_list[0].get("detail_url")
+                            if legacy_url:
+                                self.logger.debug(
+                                    "dmm_spa_resolved", original_url=url, target_url=legacy_url
+                                )
+                                url = legacy_url
+                                # Fetch the actual legacy HTML
+                                html = await self.http.get(
+                                    url, cookies=ja_cookies, use_proxy=self.use_proxy
+                                )
+                    except Exception as exc:
+                        self.logger.warning("dmm_spa_redirect_failed", error=str(exc), url=url)
+
         except Exception as exc:
             self.logger.error("dmm_scrape_error", url=url, error=str(exc))
             return None
@@ -77,11 +118,11 @@ class DmmScraper(BaseScraper):
             label=self._parse_label(html),
             series=self._parse_series(html),
             rating=self._parse_rating(soup, html),
-            actresses=self._parse_actresses(soup, html),
+            actresses=await self._parse_actresses(soup, html),
             genres=self._parse_genres(soup, html),
             cover_url=self._parse_cover_url(html),
             screenshot_urls=self._parse_screenshot_urls(soup),
-            trailer_url=self._parse_trailer_url(html),
+            trailer_url=await self._parse_trailer_url(html),
             source=self.name,
         )
 
@@ -147,7 +188,10 @@ class DmmScraper(BaseScraper):
         return int(match.group(1)) if match else None
 
     def _parse_director(self, html: str) -> str | None:
-        match = re.search(r'href="[^"]*\?director=\d+"[^>]*>([^<]+)</a>', html)
+        match = re.search(
+            r'<a[^>]*href="[^"]*(?:\?director=|/article=director/id=)\d+[^"]*"[^>]*>([\s\S]*?)</a>',
+            html,
+        )
         return match.group(1).strip() if match else None
 
     def _parse_maker(self, html: str) -> str | None:
@@ -166,7 +210,8 @@ class DmmScraper(BaseScraper):
 
     def _parse_series(self, html: str) -> str | None:
         match = re.search(
-            r'<a href="(?:/digital/videoa/|(?:/en)?/mono/dvd/)-/list/=/article=series/id=\d*/?"[^>]*?>(.*?)</a></td>',
+            r'<a href="(?:/digital/videoa/|(?:/en)?/mono/dvd/)'
+            r'-/list/=/article=series/id=\d*/?"[^>]*?>(.*?)</a></td>',
             html,
         )
         return match.group(1).strip() if match else None
@@ -193,16 +238,64 @@ class DmmScraper(BaseScraper):
 
         return Rating(rating=round(rating_val, 2), votes=votes)
 
-    def _parse_actresses(self, soup, html: str) -> list[Actress]:
+    async def _fetch_actress_thumb(self, actress_id: str) -> str | None:
+        """Fetch the actress profile page and extract the thumbnail URL.
+
+        The actress.dmm.co.jp page is now a Next.js SPA. The actress
+        thumbnail is embedded in the og:image meta tag with a URL like:
+        https://image-optimizer.osusume.dmm.co.jp/actress/{name}.jpg
+        We extract the imgUrl parameter from the og:image content, or
+        fall back to the legacy actjpgs pattern.
+        """
+        url = f"https://actress.dmm.co.jp/-/detail/=/actress_id={actress_id}/"
+        cookies = {**DMM_COOKIES, "ckcy": "2", "cklg": "ja", "age_check_done": "1"}
+        try:
+            html = await self.http.get(url, cookies=cookies, use_proxy=self.use_proxy)
+
+            # Strategy 1: Extract from og:image meta tag (new SPA format)
+            # og:image content contains a URL like:
+            #   https://image-optimizer.osusume.dmm.co.jp/og?imgUrl=<encoded_url>&name=...
+            # The imgUrl param points to the actual actress image.
+            og_match = re.search(r'og:image"?\s+content="([^"]+)"', html)
+            if og_match:
+                from urllib.parse import parse_qs, unquote, urlparse
+
+                og_url = og_match.group(1).replace("&amp;", "&")
+                parsed = urlparse(og_url)
+                params = parse_qs(parsed.query)
+                if "imgUrl" in params:
+                    thumb = unquote(params["imgUrl"][0])
+                    self.logger.debug(
+                        "dmm_actress_thumb_from_og",
+                        actress_id=actress_id,
+                        thumb_url=thumb,
+                    )
+                    return thumb
+
+            # Strategy 2: Legacy actjpgs pattern (fallback)
+            legacy_match = re.search(r'<img[^>]*src="([^"]*actjpgs[^"]+)"', html)
+            if legacy_match:
+                return legacy_match.group(1)
+
+        except Exception as exc:
+            self.logger.debug(
+                "dmm_fetch_actress_thumb_failed",
+                actress_id=actress_id,
+                error=str(exc),
+            )
+        return None
+
+    async def _parse_actresses(self, soup, html: str) -> list[Actress]:
         """Parse actresses from DMM detail page."""
         actresses = []
 
-        # Find actress links
+        # Find actress links (supports both digital and mono patterns)
         matches = re.findall(
-            r'<a.*?href="[^"]*\?actress=(\d+)".*?>([^<]+)</a>',
+            r'<a.*?href="[^"]*(?:\?actress=|article=actress/id=)(\d+)[/"].*?>([^<]+)</a>',
             html,
         )
 
+        # First pass to parse names
         for actress_id, actress_name in matches:
             name = actress_name.strip()
             first_name = None
@@ -221,15 +314,30 @@ class DmmScraper(BaseScraper):
                 else:
                     first_name = name.title()
 
-            actresses.append(
-                Actress(
-                    last_name=last_name,
-                    first_name=first_name,
-                    japanese_name=japanese_name,
+            # Deduplicate by ID
+            if not any(a[0] == actress_id for a in actresses):
+                actresses.append(
+                    (
+                        actress_id,
+                        Actress(
+                            last_name=last_name,
+                            first_name=first_name,
+                            japanese_name=japanese_name,
+                        ),
+                    )
                 )
-            )
 
-        return actresses
+        import asyncio
+
+        for i in range(0, len(actresses), 5):
+            batch = actresses[i : i + 5]
+            tasks = [self._fetch_actress_thumb(actress_id) for actress_id, _ in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for (_, actress_model), thumb_url in zip(batch, results, strict=False):
+                if isinstance(thumb_url, str):
+                    actress_model.thumb_url = thumb_url
+
+        return [a[1] for a in actresses]
 
     def _parse_genres(self, soup, html: str) -> list[str]:
         """Parse genre list from DMM page."""
@@ -248,9 +356,11 @@ class DmmScraper(BaseScraper):
         genre_block = block_match[2].split("</tr>")[0]
         genre_links = re.findall(r">([^<]+)<", genre_block)
 
+        import html as pyhtml
+
         for g in genre_links:
-            g = re.sub(r"<[^>]+>", "", g).strip()
-            if g and g not in ("/a", ""):
+            g = pyhtml.unescape(re.sub(r"<[^>]+>", "", g)).strip()
+            if g and g not in ("/a", "---"):
                 genres.append(g)
 
         return genres
@@ -274,73 +384,58 @@ class DmmScraper(BaseScraper):
                 screenshots.append(src.replace("-", "jp-"))
         return screenshots
 
-    def _parse_trailer_url(self, html: str) -> str | None:
+    async def _parse_trailer_url(self, html: str) -> str | None:
+        # Legacy/Standard format: onclick="sampleplay('https://cc3001...')"
         match = re.search(r"onclick.+(?:vr)?sampleplay\('([^']+)'\)", html)
-        return match.group(1) if match else None
+        if match:
+            iframe_path = match.group(1)
+            iframe_url = f"https://www.dmm.co.jp{iframe_path}"
 
-
-@ScraperRegistry.register
-class DmmJaScraper(DmmScraper):
-    """DMM scraper for Japanese language."""
-
-    name: ClassVar[str] = "dmmja"
-    display_name: ClassVar[str] = "DMM (Japanese)"
-    languages: ClassVar[list[str]] = ["ja"]
-
-    SEARCH_URL = "https://www.dmm.co.jp/mono/dvd/-/search/=/searchstr={id}/"
-    DIGITAL_SEARCH_URL = "https://www.dmm.co.jp/digital/videoa/-/list/search/=/searchstr={id}/"
-
-    async def search(self, movie_id: str) -> str | None:
-        """Search DMM Japanese site."""
-        normalized = self.normalize_id(movie_id)
-        content_id = self._id_to_content_id(normalized)
-
-        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
-
-        for url_template in [self.DIGITAL_SEARCH_URL, self.SEARCH_URL]:
-            search_url = url_template.format(id=content_id)
+            # Need specific cookies for embedded players
+            cookies = {**DMM_COOKIES, "ckcy": "2", "cklg": "en", "age_check_done": "1"}
             try:
-                html = await self.http.get(search_url, cookies=ja_cookies)
-                soup = parse_html(html)
-                link = soup.select_one("#list li .tmb a")
-                if link:
-                    href = extract_attr(link, "href")
-                    if href:
-                        return href
-            except Exception:
-                continue
+                iframe_html = await self.http.get(
+                    iframe_url, cookies=cookies, use_proxy=self.use_proxy
+                )
+
+                # Check for VR sample player directly inside this iframe
+                if "vr-sample-player" in iframe_url:
+                    vr_match = re.search(r"//cc3001\.dmm\.co\.jp/vrsample[^\"]+", iframe_html)
+                    if vr_match:
+                        url = vr_match.group(0)
+                        return f"https:{url}" if url.startswith("//") else url
+
+                # Standard legacy iframe has another iframe inside it
+                src_match = re.search(r'src="([^"]+)"', iframe_html)
+                if src_match:
+                    trailer_page_url = src_match.group(1).replace("/en", "")
+                    # Ensure absolute url
+                    if trailer_page_url.startswith("//"):
+                        trailer_page_url = f"https:{trailer_page_url}"
+                    elif trailer_page_url.startswith("/"):
+                        trailer_page_url = f"https://www.dmm.co.jp{trailer_page_url}"
+
+                    trailer_html = await self.http.get(
+                        trailer_page_url, cookies=cookies, use_proxy=self.use_proxy
+                    )
+                    mp4_match = re.search(
+                        r"//cc3001\.dmm\.co\.jp/litevideo/freepv[^\"]+", trailer_html
+                    )
+                    if mp4_match:
+                        url = mp4_match.group(0).replace("\\", "")
+                        return f"https:{url}" if url.startswith("//") else url
+
+            except Exception as exc:
+                self.logger.warning(
+                    "dmm_fetch_trailer_failed", iframe_url=iframe_url, error=str(exc)
+                )
+
+        # New format (2025+): gaEventVideoStart with video_url
+        # We look for https:\/\/[^&]+.mp4
+        match_new = re.search(r"&quot;video_url&quot;:&quot;(https:\\/\\/[^&]+\.mp4)&quot;", html)
+        if match_new:
+            # We must unescape the JSON slashes
+            url = match_new.group(1).replace(r"\/", "/")
+            return url
 
         return None
-
-    async def scrape(self, url: str) -> MovieData | None:
-        """Scrape from Japanese DMM."""
-        ja_cookies = {**DMM_COOKIES, "cklg": "ja", "ckcy": "1"}
-        try:
-            html = await self.http.get(url, cookies=ja_cookies)
-        except Exception as exc:
-            self.logger.error("dmmja_scrape_error", url=url, error=str(exc))
-            return None
-
-        soup = parse_html(html)
-        movie_id = self._parse_id(url)
-        content_id = self._parse_content_id(url)
-
-        return MovieData(
-            id=movie_id or "",
-            content_id=content_id,
-            title=self._parse_title(soup),
-            description=self._parse_description(soup, html),
-            release_date=self._parse_release_date(html),
-            runtime=self._parse_runtime(html),
-            director=self._parse_director(html),
-            maker=self._parse_maker(html),
-            label=self._parse_label(html),
-            series=self._parse_series(html),
-            rating=self._parse_rating(soup, html),
-            actresses=self._parse_actresses(soup, html),
-            genres=self._parse_genres(soup, html),
-            cover_url=self._parse_cover_url(html),
-            screenshot_urls=self._parse_screenshot_urls(soup),
-            trailer_url=self._parse_trailer_url(html),
-            source=self.name,
-        )

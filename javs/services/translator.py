@@ -5,6 +5,8 @@ Replaces Javinizer's googletrans integration.
 
 from __future__ import annotations
 
+import asyncio
+
 from javs.config.models import TranslateConfig
 from javs.models.movie import MovieData
 from javs.utils.logging import get_logger
@@ -74,9 +76,12 @@ async def _translate_googletrans(text: str, dest_lang: str) -> str | None:
     try:
         from googletrans import Translator
 
-        translator = Translator()
-        result = translator.translate(text, dest=dest_lang)
-        return result.text
+        def _sync_translate() -> str:
+            translator = Translator()
+            result = translator.translate(text, dest=dest_lang)
+            return result.text
+
+        return await asyncio.to_thread(_sync_translate)
     except ImportError:
         logger.error("googletrans_not_installed", msg="pip install googletrans==4.0.0-rc.1")
         return None
@@ -90,9 +95,12 @@ async def _translate_deepl(text: str, target_lang: str, api_key: str) -> str | N
     try:
         import deepl
 
-        translator = deepl.Translator(api_key)
-        result = translator.translate_text(text, target_lang=target_lang.upper())
-        return result.text
+        def _sync_translate() -> str:
+            translator = deepl.Translator(api_key)
+            result = translator.translate_text(text, target_lang=target_lang.upper())
+            return result.text
+
+        return await asyncio.to_thread(_sync_translate)
     except ImportError:
         logger.error("deepl_not_installed", msg="pip install deepl")
         return None
