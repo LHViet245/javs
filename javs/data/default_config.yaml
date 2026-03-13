@@ -101,6 +101,7 @@ file:
 sort:
   # Base sorting configurations
   rename_file: true
+  move_subtitles: true
   rename_file_format: "<id> - <title>"
   rename_folder: true
   rename_folder_format: "<id>"

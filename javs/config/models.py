@@ -164,7 +164,7 @@ class SortConfig(BaseModel):
     move_to_folder: bool = True
     rename_file: bool = True
     rename_folder_in_place: bool = False
-    move_subtitles: bool = False
+    move_subtitles: bool = True
     format: FormatConfig = Field(default_factory=FormatConfig)
     download: DownloadConfig = Field(default_factory=DownloadConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)

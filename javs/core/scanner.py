@@ -213,20 +213,45 @@ class FileScanner:
                 movie_id = f"{prefix}-{number}"
 
                 # Check for part number
-                part = self._extract_part_number(clean)
+                part = self._extract_part_number(clean, movie_id)
                 return movie_id, part
 
         return None, None
 
     @staticmethod
-    def _extract_part_number(filename: str) -> int | None:
+    def _extract_part_number(filename: str, movie_id: str | None = None) -> int | None:
         """Extract part/disc number from filename."""
+        # 1. Standard explicit parts (cd1, pt2, etc)
         for pattern in PART_PATTERNS:
             match = re.search(pattern, filename, re.IGNORECASE)
             if match:
                 val = match.group(1)
                 if val.isdigit():
                     return int(val)
-                # Letter-based: a=1, b=2, c=3
-                return ord(val.lower()) - ord("a") + 1
+
+        # 2. Letter-based parts attached directly to movie_id (e.g., DVMM-377A, DVMM-377B)
+        # Exclude 'C' as standalone suffix because it's widely used for Chinese subtitles (-C, _C)
+        if movie_id:
+            # Reconstruct ID pattern to find immediate suffix
+            escaped_id = re.escape(movie_id)
+            # Match ID optionally without dash, followed immediately by A-C
+            # (we allow C if attached directly)
+            id_no_dash = re.escape(movie_id.replace("-", ""))
+
+            # e.g. DVMM-377A, DVMM-377B, DVMM377A
+            match = re.search(
+                rf"(?:{escaped_id}|{id_no_dash})[-_. ]?([a-c])\b",
+                filename,
+                re.IGNORECASE
+            )
+            if match:
+                val = match.group(1).lower()
+                # If there's a space or dash and it's 'c', it might be Chinese sub flag.
+                # Be conservative: only treat it as a part if A, B, or attached without space.
+                prefix_char = filename[match.start(1)-1] if match.start(1) > 0 else ''
+                if val == 'c' and prefix_char in ("-", "_", " "):
+                     pass # Likely subtitle flag, skip
+                else:
+                    return ord(val) - ord("a") + 1
+
         return None

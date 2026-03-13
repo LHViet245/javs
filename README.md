@@ -15,8 +15,9 @@
 - ⚡ **High Performance:** Fully asynchronous scraping (`aiohttp`) fetches from multiple sources simultaneously.
 - 🧩 **Plugin Architecture:** Easily extendable. Write a scraper class and it automatically integrates.
 - 🎯 **Smart Aggregation:** Fetches from multiple sites (DMM, R18Dev, JavLibrary, etc.) and seamlessly merges the best metadata based on your custom priority rules.
-- 🌐 **Multi-Language Support:** Automatically fetches and maps Japanese names, English aliases, and translated descriptions.
-- 🗂️ **Automated Organization:** Identifies IDs in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
+- 🌐 **Translation Service:** Built-in async wrappers for `googletrans` and `deepl` to translate metadata automatically.
+- 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
+- ⚙️ **Config Upgrader:** Safely merge app updates into your local config without losing custom keys or YAML comments using `ruamel.yaml` (`javs config sync`).
 - 🛡️ **Type Safety:** Built on `pydantic` ensuring strict data validation for all metadata and configurations.
 
 ## ⚠️ Quy tắc bắt buộc: Virtual Environment

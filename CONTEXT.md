@@ -11,7 +11,7 @@ JavS (JAV Scraper) is a modern, async Python CLI application designed to automat
 ## 2. Core Technologies & Libraries
 
 - **Concurrency & HTTP:** `asyncio`, `aiohttp` (for general web requests), `curl_cffi` (for Cloudflare bypass), `aiohttp-socks` (for SOCKS5 proxy).
-- **Configuration & Validation:** `pydantic` (for type-safe config models), `PyYAML` (for config file storage).
+- **Configuration & Validation:** `pydantic` (for type-safe config models), `ruamel.yaml` (for preserving comments locally), `PyYAML`.
 - **CLI Interface:** `typer` (for command parsing), `rich` (for beautiful terminal UI and progress bars).
 - **HTML Parsing:** `beautifulsoup4` (with `lxml` parser).
 - **Logging:** `structlog` (for structured, JSON-friendly, extensible logging).
@@ -35,6 +35,7 @@ javs/
 │   │   └── organizer.py    # FileOrganizer (renaming and moving files)
 │   ├── config/             # Configuration handling
 │   │   ├── models.py       # Pydantic models (JavsConfig, ProxyConfig, etc.)
+│   │   ├── updater.py      # Config Sync (ruamel.yaml Deep Merge)
 │   │   └── loader.py       # YAML config loader/saver
 │   ├── models/             # Shared data models
 │   │   ├── file.py         # FileContext (represents a file being processed)
@@ -48,7 +49,8 @@ javs/
 │   │   └── [others].py     # Additional future scrapers
 │   ├── services/           # Utility services
 │   │   ├── http.py         # HttpClient (aiohttp wrapper + retry + proxy + CF)
-│   │   └── translator.py   # Translation service
+│   │   ├── image.py        # Image processor (Pillow cropping)
+│   │   └── translator.py   # Translation service (googletrans/deepl async wrappers)
 │   └── utils/              # Helper functions
 │       ├── logging.py      # structlog setup and custom processors (e.g., masking)
 │       └── string.py       # Title cleaning, normalization
@@ -66,11 +68,13 @@ javs/
 ### Core Engine
 
 - ✅ File scanning and complex JAV ID extraction (Regex based).
+- ✅ Multipart Detection: Intelligently handles part numbers (e.g. `cd1`, `pt2`, `A/B` attached to ID) while ignoring common subtitle suffixes (e.g., `-C`).
 - ✅ Basic CLI setup using `typer` and `rich`.
 - ✅ Configuration system using `pydantic` models and YAML storage.
+- ✅ Configuration Upgrader (`javs config sync`): Synthesizes application default YAML into user config while preserving custom modifications and 100% comments (`ruamel.yaml`).
 - ✅ Data Aggregation (merging missing fields from lower priority scrapers).
 - ✅ NFO Generation (Emby/Kodi compatible).
-- ✅ File Organization (Renaming and moving based on templates).
+- ✅ File Organization (Renaming and moving based on templates, handles nested folder flattening and matching subtitle synchronization).
 
 ### Scrapers
 
@@ -110,7 +114,6 @@ javs/
 
 - Implement MGStage scraper (`mgstageja` — currently stub).
 - Implement Image/Cover downloading service and processing.
-- Implement Translation service (core ready, blocked on async wrappers for googletrans/deepl).
 - Integrate with Emby APIs for automatic library refreshes.
 - Enhance CLI with interactive prompt modes.
 
