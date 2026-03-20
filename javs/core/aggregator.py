@@ -266,7 +266,6 @@ class DataAggregator:
         overrides = {
             "genres.csv": locations.genre_csv,
             "thumbs.csv": locations.thumb_csv,
-            "tags.csv": locations.tag_csv,
         }
         override = overrides.get(filename, "")
         if override:

@@ -1,5 +1,7 @@
 """Tests for configuration system."""
 
+from pathlib import Path
+
 import yaml
 
 from javs.config import JavsConfig, create_default_config, load_config, save_config
@@ -12,7 +14,7 @@ class TestJavsConfig:
         """Default config should be valid."""
         config = JavsConfig()
         assert config.throttle_limit == 1
-        assert config.sleep == 3
+        assert config.sleep == 2
         assert config.scrapers.enabled["r18dev"] is True
 
     def test_default_config_scrapers(self) -> None:
@@ -75,4 +77,73 @@ class TestJavsConfig:
 
         config = load_config(path)
         assert config.throttle_limit == 10
-        assert config.sleep == 3  # default
+        assert config.sleep == 2  # default
+
+    def test_deprecated_javlibrary_cookie_keys_are_ignored(self, tmp_path: Path):
+        """Deprecated Javlibrary cookie fields should no longer affect the config model."""
+        path = tmp_path / "deprecated.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "javlibrary": {
+                        "cookie_cf_bm": "legacy-bm",
+                        "cookie_session": "legacy-session",
+                        "cookie_userid": "legacy-userid",
+                        "cookie_cf_clearance": "kept",
+                    }
+                }
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.javlibrary.cookie_cf_clearance == "kept"
+        assert not hasattr(config.javlibrary, "cookie_cf_bm")
+        assert not hasattr(config.javlibrary, "cookie_session")
+        assert not hasattr(config.javlibrary, "cookie_userid")
+
+    def test_deprecated_placeholder_sections_are_ignored(self, tmp_path: Path) -> None:
+        """Deprecated placeholder sections should no longer surface on the model."""
+        path = tmp_path / "deprecated-placeholders.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "scrapers": {
+                        "options": {
+                            "id_preference": "contentid",
+                            "add_male_actors": True,
+                            "dmm_scrape_actress": True,
+                        }
+                    },
+                    "sort": {
+                        "format": {
+                            "output_folder": "unused",
+                            "group_actress": False,
+                        },
+                        "metadata": {
+                            "tag_csv": {
+                                "enabled": True,
+                                "auto_add": True,
+                            }
+                        },
+                    },
+                    "locations": {
+                        "uncensor_csv": "/tmp/uncensor.csv",
+                        "history_csv": "/tmp/history.csv",
+                        "tag_csv": "/tmp/tags.csv",
+                    },
+                    "javdb": {"session": "legacy"},
+                }
+            )
+        )
+
+        config = load_config(path)
+
+        assert not hasattr(config.scrapers, "options")
+        assert not hasattr(config.sort.format, "output_folder")
+        assert not hasattr(config.sort.format, "group_actress")
+        assert not hasattr(config.sort.metadata, "tag_csv")
+        assert not hasattr(config.locations, "uncensor_csv")
+        assert not hasattr(config.locations, "history_csv")
+        assert not hasattr(config.locations, "tag_csv")
+        assert not hasattr(config, "javdb")

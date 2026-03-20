@@ -5,6 +5,7 @@ Replaces Javinizer's Set-JVMovie.ps1 (536 lines).
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -223,7 +224,7 @@ class FileOrganizer:
         try:
             original_path = str(file.path) if self.config.sort.metadata.nfo.original_path else None
             nfo_content = self.nfo_gen.generate(data, original_path)
-            paths.nfo_path.write_text(nfo_content, encoding="utf-8")
+            await asyncio.to_thread(paths.nfo_path.write_text, nfo_content, encoding="utf-8")
             logger.debug("nfo_created", path=str(paths.nfo_path))
         except Exception as exc:
             logger.error("nfo_error", id=data.id, error=str(exc))
@@ -304,15 +305,27 @@ class FileOrganizer:
             )
 
     def _move_subtitles(self, file: ScannedFile, paths: SortPaths) -> None:
-        """Find and move subtitle files to the destination folder."""
+        """Find and move subtitle files matching the video to the destination folder.
+
+        Only moves subtitles whose stem starts with the video file's stem,
+        supporting patterns like: ABC-123.srt, ABC-123.chi.srt, ABC-123.eng.ass
+        """
         subtitle_exts = {".ass", ".ssa", ".srt", ".smi", ".vtt"}
+        video_stem = file.path.stem.lower()
+
         try:
             for sub_file in file.directory.iterdir():
-                if sub_file.suffix.lower() in subtitle_exts:
-                    dest = paths.folder_path / f"{paths.file_name}{sub_file.suffix}"
-                    if not dest.exists():
-                        shutil.move(str(sub_file), str(dest))
-                        logger.debug("subtitle_moved", src=str(sub_file), dest=str(dest))
+                if sub_file.suffix.lower() not in subtitle_exts:
+                    continue
+                sub_stem = sub_file.stem.lower()
+                # Match: sub stem starts with video stem
+                # Handles: ABC-123.srt, ABC-123.chi.srt, ABC-123.eng.ass
+                if not sub_stem.startswith(video_stem):
+                    continue
+                dest = paths.folder_path / f"{paths.file_name}{sub_file.suffix}"
+                if not dest.exists():
+                    shutil.move(str(sub_file), str(dest))
+                    logger.debug("subtitle_moved", src=str(sub_file), dest=str(dest))
         except Exception as exc:
             logger.error("subtitle_move_error", error=str(exc))
 

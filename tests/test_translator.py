@@ -1,0 +1,223 @@
+"""Tests for the translation service."""
+
+from __future__ import annotations
+
+import builtins
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+from javs.config.models import TranslateConfig
+from javs.models.movie import MovieData
+from javs.services import translator as translator_module
+
+
+def _movie_data() -> MovieData:
+    return MovieData(
+        id="ABP-420",
+        title="Original title",
+        description="Original description",
+        maker="Studio",
+    )
+
+
+class TestTranslateMovieData:
+    """Test the public translation entrypoint."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_config_returns_original_object(self) -> None:
+        data = _movie_data()
+        config = TranslateConfig(enabled=False)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result is data
+        assert result.title == "Original title"
+        assert result.description == "Original description"
+
+    @pytest.mark.asyncio
+    async def test_skips_missing_and_non_string_fields(self, monkeypatch) -> None:
+        data = MovieData(
+            id="ABP-420",
+            title="Translate me",
+            description=None,
+            runtime=120,
+        )
+        config = TranslateConfig(
+            enabled=True,
+            fields=["title", "description", "runtime", "missing_field"],
+        )
+        calls: list[str] = []
+
+        async def fake_translate_text(text: str, cfg: TranslateConfig) -> str | None:
+            calls.append(text)
+            return f"translated:{text}"
+
+        monkeypatch.setattr(translator_module, "_translate_text", fake_translate_text)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result.title == "translated:Translate me"
+        assert result.description is None
+        assert result.runtime == 120
+        assert calls == ["Translate me"]
+
+    @pytest.mark.asyncio
+    async def test_translates_title_and_preserves_original_description(
+        self, monkeypatch
+    ) -> None:
+        data = _movie_data()
+        config = TranslateConfig(
+            enabled=True,
+            fields=["title", "description"],
+            keep_original_description=True,
+        )
+
+        async def fake_translate_text(text: str, cfg: TranslateConfig) -> str | None:
+            del cfg
+            return f"translated:{text}"
+
+        monkeypatch.setattr(translator_module, "_translate_text", fake_translate_text)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result.title == "translated:Original title"
+        assert result.description == (
+            "translated:Original description\n\n---\nOriginal description"
+        )
+
+
+class TestTranslateText:
+    """Test module selection and fallback behavior."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_module_returns_none(self) -> None:
+        config = TranslateConfig(enabled=True, module="unknown", language="en")
+
+        result = await translator_module._translate_text("hello", config)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_googletrans_success(self, monkeypatch) -> None:
+        class FakeTranslated:
+            text = "translated hello"
+
+        class FakeTranslator:
+            def translate(self, text: str, dest: str) -> FakeTranslated:
+                assert text == "hello"
+                assert dest == "ja"
+                return FakeTranslated()
+
+        fake_module = ModuleType("googletrans")
+        fake_module.Translator = FakeTranslator
+        monkeypatch.setitem(__import__("sys").modules, "googletrans", fake_module)
+
+        async def fake_to_thread(func):
+            return func()
+
+        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
+
+        result = await translator_module._translate_googletrans("hello", "ja")
+
+        assert result == "translated hello"
+
+    @pytest.mark.asyncio
+    async def test_googletrans_importerror_returns_none(self, monkeypatch) -> None:
+        real_import = builtins.__import__
+
+        def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "googletrans":
+                raise ImportError("blocked for test")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", blocked_import)
+
+        result = await translator_module._translate_googletrans("hello", "ja")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_googletrans_exception_returns_none(self, monkeypatch) -> None:
+        class FakeTranslator:
+            def translate(self, text: str, dest: str) -> SimpleNamespace:
+                del text, dest
+                raise RuntimeError("boom")
+
+        fake_module = ModuleType("googletrans")
+        fake_module.Translator = FakeTranslator
+        monkeypatch.setitem(__import__("sys").modules, "googletrans", fake_module)
+
+        async def fake_to_thread(func):
+            return func()
+
+        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
+
+        result = await translator_module._translate_googletrans("hello", "ja")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_deepl_success(self, monkeypatch) -> None:
+        class FakeTranslated:
+            text = "translated hello"
+
+        class FakeTranslator:
+            def __init__(self, api_key: str) -> None:
+                assert api_key == "secret-key"
+
+            def translate_text(self, text: str, target_lang: str) -> FakeTranslated:
+                assert text == "hello"
+                assert target_lang == "JA"
+                return FakeTranslated()
+
+        fake_module = ModuleType("deepl")
+        fake_module.Translator = FakeTranslator
+        monkeypatch.setitem(__import__("sys").modules, "deepl", fake_module)
+
+        async def fake_to_thread(func):
+            return func()
+
+        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
+
+        result = await translator_module._translate_deepl("hello", "ja", "secret-key")
+
+        assert result == "translated hello"
+
+    @pytest.mark.asyncio
+    async def test_deepl_importerror_returns_none(self, monkeypatch) -> None:
+        real_import = builtins.__import__
+
+        def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "deepl":
+                raise ImportError("blocked for test")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", blocked_import)
+
+        result = await translator_module._translate_deepl("hello", "ja", "secret-key")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_deepl_exception_returns_none(self, monkeypatch) -> None:
+        class FakeTranslator:
+            def __init__(self, api_key: str) -> None:
+                del api_key
+
+            def translate_text(self, text: str, target_lang: str) -> SimpleNamespace:
+                del text, target_lang
+                raise RuntimeError("boom")
+
+        fake_module = ModuleType("deepl")
+        fake_module.Translator = FakeTranslator
+        monkeypatch.setitem(__import__("sys").modules, "deepl", fake_module)
+
+        async def fake_to_thread(func):
+            return func()
+
+        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
+
+        result = await translator_module._translate_deepl("hello", "ja", "secret-key")
+
+        assert result is None

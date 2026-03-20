@@ -6,9 +6,12 @@ from pathlib import Path
 
 import yaml
 
+from javs.config.deprecated import find_deprecated_config_paths
 from javs.config.models import JavsConfig
+from javs.utils.logging import get_logger
 
 DEFAULT_CONFIG_FILENAME = "config.yaml"
+logger = get_logger(__name__)
 
 
 def get_default_config_dir() -> Path:
@@ -39,6 +42,10 @@ def load_config(path: Path | None = None) -> JavsConfig:
 
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
+
+    deprecated_paths = find_deprecated_config_paths(raw)
+    for deprecated_path in deprecated_paths:
+        logger.warning("deprecated_config_key_ignored", path=deprecated_path)
 
     return JavsConfig(**raw)
 

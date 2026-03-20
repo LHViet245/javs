@@ -6,6 +6,7 @@ Replaces Javinizer's complex single-function CmdletBinding with clean subcommand
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from pathlib import Path
 
 import typer
@@ -20,6 +21,43 @@ app = typer.Typer(
     add_completion=True,
 )
 console = Console()
+
+
+def _resolve_config_path(config_path: Path | None) -> Path:
+    from javs.config.loader import get_default_config_path
+
+    return config_path or get_default_config_path()
+
+
+def _build_javlibrary_recovery_handler(cfg, config_path: Path):
+    from javs.services.javlibrary_auth import (
+        configure_javlibrary_credentials,
+        is_interactive_terminal,
+    )
+
+    async def recover(_error) -> object | None:
+        if not is_interactive_terminal():
+            return None
+        console.print(
+            "[yellow]Javlibrary đang bị Cloudflare block hoặc cf_clearance đã hết hạn.[/yellow]"
+        )
+        return await configure_javlibrary_credentials(
+            cfg,
+            config_path,
+            prompt_on_missing=True,
+            send_notification=True,
+            save_on_success=True,
+        )
+
+    return recover
+
+
+def _status_context(message: str):
+    from javs.services.javlibrary_auth import is_interactive_terminal
+
+    if is_interactive_terminal():
+        return nullcontext()
+    return console.status(message, spinner="dots")
 
 
 def version_callback(value: bool) -> None:
@@ -56,9 +94,11 @@ def sort(
     from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(cfg)
+    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
+        cfg, _resolve_config_path(config_path)
+    ))
 
-    with console.status("[bold green]Sorting files...", spinner="dots"):
+    with _status_context("[bold green]Sorting files..."):
         results = asyncio.run(engine.sort_path(source, dest, recurse, force, preview))
 
     if results:
@@ -90,12 +130,14 @@ def find(
     from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(cfg)
+    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
+        cfg, _resolve_config_path(config_path)
+    ))
 
     scraper_list = scrapers.split(",") if scrapers else None
 
-    with console.status("[bold cyan]Searching...", spinner="dots"):
-        data = asyncio.run(engine.find(movie_id, scraper_names=scraper_list))
+    with _status_context("[bold cyan]Searching..."):
+        data = asyncio.run(engine.find_one(movie_id, scraper_names=scraper_list))
 
     if not data:
         console.print(f"[red]No results found for {movie_id}[/red]")
@@ -114,14 +156,22 @@ def find(
 
 @app.command()
 def config(
-    action: str = typer.Argument("show", help="Action: show, edit, create, path."),
+    action: str = typer.Argument(
+        "show",
+        help="Action: show, edit, create, path, sync, javlibrary-cookie, javlibrary-test.",
+    ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """⚙️ Manage configuration."""
     from javs.config import create_default_config, load_config
-    from javs.config.loader import get_default_config_path
+    from javs.services.http import CloudflareBlockedError
+    from javs.services.javlibrary_auth import (
+        configure_javlibrary_credentials,
+        print_cloudflare_guidance,
+        validate_javlibrary_credentials,
+    )
 
-    path = config_path or get_default_config_path()
+    path = _resolve_config_path(config_path)
 
     if action == "show":
         cfg = load_config(path)
@@ -146,7 +196,7 @@ def config(
     elif action == "sync":
         from javs.config.updater import sync_user_config
         console.print("[yellow]Syncing configuration setup with default template...[/yellow]")
-        success = sync_user_config()
+        success = sync_user_config(config_path=path)
         if success:
             console.print(
                 f"[green]Successfully synced and upgraded local config file at {path}[/green]"
@@ -154,6 +204,43 @@ def config(
         else:
             console.print("[red]Failed to sync configuration. Check logs for details.[/red]")
             raise typer.Exit(1)
+
+    elif action == "javlibrary-cookie":
+        cfg = load_config(path)
+        credentials = asyncio.run(
+            configure_javlibrary_credentials(
+                cfg,
+                path,
+                prompt_on_missing=False,
+                send_notification=False,
+                save_on_success=True,
+            )
+        )
+        if credentials is None:
+            raise typer.Exit(1)
+
+    elif action == "javlibrary-test":
+        from javs.services.javlibrary_auth import JavlibraryCredentials
+
+        cfg = load_config(path)
+        credentials = JavlibraryCredentials(
+            cf_clearance=cfg.javlibrary.cookie_cf_clearance.strip(),
+            browser_user_agent=cfg.javlibrary.browser_user_agent.strip(),
+        )
+        if not credentials.cf_clearance or not credentials.browser_user_agent:
+            console.print(
+                "[red]Javlibrary credential chưa đầy đủ. "
+                "Cần cf_clearance và browser_user_agent.[/red]"
+            )
+            raise typer.Exit(1)
+        try:
+            asyncio.run(validate_javlibrary_credentials(cfg, credentials))
+        except Exception as exc:
+            console.print(f"[red]Javlibrary credential test thất bại:[/red] {exc}")
+            if isinstance(exc, CloudflareBlockedError) and exc.guidance:
+                print_cloudflare_guidance(exc)
+            raise typer.Exit(1) from exc
+        console.print("[green]Javlibrary credential hợp lệ.[/green]")
 
     else:
         console.print(f"[red]Unknown action: {action}[/red]")

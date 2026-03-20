@@ -1,74 +1,22 @@
-movie:
-  # Metadata fields to extract and prioritize
-  # If a field is present from multiple scrapers, the first one in the list wins.
-  title:
-    - dmm
-    - javlibrary
-    - r18dev
-  actress:
-    - r18dev
-    - dmm
-    - javlibrary
-  alternate_title:
-    - dmm
-    - javlibraryja
-  trailer_url:
-    - r18dev
-    - dmm
-    - javlibrary
-  cover_url:
-    - dmm
-    - r18dev
-    - javlibrary
-  description:
-    - dmm
-    - r18dev
-    - mgstage
-  director:
-    - r18dev
-    - javlibrary
-    - dmm
-    - mgstage
-  genres:
-    - javlibrary
-    - dmm
-    - r18dev
-  label:
-    - r18dev
-    - dmm
-    - javlibrary
-  maker:
-    - r18dev
-    - javlibrary
-    - dmm
-  release_date:
-    - dmm
-    - r18dev
-    - javlibrary
-  runtime_minutes:
-    - dmm
-    - r18dev
-    - javlibrary
-  series:
-    - dmm
-    - javlibrary
-    - r18dev
-  screenshots:
-    - dmm
-    - r18dev
-    - javlibrary
-  rating:
-    - javlibrary
-  cid:
-    - dmm
-  user_rating:
-    - javlibrary
+# ─────────────────────────────────────────────────────────────────
+# JavS Default Configuration
+# Auto-aligned with JavsConfig Pydantic schema
+# ─────────────────────────────────────────────────────────────────
 
-file:
-  scraper_priorities:
-    - dmm
-    - r18dev
-    - javlibrary
+# Processing limits
+throttle_limit: 1   # Max concurrent scraping tasks
+sleep: 2            # Global scrape cooldown; giữ 2s vì benchmark thật cho thấy vẫn hợp lý hơn việc hạ tiếp
+
+# ─── File Locations ──────────────────────────────────────────────
+locations:
+  input: ""         # Default source directory (overridden by CLI)
+  output: ""        # Default destination directory (overridden by CLI)
+  thumb_csv: ""     # Custom path to actress thumbnail CSV
+  genre_csv: ""     # Custom path to genre replacement CSV
+  log: ""           # Custom log file path
+
+# ─── File Matching ───────────────────────────────────────────────
+match:
   minimum_file_size_mb: 0
   included_extensions:
     - .asf
@@ -80,88 +28,184 @@ file:
     - .mov
     - .rmvb
     - .wmv
-  excluded_patterns: []
-  uncensored_patterns:
-    - uncen
-    - uncensored
-    - 1pon
-    - 1pondo
-    - 10musume
-    - 10mu
-    - heyzo
-    - pacopacomama
-    - pacopaco
-    - paco
-    - muramura
-    - caribbean
-    - carib
-    - tokyohot
-    - tkht
+  excluded_patterns:
+    - "^.*-trailer*"
+    - "^.*-5\\."
+  regex_enabled: false
+  regex:
+    pattern: "([a-zA-Z|tT28]+-\\d+[zZ]?[eE]?)(?:-pt)?(\\d{1,2})?"
+    id_match_group: 1
+    part_match_group: 2
 
+# ─── Scrapers ────────────────────────────────────────────────────
+scrapers:
+  # Enable/disable individual scrapers
+  enabled:
+    r18dev: true
+    dmm: true
+    javlibrary: false
+    javlibraryja: false
+    javlibraryzh: false
+    mgstageja: false
+
+  # Per-scraper proxy routing (only effective when proxy.enabled is true)
+  # DMM and MGStage default to true (Japan region block bypass)
+  use_proxy:
+    r18dev: false
+    dmm: true
+    javlibrary: false
+    javlibraryja: false
+    javlibraryzh: false
+    mgstageja: true
+
+# ─── Sort / Organization ────────────────────────────────────────
 sort:
-  # Base sorting configurations
+  move_to_folder: true
   rename_file: true
   move_subtitles: true
-  rename_file_format: "<id> - <title>"
-  rename_folder: true
-  rename_folder_format: "<id>"
-  move_to: "" # Empty means don't move
-  create_nfo: true
-  download_cover: true
-  download_screenshots: false
-  max_path_length: 250
-  
-  # Cover/Poster processing rules
-  cover:
-    crop: true
-    convert_to_jpg: true
-    resize: false
-    resize_width: 800
-    resize_height: 1200
-    quality: 100
 
-emby:
-  enabled: false
-  url: "http://localhost:8096"
-  api_key: ""
-  update_library: true
-  refresh_metadata: true
+  # Naming format templates
+  # Available tokens: {id}, {title}, {maker}, {studio}, {label},
+  #                   {series}, {year}, {director}, {actresses}
+  format:
+    file: "{id}"
+    folder: "{id} [{studio}] - {title} ({year})"
+    poster_img:
+      - folder
+    thumb_img: fanart
+    trailer_vid: "{id}-trailer"
+    nfo: "{id}"
+    screenshot_img: fanart
+    screenshot_padding: 1
+    screenshot_folder: extrafanart
+    actress_img_folder: ".actors"
+    delimiter: ", "
+    max_title_length: 100
 
-translation:
-  enabled: false
-  engine: "google" # google or deepl
-  target_language: "en"
-  deepl_api_key: ""
-  fields_to_translate:
-    - description
-    - genres
-    - title
+  # Media download toggles
+  download:
+    actress_img: false
+    thumb_img: true
+    poster_img: true
+    screenshot_img: false
+    trailer_vid: false
+    timeout_seconds: 100
 
-scraper_settings:
-  javlibrary:
-    # Optional settings specific to individual scrapers
-    bluray_priority: true
+  # Metadata settings
+  metadata:
+    nfo:
+      create: true
+      per_file: true
+      add_aliases: false
+      add_generic_role: true
+      alt_name_role: false
+      display_name: "[{id}] {title}"
+      first_name_order: false
+      actress_language_ja: false
+      unknown_actress: true
+      original_path: false
+      actress_as_tag: false
+      prefer_actress_alias: false
+      media_info: false
+      format_tag:
+        - "{set}"
+      format_tagline: ""
+      format_credits: []
+      translate:
+        enabled: false
+        module: googletrans    # "googletrans" or "deepl"
+        fields:
+          - description
+        language: en
+        deepl_api_key: ""
+        keep_original_description: false
 
-# Per-scraper proxy routing (only effective when proxy.enabled is true)
-# DMM and MGStage default to true (Japan region block bypass)
-scraper_proxy:
-  dmm: true
-  mgstageja: true
-  javlibrary: false
-  r18dev: false
+    # Metadata field priority across scrapers (first match wins)
+    priority:
+      actress:
+        - r18dev
+        - dmm
+        - javlibrary
+      alternate_title:
+        - javlibraryja
+        - dmm
+      cover_url:
+        - r18dev
+        - javlibrary
+        - dmm
+      description:
+        - dmm
+        - r18dev
+        - mgstageja
+      director:
+        - r18dev
+        - javlibrary
+        - mgstageja
+      genre:
+        - r18dev
+        - javlibrary
+      id:
+        - r18dev
+        - javlibrary
+      content_id:
+        - r18dev
+        - dmm
+      label:
+        - r18dev
+        - javlibrary
+        - mgstageja
+      maker:
+        - r18dev
+        - javlibrary
+      release_date:
+        - r18dev
+        - javlibrary
+        - dmm
+      rating:
+        - dmm
+        - javlibrary
+        - mgstageja
+      runtime:
+        - r18dev
+        - javlibrary
+        - dmm
+      series:
+        - r18dev
+        - mgstageja
+      screenshot_url:
+        - r18dev
+        - javlibrary
+        - dmm
+      title:
+        - r18dev
+        - javlibrary
+      trailer_url:
+        - r18dev
+        - dmm
 
-log:
-  enabled: true
-  level: info
+    # CSV-based metadata overrides
+    thumb_csv:
+      enabled: true
+      auto_add: true
+      convert_alias: true
+    genre_csv:
+      enabled: false
+      auto_add: false
+      ignored_patterns:
+        - "^Featured Actress"
+        - "^Hi-Def"
+        - ".*sale.*"
+        - ".*mosaic.*"
+    # Required fields — movie is skipped if these are missing
+    required_fields:
+      - id
+      - cover_url
+      - genres
+      - maker
+      - release_date
+      - title
 
-cloudflare:
-  # Method: "cloudscraper" (automatic) or "manual" (user-provided cookies)
-  method: cloudscraper
-  # Manual mode only: paste cf_clearance cookie + User-Agent from browser DevTools
-  cf_clearance: ""
-  user_agent: ""
-
-# Proxy configuration
+# ─── Proxy Configuration ────────────────────────────────────────
 # Supports: HTTP, HTTPS, SOCKS5, SOCKS5h
 proxy:
   enabled: false
@@ -170,9 +214,23 @@ proxy:
   # Auth:    http://myuser:mypass@1.2.3.4:8080
   # SOCKS5:  socks5://127.0.0.1:10808
   # SOCKS5h: socks5h://1.2.3.4:1080 (proxy resolves DNS)
-  url: "socks5://127.0.0.1:1080"
+  url: ""
   timeout_seconds: 15
   max_retries: 3
 
-throttle_limit: 1
-sleep: 3
+# ─── Emby / Jellyfin ────────────────────────────────────────────
+emby:
+  url: "http://192.168.0.1:8096"
+  api_key: ""
+
+# ─── Javlibrary-specific ────────────────────────────────────────
+# Cloudflare bypass: paste only the values that JavS actually consumes.
+javlibrary:
+  base_url: "https://www.javlibrary.com"
+  browser_user_agent: ""
+  cookie_cf_clearance: ""
+
+# ─── Logging ─────────────────────────────────────────────────────
+log:
+  enabled: true
+  level: info    # debug, info, warning, error

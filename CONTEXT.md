@@ -6,7 +6,7 @@ JavS (JAV Scraper) is a modern, async Python CLI application designed to automat
 
 - **Objective/Goal:** A Python-based CLI replacement for Javinizer.
 - **Language/Core:** Python 3.11+
-- **Key Characteristics:** Fully asynchronous (`asyncio`), strictly typed (`mypy`), highly modular (easy to add new scrapers), comprehensive test coverage (`pytest`).
+- **Key Characteristics:** Fully asynchronous (`asyncio`), typed with `pydantic` models and annotations, highly modular (easy to add new scrapers), and covered by a fast local `pytest` suite.
 
 ## 2. Core Technologies & Libraries
 
@@ -16,7 +16,7 @@ JavS (JAV Scraper) is a modern, async Python CLI application designed to automat
 - **HTML Parsing:** `beautifulsoup4` (with `lxml` parser).
 - **Logging:** `structlog` (for structured, JSON-friendly, extensible logging).
 - **Testing:** `pytest` (with `pytest-asyncio` for async tests).
-- **Code Quality:** `ruff` (linting/formatting), `mypy` (strict type checking).
+- **Code Quality:** `ruff` (linting/formatting).
 
 ## 3. Project Structure
 
@@ -71,7 +71,8 @@ javs/
 - ✅ Multipart Detection: Intelligently handles part numbers (e.g. `cd1`, `pt2`, `A/B` attached to ID) while ignoring common subtitle suffixes (e.g., `-C`).
 - ✅ Basic CLI setup using `typer` and `rich`.
 - ✅ Configuration system using `pydantic` models and YAML storage.
-- ✅ Configuration Upgrader (`javs config sync`): Synthesizes application default YAML into user config while preserving custom modifications and 100% comments (`ruamel.yaml`).
+- ✅ Configuration Sync (`javs config sync`): Merges the packaged default YAML into user config while preserving supported overrides and YAML comments (`ruamel.yaml`).
+- ✅ Javlibrary credential helpers (`javs config javlibrary-cookie` / `javs config javlibrary-test`) for manual `cf_clearance` management and persisted `browser_user_agent` reuse.
 - ✅ Data Aggregation (merging missing fields from lower priority scrapers).
 - ✅ NFO Generation (Emby/Kodi compatible).
 - ✅ File Organization (Renaming and moving based on templates, handles nested folder flattening and matching subtitle synchronization).
@@ -81,7 +82,7 @@ javs/
 - ✅ Scraper Registry (Plugin-like architecture, robust config-based routing).
 - ✅ `DMM` scraper (Unified Japanese scraper returning full metadata & clean HTML entities).
 - ✅ `DMM` scraper handles new SPA URLs (`video.dmm.co.jp`) via transparent API redirection and supports new `gaEventVideoStart` trailer formats.
-- ✅ `JavLibrary` scraper (Includes Cloudflare bypass via `curl_cffi`).
+- ✅ `JavLibrary` scraper (Supports manual `cf_clearance`, reuses saved `browser_user_agent`, and has an interactive retry flow when Cloudflare blocks access).
 - ✅ `R18.dev` scraper (JSON API parsing).
 
 ### Networking & Security (Proxy Integration)
@@ -89,20 +90,20 @@ javs/
 - ✅ Global Proxy Configuration (`http://`, `https://`, `socks5://`, `socks5h://`).
 - ✅ SOCKS5 Support via `aiohttp-socks`.
 - ✅ Connection pooling (`TCPConnector(limit=100)`).
-- ✅ Per-Request Proxy Routing (`use_proxy` flags per scraper).
+- ✅ Per-scraper proxy routing (`use_proxy` flags per scraper), backed by separate direct/proxy sessions in `HttpClient`.
 - ✅ Default proxy routing for region-blocked scrapers (DMM, MGStage).
 - ✅ Proxy Authentication handling (HTTP 407 interception, `InvalidProxyAuthError`).
 - ✅ Credential Masking (Custom `structlog` processor masks proxy passwords in all logs).
 
 ### Testing
 
-- ✅ 129 passing tests covering core logic, config, regex, NFO, proxy routing, and scraper config serialization.
-- ✅ 100% pass rate with zero regression on recent proxy rewrite and scraper mergers.
+- ✅ The local pytest suite is green and covers core logic, config, regex, NFO, proxy routing, and scraper parsing with mocked/local fixtures.
+- ✅ Recent fixes include `verify_ssl` semantics, config sync custom-path handling, MGStage scraping, and several regression tests around engine/runtime wiring.
 
 ## 5. Coding Guidelines & Rules
 
 1. **Always update `pyproject.toml`** when adding new dependencies.
-2. **Strict Typing:** All functions must have type hints. Use `mypy` locally to verify.
+2. **Strict Typing:** All functions must have type hints and keep contracts explicit in the code.
 3. **Async First:** Use `async/await` for all I/O bound operations (HTTP, File System).
 4. **Structured Logging:** Use `structlog` (`logger = get_logger(__name__)`). Do NOT use standard `logging` or `print` in core logic.
 5. **Security:** Never log sensitive configurations (e.g., proxy passwords, API keys). Use the `MaskProxyCredentialProcessor`.
@@ -112,13 +113,23 @@ javs/
 
 ## 6. Next Steps / Pending Features
 
-- Implement MGStage scraper (`mgstageja` — currently stub).
 - Implement Image/Cover downloading service and processing.
 - Integrate with Emby APIs for automatic library refreshes.
 - Enhance CLI with interactive prompt modes.
 
 ## 7. Security Notes
 
-- `HttpClient` uses `ssl=False` for all requests to bypass SSL verification issues on some
-  target scraping sites (DMM, R18). This is a deliberate trade-off documented here.
-  Production deployments should consider narrowing this to specific scrapers only.
+- `HttpClient.verify_ssl` now maps directly to aiohttp's `ssl` behavior:
+  - `verify_ssl=True` keeps certificate verification enabled
+  - `verify_ssl=False` disables verification for that client explicitly
+- `JavsEngine` currently instantiates `HttpClient(verify_ssl=False)` as a scraping trade-off.
+  If more clients are added later, keep that decision explicit at each callsite.
+
+## 8. Current State (Session Snapshot - GraviVide Branch)
+
+**Current session snapshot:**
+1. `find()` vs `find_one()` session lifecycle has been separated in `JavsEngine`.
+2. `HttpClient` now uses separate direct/proxy sessions and `verify_ssl` semantics are aligned with aiohttp.
+3. Config sync supports custom paths and the default template has been re-aligned with the runtime schema.
+4. `mgstageja` has fixture-backed parser tests and Javlibrary direct-match handling is being tightened further.
+5. Remaining priorities are regression coverage, docs/runtime alignment, and trimming stale config surface.
