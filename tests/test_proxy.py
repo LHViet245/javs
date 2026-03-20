@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -274,3 +277,332 @@ class TestHttpClient407Handling:
         mock_resp.status = 403
         # Should not raise (403 is a target-level error, not proxy auth)
         client._check_proxy_status(mock_resp)
+
+
+class _DummySession:
+    def __init__(self, connector) -> None:
+        self.connector = connector
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class TestHttpClientSessionRouting:
+    """Test direct/proxy session selection."""
+
+    @pytest.mark.asyncio
+    async def test_socks_proxy_uses_separate_direct_and_proxy_sessions(self, monkeypatch):
+        """SOCKS proxy routing should keep direct requests off the proxy session."""
+        client = HttpClient(proxy_url="socks5://127.0.0.1:10808")
+        created_sessions: list[_DummySession] = []
+
+        monkeypatch.setattr(client, "_create_connector", lambda: "proxy-connector")
+        monkeypatch.setattr(
+            "javs.services.http.aiohttp.TCPConnector",
+            lambda **kwargs: "direct-connector",
+        )
+
+        def fake_client_session(*, connector, timeout, headers):
+            session = _DummySession(connector)
+            created_sessions.append(session)
+            return session
+
+        monkeypatch.setattr("javs.services.http.aiohttp.ClientSession", fake_client_session)
+
+        direct = await client._get_session(use_proxy=False)
+        proxy = await client._get_session(use_proxy=True)
+
+        assert direct.connector == "direct-connector"
+        assert proxy.connector == "proxy-connector"
+        assert direct is not proxy
+        assert len(created_sessions) == 2
+
+    @pytest.mark.asyncio
+    async def test_http_proxy_uses_proxy_session_only_when_requested(self, monkeypatch):
+        """HTTP proxy routing should keep a dedicated proxy session separate from direct traffic."""
+        client = HttpClient(proxy_url="http://1.2.3.4:8080")
+        created_sessions: list[_DummySession] = []
+
+        monkeypatch.setattr(client, "_create_connector", lambda: "proxy-http-connector")
+        monkeypatch.setattr(
+            "javs.services.http.aiohttp.TCPConnector",
+            lambda **kwargs: "direct-http-connector",
+        )
+
+        def fake_client_session(*, connector, timeout, headers):
+            session = _DummySession(connector)
+            created_sessions.append(session)
+            return session
+
+        monkeypatch.setattr("javs.services.http.aiohttp.ClientSession", fake_client_session)
+
+        direct = await client._get_session(use_proxy=False)
+        proxy = await client._get_session(use_proxy=True)
+
+        assert direct.connector == "direct-http-connector"
+        assert proxy.connector == "proxy-http-connector"
+        assert direct is not proxy
+        assert len(created_sessions) == 2
+
+
+class _FakeContent:
+    def __init__(self, chunks: Sequence[bytes]) -> None:
+        self._chunks = chunks
+
+    async def iter_chunked(self, _: int):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FailingContent:
+    def __init__(self, chunks: Sequence[bytes], error: Exception) -> None:
+        self._chunks = chunks
+        self._error = error
+
+    async def iter_chunked(self, _: int):
+        for chunk in self._chunks:
+            yield chunk
+        raise self._error
+
+
+class _YieldingContent:
+    def __init__(self, chunks: Sequence[bytes]) -> None:
+        self._chunks = chunks
+
+    async def iter_chunked(self, _: int):
+        for chunk in self._chunks:
+            await asyncio.sleep(0)
+            yield chunk
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        *,
+        text_value: str = "ok",
+        json_value: dict | None = None,
+        chunks: Sequence[bytes] = (),
+        content: _FakeContent | _FailingContent | _YieldingContent | None = None,
+    ) -> None:
+        self.status = 200
+        self._text_value = text_value
+        self._json_value = json_value or {"ok": True}
+        self.content = content or _FakeContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def text(self) -> str:
+        return self._text_value
+
+    async def json(self, content_type=None) -> dict:
+        return self._json_value
+
+
+class _FakeSession:
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+        self.calls: list[dict[str, object]] = []
+
+    def get(self, *args, **kwargs) -> _FakeResponse:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self._response
+
+
+class _RaisingSession:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.calls: list[dict[str, object]] = []
+
+    def get(self, *args, **kwargs) -> _FakeResponse:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        raise self._error
+
+
+class TestHttpClientSslSemantics:
+    """Test verify_ssl maps directly to aiohttp's ssl kwarg."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verify_ssl", [True, False])
+    async def test_get_uses_verify_ssl_value(self, monkeypatch, verify_ssl: bool):
+        client = HttpClient(verify_ssl=verify_ssl)
+        session = _FakeSession(_FakeResponse(text_value="body"))
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+
+        body = await client.get("https://example.com")
+
+        assert body == "body"
+        assert session.calls[0]["kwargs"]["ssl"] is verify_ssl
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verify_ssl", [True, False])
+    async def test_get_json_uses_verify_ssl_value(self, monkeypatch, verify_ssl: bool):
+        client = HttpClient(verify_ssl=verify_ssl)
+        session = _FakeSession(_FakeResponse(json_value={"movie": "ABP-420"}))
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+
+        payload = await client.get_json("https://example.com/api")
+
+        assert payload == {"movie": "ABP-420"}
+        assert session.calls[0]["kwargs"]["ssl"] is verify_ssl
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verify_ssl", [True, False])
+    async def test_download_uses_verify_ssl_value(self, monkeypatch, tmp_path, verify_ssl: bool):
+        client = HttpClient(verify_ssl=verify_ssl)
+        session = _FakeSession(_FakeResponse(chunks=[b"poster-bytes"]))
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+        dest = Path(tmp_path / "cover.jpg")
+
+        ok = await client.download("https://example.com/cover.jpg", dest)
+
+        assert ok is True
+        assert dest.read_bytes() == b"poster-bytes"
+        assert session.calls[0]["kwargs"]["ssl"] is verify_ssl
+
+    @pytest.mark.asyncio
+    async def test_download_creates_nested_parent_and_writes_all_chunks(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        client = HttpClient()
+        session = _FakeSession(_FakeResponse(chunks=[b"poster-", b"bytes"]))
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+        dest = tmp_path / "nested" / "images" / "cover.jpg"
+
+        ok = await client.download("https://example.com/cover.jpg", dest)
+
+        assert ok is True
+        assert dest.read_bytes() == b"poster-bytes"
+        assert not dest.with_name("cover.jpg.part").exists()
+
+    @pytest.mark.asyncio
+    async def test_download_returns_false_when_request_setup_fails(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        client = HttpClient()
+        session = _RaisingSession(RuntimeError("boom"))
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+        dest = tmp_path / "cover.jpg"
+
+        ok = await client.download("https://example.com/cover.jpg", dest)
+
+        assert ok is False
+        assert not dest.exists()
+        assert not dest.with_name("cover.jpg.part").exists()
+
+    @pytest.mark.asyncio
+    async def test_download_cleans_partial_file_when_stream_fails(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        client = HttpClient()
+        response = _FakeResponse(
+            content=_FailingContent([b"partial-bytes"], RuntimeError("stream failed"))
+        )
+        session = _FakeSession(response)
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+        dest = tmp_path / "posters" / "cover.jpg"
+
+        ok = await client.download("https://example.com/cover.jpg", dest)
+
+        assert ok is False
+        assert not dest.exists()
+        assert not dest.with_name("cover.jpg.part").exists()
+
+    @pytest.mark.asyncio
+    async def test_download_and_close_complete_without_background_task_hang(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        client = HttpClient()
+        response = _FakeResponse(content=_YieldingContent([b"a", b"b", b"c"]))
+        session = _FakeSession(response)
+
+        async def fake_get_session(use_proxy: bool = False):
+            return session
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+        dest = tmp_path / "cover.jpg"
+
+        ok = await asyncio.wait_for(
+            client.download("https://example.com/cover.jpg", dest),
+            timeout=1,
+        )
+
+        assert ok is True
+        assert dest.read_bytes() == b"abc"
+        await asyncio.wait_for(client.close(), timeout=1)
+
+
+class TestCloudflareManualConfig:
+    """Test Cloudflare manual-cookie wiring."""
+
+    @pytest.mark.asyncio
+    async def test_get_cf_prefers_manual_cookie_and_user_agent(self, monkeypatch):
+        """Configured cf_clearance should route through HttpClient.get() with merged headers."""
+        client = HttpClient(cf_clearance="cf-cookie", cf_user_agent="My Browser UA")
+        captured: dict[str, object] = {}
+
+        async def fake_get(
+            url: str,
+            headers: dict[str, str] | None = None,
+            cookies: dict[str, str] | None = None,
+            params: dict[str, str] | None = None,
+            allow_redirects: bool = True,
+            use_proxy: bool = False,
+        ) -> str:
+            captured["url"] = url
+            captured["headers"] = headers or {}
+            captured["cookies"] = cookies or {}
+            captured["params"] = params or {}
+            captured["allow_redirects"] = allow_redirects
+            captured["use_proxy"] = use_proxy
+            return "manual-body"
+
+        monkeypatch.setattr(client, "get", fake_get)
+
+        body = await client.get_cf(
+            "https://www.javlibrary.com/en/?v=javme12345",
+            headers={"Referer": "https://www.javlibrary.com"},
+            cookies={"session": "existing-cookie"},
+            params={"foo": "bar"},
+            use_proxy=True,
+        )
+
+        assert body == "manual-body"
+        assert captured["url"] == "https://www.javlibrary.com/en/?v=javme12345"
+        assert captured["headers"]["User-Agent"] == "My Browser UA"
+        assert captured["headers"]["Referer"] == "https://www.javlibrary.com"
+        assert captured["cookies"]["cf_clearance"] == "cf-cookie"
+        assert captured["cookies"]["session"] == "existing-cookie"
+        assert captured["params"] == {"foo": "bar"}
+        assert captured["use_proxy"] is True

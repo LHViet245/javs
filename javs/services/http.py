@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import aiofiles
 import aiohttp
 from tenacity import (
     retry,
@@ -43,6 +44,10 @@ DMM_COOKIES = {
 
 class CloudflareBlockedError(Exception):
     """Raised when Cloudflare blocks all bypass attempts."""
+
+    def __init__(self, message: str, *, guidance: str | None = None) -> None:
+        super().__init__(message)
+        self.guidance = guidance or ""
 
 
 class InvalidProxyAuthError(Exception):
@@ -85,6 +90,7 @@ class HttpClient:
         cf_clearance: str | None = None,
         cf_user_agent: str | None = None,
         max_retries: int = 3,
+        verify_ssl: bool = True,
     ):
         self._proxy_url = proxy_url
         self._proxy_masked: str | None = None
@@ -104,13 +110,20 @@ class HttpClient:
 
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._semaphore = asyncio.Semaphore(max_concurrent)
-        self._session: aiohttp.ClientSession | None = None
+        self._session_direct: aiohttp.ClientSession | None = None
+        self._session_proxy: aiohttp.ClientSession | None = None
         self._max_retries = max_retries
+        self._verify_ssl = verify_ssl
         self.cf_clearance = cf_clearance or ""
         self.cf_user_agent = cf_user_agent or ""
 
         if proxy_url:
             logger.info("proxy_configured", proxy=self._proxy_masked, socks=self._is_socks)
+
+    def update_cf_credentials(self, *, cf_clearance: str, cf_user_agent: str) -> None:
+        """Update Cloudflare credentials for subsequent requests."""
+        self.cf_clearance = cf_clearance
+        self.cf_user_agent = cf_user_agent
 
     def _create_connector(self) -> aiohttp.BaseConnector:
         """Create the appropriate connector based on proxy type.
@@ -131,16 +144,34 @@ class HttpClient:
             enable_cleanup_closed=True,
         )
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Lazily create and return the aiohttp session with connection pooling."""
-        if self._session is None or self._session.closed:
-            connector = self._create_connector()
-            self._session = aiohttp.ClientSession(
+    async def _get_session(self, use_proxy: bool = False) -> aiohttp.ClientSession:
+        """Lazily create and return the appropriate aiohttp session.
+
+        Uses dual sessions to ensure SOCKS proxy routing is per-scraper:
+        - use_proxy=True  → session with ProxyConnector (SOCKS) or per-request proxy (HTTP)
+        - use_proxy=False → plain TCPConnector, never routes through proxy
+        """
+        if use_proxy and self._proxy_url:
+            if self._session_proxy is None or self._session_proxy.closed:
+                connector = self._create_connector()
+                self._session_proxy = aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=self.timeout,
+                    headers=DEFAULT_HEADERS,
+                )
+            return self._session_proxy
+
+        if self._session_direct is None or self._session_direct.closed:
+            connector = aiohttp.TCPConnector(
+                limit=100,
+                enable_cleanup_closed=True,
+            )
+            self._session_direct = aiohttp.ClientSession(
                 connector=connector,
                 timeout=self.timeout,
                 headers=DEFAULT_HEADERS,
             )
-        return self._session
+        return self._session_direct
 
     def _get_proxy_kwargs(self, use_proxy: bool) -> dict[str, Any]:
         """Build proxy kwargs for aiohttp session.get().
@@ -205,7 +236,7 @@ class HttpClient:
             Response body as string.
         """
         async with self._semaphore:
-            session = await self._get_session()
+            session = await self._get_session(use_proxy=use_proxy)
             merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
             proxy_kwargs = self._get_proxy_kwargs(use_proxy)
 
@@ -221,7 +252,7 @@ class HttpClient:
                     cookies=cookies,
                     params=params,
                     allow_redirects=allow_redirects,
-                    ssl=False,
+                    ssl=self._verify_ssl,
                     **proxy_kwargs,
                 ) as resp:
                     self._check_proxy_status(resp)
@@ -318,18 +349,23 @@ class HttpClient:
                     resp.raise_for_status()
                     return resp.text
         except Exception as exc:
-            raise CloudflareBlockedError(
-                f"Cloudflare blocked access to {url}. "
-                f"All bypass methods failed.\n\n"
+            guidance = (
                 f"To fix this:\n"
-                f"  1. Open {url} in your browser\n"
-                f"  2. Solve the Cloudflare challenge\n"
-                f"  3. Open DevTools (F12) → Application → Cookies\n"
-                f"  4. Copy the 'cf_clearance' cookie value\n"
-                f"  5. Copy your User-Agent from DevTools → Network tab\n"
-                f"  6. Paste both into your config.yaml under 'cloudflare:'\n"
+                f"1. Open {url} in your browser\n"
+                f"2. Solve the Cloudflare challenge\n"
+                f"3. Open DevTools (F12) -> Application -> Cookies\n"
+                f"4. Copy the 'cf_clearance' cookie value\n"
+                f"5. Copy your User-Agent from DevTools -> Network tab\n"
+                f"6. Paste into config.yaml:\n"
+                f"   javlibrary:\n"
+                f"     cookie_cf_clearance: '<your_value>'\n"
+                f"     browser_user_agent: '<your_ua>'\n"
                 f"\n"
                 f"Original error: {self._sanitize_error(exc)}"
+            )
+            raise CloudflareBlockedError(
+                f"Cloudflare blocked access to {url}. All bypass methods failed.",
+                guidance=guidance,
             ) from exc
 
     @retry(
@@ -348,7 +384,7 @@ class HttpClient:
     ) -> Any:
         """HTTP GET and parse response as JSON with optional proxy."""
         async with self._semaphore:
-            session = await self._get_session()
+            session = await self._get_session(use_proxy=use_proxy)
             merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
             proxy_kwargs = self._get_proxy_kwargs(use_proxy)
 
@@ -363,7 +399,7 @@ class HttpClient:
                     headers=merged_headers,
                     cookies=cookies,
                     params=params,
-                    ssl=False,
+                    ssl=self._verify_ssl,
                     **proxy_kwargs,
                 ) as resp:
                     self._check_proxy_status(resp)
@@ -397,9 +433,10 @@ class HttpClient:
         Returns:
             True if download succeeded.
         """
+        temp_dest = dest.with_name(f"{dest.name}.part")
         try:
             async with self._semaphore:
-                session = await self._get_session()
+                session = await self._get_session(use_proxy=use_proxy)
                 req_timeout = aiohttp.ClientTimeout(total=timeout) if timeout else self.timeout
                 proxy_kwargs = self._get_proxy_kwargs(use_proxy)
 
@@ -408,25 +445,30 @@ class HttpClient:
                     url,
                     cookies=cookies,
                     timeout=req_timeout,
-                    ssl=False,
+                    ssl=self._verify_ssl,
                     **proxy_kwargs,
                 ) as resp:
                     self._check_proxy_status(resp)
                     resp.raise_for_status()
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    with open(dest, "wb") as f:
+                    async with aiofiles.open(temp_dest, "wb") as f:
                         async for chunk in resp.content.iter_chunked(8192):
-                            f.write(chunk)
+                            await f.write(chunk)
+                    temp_dest.replace(dest)
             return True
         except Exception as exc:
+            if temp_dest.exists():
+                temp_dest.unlink()
             logger.error("http_download_failed", url=url, error=self._sanitize_error(exc))
             return False
 
     async def close(self) -> None:
-        """Close the HTTP session and release connections."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        """Close all HTTP sessions and release connections."""
+        for session in [self._session_direct, self._session_proxy]:
+            if session and not session.closed:
+                await session.close()
+        self._session_direct = None
+        self._session_proxy = None
 
     async def __aenter__(self) -> HttpClient:
         return self

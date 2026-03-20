@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from javs.config.deprecated import prune_deprecated_config_paths
 from javs.config.loader import get_default_config_path
 from javs.utils.logging import get_logger
 
@@ -19,10 +20,13 @@ def deep_update_dict(base: dict, update: dict) -> None:
             base[key] = val
 
 
-def sync_user_config() -> bool:
+def sync_user_config(config_path: Path | None = None) -> bool:
     """Synchronize user's local config with the latest default config template.
 
     Uses ruamel.yaml to preserve comments and layout.
+
+    Args:
+        config_path: Path to user's config file. Uses default path if None.
 
     Returns:
         True if synchronization was successful or no changes were required.
@@ -37,7 +41,7 @@ def sync_user_config() -> bool:
         )
         return False
 
-    user_config_path = get_default_config_path()
+    user_config_path = config_path or get_default_config_path()
 
     # Path to the default template packaged with the app
     default_template_path = Path(__file__).parent.parent / "data" / "default_config.yaml"
@@ -68,6 +72,11 @@ def sync_user_config() -> bool:
         # Parse user config
         with open(user_config_path, encoding="utf-8") as f:
             user_config = yaml.load(f)
+
+        if user_config:
+            removed = prune_deprecated_config_paths(user_config)
+            for deprecated_path in removed:
+                logger.warning("deprecated_config_key_removed", path=deprecated_path)
 
         # Merge user config into base config
         if user_config:

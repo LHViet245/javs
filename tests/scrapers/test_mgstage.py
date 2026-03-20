@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from javs.config.models import JavsConfig
 from javs.scrapers.mgstage import MgstageJaScraper
 from javs.services.http import HttpClient
 

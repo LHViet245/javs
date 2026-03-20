@@ -17,7 +17,8 @@
 - 🎯 **Smart Aggregation:** Fetches from multiple sites (DMM, R18Dev, JavLibrary, etc.) and seamlessly merges the best metadata based on your custom priority rules.
 - 🌐 **Translation Service:** Built-in async wrappers for `googletrans` and `deepl` to translate metadata automatically.
 - 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
-- ⚙️ **Config Upgrader:** Safely merge app updates into your local config without losing custom keys or YAML comments using `ruamel.yaml` (`javs config sync`).
+- ⚙️ **Config Sync:** Merge the latest default template into your local config while preserving supported overrides and YAML comments using `ruamel.yaml` (`./venv/bin/javs config sync`).
+- 🧩 **Javlibrary Recovery:** When Javlibrary hits Cloudflare, you can refresh `cf_clearance` from the CLI (`./venv/bin/javs config javlibrary-cookie`) instead of editing YAML by hand; `browser_user_agent` is reused from config once saved.
 - 🛡️ **Type Safety:** Built on `pydantic` ensuring strict data validation for all metadata and configurations.
 
 ## ⚠️ Quy tắc bắt buộc: Virtual Environment
@@ -75,9 +76,9 @@ For detailed guides, please see the [**Usage Guide**](docs/USAGE.md).
 - **Core Framework:** Python 3.11+, `asyncio`, `aiohttp`
 - **CLI Interface:** `Typer` / `Rich` for beautiful terminal output
 - **Data Models:** `Pydantic` validation
-- **Testing:** `pytest` + `pytest-asyncio` + 100% mocked coverage for API resiliency
+- **Testing:** `pytest` + `pytest-asyncio` with local fixtures and mocked HTTP responses
 - **Logging:** Structured JSON logs via `structlog`
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please ensure all tests pass (`pytest tests/`) and code is formatted with `ruff` before submitting a PR.
+Contributions are welcome! Please ensure all tests pass (`./venv/bin/python -m pytest tests -q`) and lint is clean (`./venv/bin/python -m ruff check javs tests`) before submitting a PR.

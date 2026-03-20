@@ -35,27 +35,37 @@ javs [command]
 Configuration is automatically generated on your first run. You can configure:
 
 - **Priorities:** Define which scrapers to trust most if data contradicts.
-- **Scrapers:** Enable/disable scrapers and set their languages (e.g., `javlibrary` vs `javlibrary_ja`).
+- **Scrapers:** Enable/disable scrapers and set their languages (e.g., `javlibrary` vs `javlibraryja`).
 - **Renaming:** Configure how files are sorted and renamed.
 - **NFOs:** Format settings for Emby/Jellyfin/Kodi NFOs.
 
 To view the current configuration:
 
 ```bash
-javs config show
+./venv/bin/javs config show
 ```
 
 To edit the configuration (opens your default text editor):
 
 ```bash
-javs config edit
+./venv/bin/javs config edit
 ```
 
 To automatically update and merge your local configuration with the latest defaults (while preserving your customizations and comments):
 
 ```bash
-javs config sync
+./venv/bin/javs config sync
 ```
+
+To enter Javlibrary Cloudflare credentials without editing YAML manually:
+
+```bash
+./venv/bin/javs config javlibrary-cookie
+./venv/bin/javs config javlibrary-test
+```
+
+`javlibrary-cookie` always asks for a fresh `cf_clearance`. It only asks for
+`browser_user_agent` when that value is still empty in your config.
 
 ---
 
@@ -139,20 +149,21 @@ The largest community database.
 - Has User Ratings (score).
 - Connects English and Japanese variants for multi-language actress matching.
 - Tracks aliases across different productions.
-- Bypasses Cloudflare automatically for search queries.
+- Supports manual `cf_clearance` input when Cloudflare blocks access, while reusing the saved `browser_user_agent`.
+- During interactive CLI runs, JavS can prompt for refreshed Javlibrary credentials and retry once.
 
 ---
 
 ## ⚙️ Development & Testing
 
-JavS has a rigorous testing suite covering 100% of the core paths.
+JavS has a fast local test suite focused on mocked HTTP flows, parser fixtures, and core pipeline contracts.
 
 ```bash
 # Run full suite
-./venv/bin/python -m pytest tests/ -v
+./venv/bin/python -m pytest tests -q
 
 # Run only scraper tests
-./venv/bin/python -m pytest tests/scrapers/ -v
+./venv/bin/python -m pytest tests/scrapers -q
 ```
 
 ### Writing a new Scraper

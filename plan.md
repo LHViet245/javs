@@ -1,329 +1,395 @@
-# Ke hoach xu ly audit du an JavS
+# Ke hoach cap nhat sau audit lai du an JavS
 
 ## 1. Muc tieu
 
-Muc tieu cua roadmap nay la dua codebase tu trang thai "kien truc tot nhung van con bug integration va docs lech" len trang thai:
+Ke hoach nay khong lap lai audit cu mot cach may moc. Muc tieu la:
 
-- config/runtime/doc dong bo
-- network va proxy behavior co the du doan duoc
-- flow `find`/`sort` on dinh hon
-- security posture ro rang hon
-- test gate bao ve duoc cac vung rui ro nhat
+- Ghi nhan muc nao da duoc xu ly that su
+- Dong cac viec con mo theo thu tu uu tien moi
+- Tap trung vao phan con rui ro that, khong tiep tuc "fix lai" nhung muc da on
 
-Ke hoach duoc chia theo `P0`, `P1`, `P2`. Moi pha duoi day la decision-complete, co the giao thang cho nguoi trien khai.
+Ke hoach duoi day duoc cap nhat theo trang thai code hien tai den 2026-03-20.
 
-## 2. Nguyen tac trien khai
+## 2. Trang thai tong quan cua roadmap cu
 
-- Khong tron fix code va cap nhat docs mot cach tuy tien; moi pha phai co verification ro rang
-- Moi bug P0/P1 deu phai co regression test di kem
-- Tai lieu chi duoc cap nhat sau khi implementation va verification da xong
-- Muc tieu la loai bo "config/doc promise" sai lech truoc khi them feature moi
+| Hang muc cu | Trang thai moi | Ghi chu |
+| --- | --- | --- |
+| Lifecycle `HttpClient` trong engine | Xong | Da co regression test cho `find_one()` va batch `sort_path()` |
+| Proxy routing HTTP/SOCKS per scraper | Xong | Da co test cho tach session direct/proxy |
+| `config sync` + schema alignment | Xong | Custom path, help text, va template schema da khop runtime |
+| Lint clean baseline | Xong | `ruff` da xanh |
+| Cloudflare config wiring | Xong | Public auth surface da thu gon va da co regression test |
+| Javlibrary direct-match URL | Xong | Khong con fallback `_detail_`, direct-match EN/JA/ZH da co test |
+| Subtitle matching | Xong | Da co regression test cho subtitle theo stem video |
+| SSL policy/global-off | Da dong | `verify_ssl` da map dung nghia sang `aiohttp ssl` va da co regression test |
+| Docs/runtime alignment | Xong | README, USAGE, CONTEXT, va CLI help da duoc dong bo |
+| Dead config surface | Xong | Da wire `required_fields` va loai bo/deprecate cac section placeholder con lai khoi template cong khai |
+| Javlibrary interactive recovery | Xong | Da co prompt `cf_clearance`, reuse `browser_user_agent`, desktop notification best-effort, va retry trong run hien tai |
 
-## 3. P0 - On dinh core runtime va config
+## 3. Nguyen tac trien khai tiep theo
 
-### P0.1 Sua lifecycle `HttpClient` trong `JavsEngine`
+- Khong refactor rong khi chua co regression test cho cac fix vua co
+- Muc nao da xu ly o muc implementation thi uu tien dong no bang test va docs, khong mo them pham vi sua khong can thiet
+- Uu tien "fix nghia/contract" truoc "them feature"
+- Moi thay doi tren config hoac networking deu phai co verification ro rang
 
-- Goal: dam bao session HTTP duoc mo/dong dung mot cho, khong bi close som giua cac task
+## 4. P0 da dong nhung can hardening
+
+### P0.1 Hardening lifecycle `HttpClient` trong `JavsEngine`
+
+- Status: Da dong
+- Goal: khoa chat fix hien tai de khong bi vo lai
 - Files/Subsystems affected:
   - `javs/core/engine.py`
-  - neu can, `javs/services/http.py`
-  - test moi cho engine
+  - tests cho engine
 - Fix approach:
-  - Chon mo hinh session lifecycle duy nhat
-  - Khuyen nghi: `find()` khong tu quan ly `async with self.http`; `sort_path()` quan ly batch-level context, con `find()` gia dinh session da co san
-  - Neu `find()` duoc goi doc lap tu CLI, can co wrapper public hoac context management ro rang o entrypoint
-  - Dam bao `close()` chi goi sau khi toan bo batch sort hoan tat
+  - Giu nguyen thiet ke `find()` la internal flow su dung session da mo
+  - Giu `find_one()` la public entrypoint cho luong standalone
+  - Khong refactor them engine truoc khi co test bao ve lifecycle
 - Verification:
-  - Tao test cho `find()` standalone
-  - Tao test cho `sort_path()` nhieu file, `throttle_limit > 1`
-  - Xac nhan khong co loi session closed trong batch concurrency
+  - `./venv/bin/python -m pytest tests -q`
+  - Test xac nhan `find_one()` mo/dong session dung mot lan
+  - Test xac nhan `sort_path()` giu session mo den het batch
 - Risk:
-  - Neu sua khong ky, co the gay resource leak hoac request song song dung session chua khoi tao
+  - Neu tiep tuc sua engine khi chua co test, bug cu co the quay lai rat nhanh
+- Definition of done:
+  - Da dat
 
-### P0.2 Sua routing proxy HTTP/SOCKS dung per-scraper
+### P0.2 Hardening routing proxy HTTP/SOCKS
 
-- Goal: `config.scrapers.use_proxy` phai co tac dung dung voi ca HTTP proxy va SOCKS proxy
+- Status: Da dong
+- Goal: khoa chat mo hinh dual-session hien tai
 - Files/Subsystems affected:
   - `javs/services/http.py`
-  - `javs/core/engine.py`
-  - `javs/scrapers/registry.py`
   - tests proxy/integration
 - Fix approach:
-  - Bo session global duy nhat khi dung SOCKS neu khong the route per-request
-  - Su dung hai client/session rieng: co proxy va khong proxy; scraper nhan dung client theo config
-  - Hoac abstract network layer de route tai muc client thay vi muc request
-  - Dong bo log message va docs de phan biet HTTP-proxy route va SOCKS route
+  - Giu `_session_direct` va `_session_proxy`
+  - Ghi ro contract: SOCKS route theo session, HTTP proxy route theo per-request kwargs
+  - Khong doi lai networking layer neu chua co ly do ro rang
 - Verification:
-  - Test `use_proxy=False` voi SOCKS khong di qua proxy
-  - Test `use_proxy=True` voi SOCKS co di qua proxy
-  - Test HTTP proxy van giu duoc hanh vi cu
+  - `./venv/bin/python -m pytest tests -q`
+  - Test cho `use_proxy=False` khong dung proxy session
+  - Test cho `use_proxy=True` dung proxy session
 - Risk:
-  - Doi networking layer co the cham vao nhieu scraper cung luc
+  - Refactor networking khong co test se de vo logic route vua moi sua xong
+- Definition of done:
+  - Da dat
 
-### P0.3 Dong bo schema giua `default_config.yaml`, `JavsConfig`, va `config sync`
+### P0.3 Hardening `config sync` va schema alignment
 
-- Goal: nguoi dung tao/sync config nao thi runtime doc dung config do
+- Status: Da dong
+- Goal: chot config contract cho dung ca runtime lan CLI
 - Files/Subsystems affected:
-  - `javs/config/models.py`
-  - `javs/config/loader.py`
   - `javs/config/updater.py`
   - `javs/data/default_config.yaml`
-  - CLI config command
-- Fix approach:
-  - Quy dinh `JavsConfig` la schema nguon su that
-  - Viet lai `default_config.yaml` theo schema nay
-  - Cho `sync_user_config()` nhan `path` tu CLI thay vi hardcode default path
-  - Xac dinh ro chinh sach voi unknown key:
-    - neu muon strict, dung validation chong key la
-    - neu muon mềm, it nhat phai canh bao khi gap key khong map runtime
-  - Dam bao `create_default_config()` va `config sync` tao ra cung mot schema
-- Verification:
-  - Test `create_default_config()`
-  - Test `sync_user_config(custom_path)`
-  - Test load template sau sync cho ra gia tri dung nhu mong doi
-- Risk:
-  - Anh huong truc tiep den config cu cua nguoi dung; can co migration strategy ro
-
-### P0.4 Lam sach toolchain chat luong toi thieu
-
-- Goal: dua repo ve trang thai co the lint sach o branch dang lam
-- Files/Subsystems affected:
-  - `javs/config/updater.py`
-  - `javs/core/scanner.py`
   - `javs/cli.py`
-  - bat ky file lien quan den loi ruff hien tai
+  - docs config
 - Fix approach:
-  - Sua cac loi ruff hien tai
-  - Dat baseline lint clean truoc khi tiep tuc fix sau
+  - Giu template schema hien tai la nguon su that
+  - Khong mo rong them top-level keys moi neu chua duoc model hoa
+  - Chinh help text va docs de phan anh dung `sync`
+- Verification:
+  - `./venv/bin/python -m pytest tests -q`
+  - Test cho `javs config --help`
+  - Test CLI cho `javs config sync --config ...`
+  - `./venv/bin/javs config --help`
+- Risk:
+  - Neu help/docs khong doi theo code, van se tiep tuc gay nham lan cho user
+- Definition of done:
+  - Da dat
+
+### P0.4 Lint baseline
+
+- Status: Da dong
+- Goal: giu repo o trang thai lint clean
+- Files/Subsystems affected:
+  - Toan repo Python
+- Fix approach:
+  - Khong merge thay doi moi neu `ruff` do
+  - Can nhac dua `ruff check` vao CI gate
 - Verification:
   - `./venv/bin/python -m ruff check javs tests`
 - Risk:
-  - Thap; mostly hygiene
+  - Thap
+- Definition of done:
+  - `ruff` la bat buoc trong local/CI workflow
 
-### Definition of done cho P0
+## 5. P1: muc vua dong va muc dang mo
 
-- `pytest` xanh
-- `ruff` xanh
-- `config sync` ton trong custom path
-- Template config map dung schema runtime
-- Routing proxy dung voi ca HTTP va SOCKS
-- Batch sort khong con bug session lifecycle
+### P1.1 Sua nghia va contract cua `verify_ssl`
 
-## 4. P1 - Sua bug tich hop va nang posture bao mat
+- Status: Da dong trong dot 2026-03-17
+- Goal: bien ten, comment, va hanh vi cua `HttpClient` phai cung mot nghia
+- Files/Subsystems affected:
+  - `javs/services/http.py`
+  - `javs/core/engine.py`
+  - `javs/services/emby.py`
+  - `javs/core/organizer.py`
+  - `javs/scrapers/base.py`
+  - `scripts/real_scrape_test.py`
+- Fix approach:
+  - Da sua logic request de `verify_ssl=True` thi truyen `ssl=True`, `verify_ssl=False` thi truyen `ssl=False`
+  - Da audit nhanh cac callsite `HttpClient()` hien co; engine van explicit `verify_ssl=False` nhu mot trade-off runtime, cac callsite con lai van giu default strict
+  - Da them test khoa contract nay truoc khi tiep tuc sua networking
+- Verification:
+  - `./venv/bin/python -m pytest tests -q`
+  - `./venv/bin/python -m pytest tests/test_proxy.py tests/test_engine.py -q`
+  - `./venv/bin/python -m ruff check javs tests`
+  - Test moi xac nhan `verify_ssl=True/False` map dung sang request `ssl=True/False`
+  - Test moi xac nhan `JavsEngine` van khoi tao `HttpClient(verify_ssl=False)` mot cach co y
+- Risk:
+  - Contract da duoc chot, nhung neu sau nay mo rong them callsite can quyet dinh ro la giu strict SSL hay explicit opt-out
+- Definition of done:
+  - Da dat
 
-### P1.1 Wire Cloudflare/Javlibrary auth vao flow thuc te
+### P1.2 Chot lai Cloudflare/Javlibrary auth surface
 
-- Goal: bo cau hinh manual Cloudflare co the su dung duoc trong app, khong chi trong script thu nghiem
+- Status: Da dong
+- Goal: chi giu nhung field auth co tac dung that trong app flow
 - Files/Subsystems affected:
   - `javs/config/models.py`
   - `javs/core/engine.py`
   - `javs/services/http.py`
-  - co the `javs/scrapers/javlibrary.py`
   - docs config
 - Fix approach:
-  - Chon duy nhat mot noi luu config CF/Javlibrary auth
-  - Truyen du lieu do vao `HttpClient`
-  - Bo thong diep huong dan sai schema trong exception text
-  - Danh gia co nen xoa `scripts/real_scrape_test.py` hoac bien no thanh script debug noi bo
+  - Da giu lai surface runtime toi thieu: `cookie_cf_clearance` va `browser_user_agent`
+  - Da bo/deprecate `cookie_cf_bm`, `cookie_session`, `cookie_userid`
+  - Da bo tri lai message/manual path theo section `javlibrary`
+  - Da them `javs config javlibrary-cookie` va `javs config javlibrary-test`
+  - Da them interactive recovery flow khi `javlibrary` bi Cloudflare block trong `find`/`sort`
+  - Da toi gian prompt: chi bat buoc nhap `cf_clearance`; `browser_user_agent` chi hoi neu config dang trong
 - Verification:
-  - Test load config -> engine -> `HttpClient` co `cf_clearance` va `cf_user_agent`
-  - Test search Javlibrary khi bat manual config
+  - `./venv/bin/python -m pytest tests -q`
+  - Test cho config -> engine -> `HttpClient`
+  - Test cho manual-cookie path cua `get_cf()`
 - Risk:
-  - Neu schema chon sai se tiep tuc gay lech docs/runtime
+  - Neu giu qua nhieu field mo ho, debt se tiep tuc phinh ra
+- Definition of done:
+  - Da dat
 
-### P1.2 Sua direct-match URL logic cho Javlibrary EN/JA/ZH
+### P1.3 Dong hoan toan bug direct-match cua Javlibrary
 
-- Goal: `search()` cua Javlibrary luon tra URL that co the scrape duoc
+- Status: Da dong
+- Goal: khong con tra ve URL gia `_detail_`
 - Files/Subsystems affected:
   - `javs/scrapers/javlibrary.py`
   - tests scraper
 - Fix approach:
-  - Lay canonical URL neu co
-  - Neu response da la detail page, su dung URL thuc te thay vi placeholder `_detail_`
-  - Giu language path dung cho JA/ZH
+  - Da bo fallback `_detail_`
+  - Direct-match khong co canonical se tra ve search URL co the tai su dung
+  - Da giu dung language path cho EN/JA/ZH
 - Verification:
-  - Test direct-match EN
-  - Test direct-match JA
-  - Test direct-match ZH
+  - `./venv/bin/python -m pytest tests -q`
+  - Test moi cho direct-match EN/JA/ZH
 - Risk:
-  - Thap; localised trong scraper
+  - Thap; localized trong scraper
+- Definition of done:
+  - Da dat
 
-### P1.3 Sua matching subtitle theo movie thay vi theo thu muc
+### P1.4 Dong bo docs va CLI help voi implementation hien tai
 
-- Goal: khong di chuyen subtitle khong lien quan
+- Status: Da dong
+- Goal: docs va help phai tro lai thanh nguon su that
 - Files/Subsystems affected:
-  - `javs/core/organizer.py`
-  - tests organizer
+  - `README.md`
+  - `CONTEXT.md`
+  - `docs/USAGE.md`
+  - `javs/cli.py`
 - Fix approach:
-  - Match subtitle theo basename/stem va movie id
-  - Ho tro multi-part logic
-  - Khong move subtitle neu khong co match ro rang
+  - Sua help text `config` de hien `sync`
+  - Sua lai claim ve `100% coverage`, `mypy`, `129 tests`, `per-request proxy routing`
+  - Chi giu claim nao co bang chung hien tai
 - Verification:
-  - Test 2 video + 2 subtitle rieng
-  - Test part-specific subtitle
-  - Test subtitle khong lien quan khong bi move
+  - `./venv/bin/javs config --help`
+  - Doc review chong cheo docs/runtime
+  - Test CLI cho help text
 - Risk:
-  - Trung binh; can can bang giua strict va flexible matching
+  - Neu cap nhat docs truoc khi chot contract SSL/Cloudflare, se phai sua lai them mot lan nua
+- Definition of done:
+  - Da dat
 
-### P1.4 Thu hep pham vi `ssl=False`
+### P1.5 Bo sung regression tests cho cac fix vua xong
 
-- Goal: giam be mat tan cong, giu lai kha nang scrape o nhung host thuc su can
+- Status: Da dong
+- Goal: chuyen cac fix hien tai tu "co ve dung" thanh "duoc khoa bang test"
 - Files/Subsystems affected:
+  - `tests/`
+  - `javs/core/engine.py`
   - `javs/services/http.py`
-  - scraper config/doc
+  - `javs/core/organizer.py`
+  - `javs/scrapers/javlibrary.py`
 - Fix approach:
-  - Mac dinh verify SSL
-  - Cho phep bypass theo host/scraper/config flag
-  - Ghi ro trade-off trong docs
+  - Da them test cho:
+    - engine lifecycle
+    - proxy dual-session
+    - subtitle matching
+    - Cloudflare wiring
+    - Javlibrary direct-match
+    - config sync custom path va deprecation cleanup
+    - CLI help/config sync
 - Verification:
-  - Test request default co verify SSL
-  - Test scraper/host whitelist van bypass duoc neu can
+  - `./venv/bin/python -m pytest tests -q`
+  - `./venv/bin/python -m pytest tests --cov=javs --cov-report=term-missing -q`
 - Risk:
-  - Co the lam mot so site scraping fail tam thoi neu site dang co SSL issue
+  - Neu bo qua buoc nay, nhung muc "da xu ly" van de bi hoi quy
+- Definition of done:
+  - Da dat
 
-### Definition of done cho P1
+## 6. P2: clean-up va nang maturity
 
-- Cloudflare manual config dung duoc trong app flow
-- Javlibrary `search()` direct-match khong tra URL gia
-- Subtitle matching khong con move nham
-- SSL policy khong con global-off
+### P2.1 Ra soat va giam dead config surface
 
-## 5. P2 - Nâng test maturity, hieu nang, va docs governance
+- Status: Da dong trong dot 2026-03-17
+- Goal: config public chi chua field co nghia
+- Files/Subsystems affected:
+  - `javs/config/models.py`
+  - `javs/data/default_config.yaml`
+  - docs config
+- Fix approach:
+  - Da wire `required_fields` vao runtime sort
+  - Da deprecate/xoa khoi template cong khai:
+    - `rename_folder_in_place`
+    - `check_updates`
+    - cookie fields cu cua `javlibrary`
+    - `scrapers.options`
+    - `sort.metadata.tag_csv`
+    - `sort.format.output_folder`
+    - `sort.format.group_actress`
+    - `locations.uncensor_csv`
+    - `locations.history_csv`
+    - `locations.tag_csv`
+    - `javdb`
+- Verification:
+  - Test config parsing
+  - Test behavior/warning cua cac field duoc giu lai
+- Risk:
+  - Co the cham vao compatibility config cua user hien tai
+- Definition of done:
+  - Moi field public deu co chu nghia runtime ro
+  - Trang thai hien tai:
+    - `required_fields` da duoc wire vao `sort_path()`
+    - Cac placeholder section chinh da duoc prune khoi `default_config.yaml`
+    - `load_config()` va `sync_user_config()` da co test cleanup cho cac key deprecated
+    - Da dat cho pham vi audit config hien tai
 
-### P2.1 Tang coverage cho cac module "0%/thap"
+### P2.2 Tang coverage vao cac module rui ro cao
 
-- Goal: test phai bao ve cac path rui ro nhat thay vi chi parser unit
+- Status: Da dong trong dot 2026-03-17
+- Goal: nang maturity cua test suite len muc bao ve vung integration quan trong
 - Files/Subsystems affected:
   - `javs/cli.py`
   - `javs/core/engine.py`
   - `javs/services/http.py`
   - `javs/scrapers/dmm.py`
-  - `javs/config/updater.py`
-  - `javs/services/image.py`
   - `javs/services/emby.py`
+  - `javs/services/image.py`
 - Fix approach:
-  - Them integration-style unit tests voi mock/fake client
-  - Bao phu command CLI, orchestration, config sync, DMM parser/flow
-  - Dat target coverage thuc te, vi du >= 75% tong va > 60% cho module quan trong
+  - Uu tien module dang `0%` hoac rat thap
+  - Dat target thuc te:
+    - tong coverage >= 65% o pha dau
+    - module quan trong >= 50%
 - Verification:
   - `./venv/bin/python -m pytest tests --cov=javs --cov-report=term-missing -q`
 - Risk:
-  - Trung binh; can effort kha lon
+  - Co the ton effort neu thieu fixtures/fakes cho HTTP-heavy modules
+  - Definition of done:
+  - Coverage tong va coverage module quan trong tang len muc de phong hoi quy
+  - Trang thai hien tai:
+    - Coverage tong: `79%`
+    - `javs/cli.py`: `64%`
+    - `javs/core/organizer.py`: `71%`
+    - `javs/core/engine.py`: `69%`
+    - `javs/services/http.py`: `75%`
+    - `javs/services/emby.py`: `100%`
+    - `javs/services/image.py`: `95%`
+    - `javs/services/translator.py`: `93%`
+    - `javs/scrapers/registry.py`: `100%`
+    - `javs/scrapers/base.py`: `98%`
+    - `javs/scrapers/dmm.py`: `86%`
+    - `javs/scrapers/javlibrary.py`: `67%`
+    - Muc tieu `>= 65%` tong va `>= 50%` cho module quan trong da dat
 
-### P2.2 Ra soat va giam dead config surface
+### P2.3 Cai thien hieu nang va I/O strategy
 
-- Goal: schema public chi chua field co tac dung that
+- Status: Da dat cho pha synthetic benchmark trong dot 2026-03-18
+- Goal: giam latency va bottleneck o batch sort
 - Files/Subsystems affected:
-  - `javs/config/models.py`
-  - docs config
-- Fix approach:
-  - Danh dau field dang support / planned / deprecated
-  - Implement hoac remove:
-    - `required_fields`
-    - `rename_folder_in_place`
-    - `check_updates`
-    - `JavlibraryConfig` cookies neu tiep tuc dung
-  - Them warning khi user dung field chua support
-- Verification:
-  - Test config deprecation warning
-  - Test field implemented thuc su co tac dung
-- Risk:
-  - Thap-trung binh; chu yeu la compatibility
-
-### P2.3 Cai thien hieu nang I/O va scraping
-
-- Goal: giam request lap lai va tang throughput sort
-- Files/Subsystems affected:
-  - `javs/scrapers/dmm.py`
   - `javs/services/http.py`
+  - `javs/scrapers/dmm.py`
   - `javs/core/engine.py`
-  - neu can, them cache layer nho
+  - co the `javs/services/image.py`
 - Fix approach:
-  - Cache actress thumb/trailer lookup trong mot batch
-  - Ra soat `sleep` strategy de co rate-limit policy ro hon
-  - Xem xet offload file write/cpu-bound image sang thread neu can
+  - Ra soat `sleep` mac dinh va chinh sach rate-limit
+  - Can nhac cache nho cho lookup lap lai
+  - Can nhac offload file write khoi event loop neu can
 - Verification:
-  - Benchmark don gian cho batch sort nho
-  - So sanh so request truoc/sau
+  - Benchmark batch nho truoc/sau
+  - So sanh request count neu co cache
 - Risk:
-  - Co the tang complexity neu lam cache qua som
+  - Doi hieu nang co the tang complexity neu lam som hon muc can thiet
+- Definition of done:
+  - Co it nhat mot cai thien do duoc tren batch sort mau
+  - Trang thai hien tai:
+    - Da bo mot lan `sleep` du thua cho item cuoi trong batch
+    - Da offload ghi NFO sang thread de giam block event loop
+    - Da chuyen `HttpClient.download()` sang `aiofiles` de tranh sync file write trong coroutine, trong khi van giu `.part` + atomic replace + cleanup contract
+    - Da them `scripts/benchmark_sort_batch.py` de do synthetic batch sort voi fake scrape/organize delay
+    - Da doi pacing strategy trong `sort_path()`:
+      - throttle/cooldown ap vao pha `find()`
+      - khong giu scrape slot trong luc organizer dang chay
+      - chi cooldown khi van con task dang doi scrape slot
+    - Benchmark mau (`8` files, `throttle_limit=4`, `scrape_delay=0.05`, `organize_delay=0.01`) cho thay:
+      - truoc redesign: `sleep=3` -> `6.1355s`
+      - sau redesign: `sleep=3` -> `3.1189s`
+      - sau khi giam default: `sleep=2` -> `2.1176s`
+      - `sleep=0` -> `0.1130s`
+      - cai thien ~ `49%` so voi pacing cu trong cung harness
+      - slowdown cua `sleep=2` so voi `sleep=0` hien con ~ `18.74x`
+    - Benchmark scrape that ban dau da co snapshot:
+      - `find` voi `dmm`, `4` ID, `sleep=2` -> `34.7462s`, `4/4 found`
+      - `sort` voi `dmm`, `4` ID, `sleep=2` -> `27.9004s`
+      - `sort` voi `dmm`, `4` ID, `sleep=0` -> `21.0701s`
+      - overhead thuc te cua `sleep=2` tren batch nay ~ `1.32x`, nhe hon dang ke so voi synthetic harness
+      - `find` voi `r18dev`, `ABP-420`, `sleep=2` -> `1.5990s`
+    - Benchmark matrix mo rong (`repeat=3`) cho thay:
+      - `find` voi `dmm`, `4` ID, `sleep=2`: movie median `5.8837s`, request median `1.3553s`, fail `0`
+      - `find` voi `r18dev`, `4` ID, `sleep=2`: `8 found`, `4 no_result`, da bat dau gap `429 Too Many Requests`
+      - `find` voi `mgstageja`, `FSDSS-198`, `sleep=2`: movie median `8.9190s`, request median `3.2818s`, fail `0`
+      - `find` voi `javlibrary`, `ABP-420`, `repeat=3`: ban dau `3/3 no_result` do Cloudflare `403`; tu 2026-03-20 da co interactive recovery bang `cf_clearance` + `browser_user_agent` de tiep tuc scrape khi cookie het han
+      - `find` voi `javlibrary`, `4` ID, `repeat=3`, voi cookie hop le: `7 found`, `5 no_result`, movie median `2.1589s`, request median `1.1258s`, da xuat hien `429` o mot so repeat
+      - `sort` voi `javlibrary`, `4` ID, `repeat=3`, `sleep=2`: `9 processed`, `3 skipped`, batch mean `13.5586s`, median `13.4464s`, request fail `0`
+      - `sort` voi `javlibrary`, `4` ID, `repeat=3`, `sleep=0`: `6 processed`, `6 skipped`, batch mean `9.0043s`, median `8.9272s`, request fail `3`
+      - `sort` voi `dmm`, `4` ID, `repeat=3`: `sleep=2` mean `26.0813s`, median `26.3468s`; `sleep=0` mean `19.4442s`, median `19.1805s`
+      - slowdown thuc te cua `sleep=2` tren batch `dmm` nay ~ `1.34x` theo mean, ~ `1.37x` theo median
+    - Ket luan hien tai: giu global `sleep=2`. Benchmark that cho thay overhead co that nhung chua den muc can ha tiep; `r18dev` va `javlibrary` deu da co dau hieu rate-limit khi lap lai benchmark, va voi `javlibrary` thi `sleep=2` doi lai duoc ty le thanh cong tot hon `sleep=0`
 
-### P2.4 Dong bo docs voi hien trang thuc te
+## 7. Thu tu uu tien cap nhat
 
-- Goal: docs tro lai thanh nguon su that
-- Files/Subsystems affected:
-  - `README.md`
-  - `docs/USAGE.md`
-  - `CONTEXT.md`
-  - neu can, them `CONTRIBUTING.md` hoac CI docs
-- Fix approach:
-  - Xoa/sua claim "100% coverage"
-  - Neu chua dung `mypy`, bo claim hoac them thuc su vao toolchain
-  - Dong bo help text `config sync`
-  - Ghi ro security trade-off, config schema, va feature dang stub
-- Verification:
-  - Doc review chong lech docs/runtime
-  - CLI help snapshot test
-- Risk:
-  - Thap
+1. Neu muon theo duoi policy theo scraper, thiet ke support cooldown rieng cho scraper co dau hieu rate-limit nhu `r18dev`, khong ha global `sleep` them nua o giai doan nay
+2. Neu can toi uu them cho `javlibrary`, tap trung vao policy benchmark/rate-limit va cach dung proxy/IP, khong ha global `sleep` chi de dua theo raw throughput
+3. Tiep tuc giu docs snapshot khop test count / coverage va ket qua benchmark manual khi co thay doi them
 
-### Definition of done cho P2
+Ly do sap xep:
 
-- Coverage tang ro rang va bao phu vung rui ro
-- Cac dead config field da duoc xu ly ro
-- Performance bottleneck chinh da duoc giam
-- Docs khop voi runtime/tooling hien tai
+- Cac bug contract P0/P1 da duoc dong
+- P2.1 va P2.2 da dat muc tieu chinh; long-tail coverage cho `translator`, `registry`, va `base` da duoc dong bang test
+- Benchmark scrape that da du de giu `sleep=2`; Javlibrary interactive recovery va benchmark co cookie hop le da dong; `HttpClient.download()` cung da duoc chuyen sang async file write. Phan con lai chu yeu la policy rieng cho scraper rate-limited
 
-## 6. Test va verification bat buoc sau moi pha
+## 8. Lenh verification bat buoc sau moi pha
 
 ```bash
 ./venv/bin/python -m pytest tests -q
 ./venv/bin/python -m ruff check javs tests
 ./venv/bin/python -m pytest tests --cov=javs --cov-report=term-missing -q
+./venv/bin/javs config --help
 ```
-
-Them vao test plan khi implement:
-
-- Test regression cho lifecycle session engine
-- Test regression cho SOCKS per-scraper routing
-- Test `config sync --config`
-- Test direct-match Javlibrary EN/JA/ZH
-- Test subtitle matching theo stem/movie id/part
-- Test wire Cloudflare config vao `HttpClient`
-
-## 7. Thu tu uu tien de xuat
-
-1. P0.3 `config sync` + schema alignment
-2. P0.1 lifecycle `HttpClient` trong engine
-3. P0.2 proxy routing HTTP/SOCKS
-4. P0.4 lint clean baseline
-5. P1.2 Javlibrary direct-match URL
-6. P1.3 subtitle matching
-7. P1.4 SSL scoping
-8. P1.1 Cloudflare config wiring
-9. Toan bo P2
-
-Ly do:
-
-- Config/schema sai la nguon phat tan nhieu bug va docs sai
-- Lifecycle/proxy la rui ro nghiem trong cho correctness
-- Lint clean baseline giup de review cac patch tiep theo
-- Javlibrary/subtitle la bug huong user ro rang
-- Bao mat va docs nen duoc chot sau khi core runtime on dinh
-
-## 8. Rui ro rollout
-
-- Migration config cu co the gay vo cau hinh neu khong co chinh sach ro rang
-- Sua networking layer co the anh huong nhieu scraper mot luc
-- Thu hep `ssl=False` co the lam lo ra mot so site đang phu thuoc vao bypass
-- Tang coverage cho DMM/HTTP co the can mock phuc tap hon test hien tai
 
 ## 9. Tieu chi hoan thanh chung
 
-Ke hoach nay duoc xem la hoan thanh khi:
+Ke hoach nay duoc xem la dat muc tieu khi:
 
-- Runtime, docs, va config schema dong bo
-- Khong con P0 open
-- Cac bug P1 da co regression test
-- Coverage va lint dat nguong toi thieu da thoa thuan
-- Repo co the duoc review ma khong con claim sai lech hien trang
+- Khong con bug contract mo o `HttpClient`
+- Cac fix P0/P1 quan trong deu co regression test
+- Docs, help text, va runtime khop nhau
+- Surface config cong khai duoc don dep hoac giai thich ro
+- Coverage tang len muc phu hop hon voi vung rui ro thuc te

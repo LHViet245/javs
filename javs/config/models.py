@@ -40,7 +40,6 @@ class FormatConfig(BaseModel):
 
     file: str = "{id}"
     folder: str = "{id} [{studio}] - {title} ({year})"
-    output_folder: str = ""
     poster_img: list[str] = Field(default_factory=lambda: ["folder"])
     thumb_img: str = "fanart"
     trailer_vid: str = "{id}-trailer"
@@ -50,7 +49,6 @@ class FormatConfig(BaseModel):
     screenshot_folder: str = "extrafanart"
     actress_img_folder: str = ".actors"
     delimiter: str = ", "
-    group_actress: bool = True
     max_title_length: int = 100
 
 
@@ -138,13 +136,6 @@ class GenreCsvConfig(BaseModel):
     )
 
 
-class TagCsvConfig(BaseModel):
-    """Tag CSV settings."""
-
-    enabled: bool = False
-    auto_add: bool = False
-
-
 class MetadataConfig(BaseModel):
     """Metadata processing settings."""
 
@@ -152,7 +143,6 @@ class MetadataConfig(BaseModel):
     priority: MetadataPriorityConfig = Field(default_factory=MetadataPriorityConfig)
     thumb_csv: ThumbCsvConfig = Field(default_factory=ThumbCsvConfig)
     genre_csv: GenreCsvConfig = Field(default_factory=GenreCsvConfig)
-    tag_csv: TagCsvConfig = Field(default_factory=TagCsvConfig)
     required_fields: list[str] = Field(
         default_factory=lambda: ["id", "cover_url", "genres", "maker", "release_date", "title"]
     )
@@ -163,19 +153,10 @@ class SortConfig(BaseModel):
 
     move_to_folder: bool = True
     rename_file: bool = True
-    rename_folder_in_place: bool = False
     move_subtitles: bool = True
     format: FormatConfig = Field(default_factory=FormatConfig)
     download: DownloadConfig = Field(default_factory=DownloadConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
-
-
-class ScraperOptions(BaseModel):
-    """Global scraper options."""
-
-    id_preference: str = "id"  # "id" or "contentid"
-    add_male_actors: bool = False
-    dmm_scrape_actress: bool = False
 
 
 class ScraperConfig(BaseModel):
@@ -201,7 +182,6 @@ class ScraperConfig(BaseModel):
             "mgstageja": True,  # Japan region block
         }
     )
-    options: ScraperOptions = Field(default_factory=ScraperOptions)
 
 
 class ProxyConfig(BaseModel):
@@ -261,20 +241,11 @@ class EmbyConfig(BaseModel):
 
 
 class JavlibraryConfig(BaseModel):
-    """Javlibrary-specific settings."""
+    """Javlibrary-specific settings used by the runtime."""
 
     base_url: str = "https://www.javlibrary.com"
     browser_user_agent: str = ""
-    cookie_cf_bm: str = ""
     cookie_cf_clearance: str = ""
-    cookie_session: str = ""
-    cookie_userid: str = ""
-
-
-class JavdbCookieConfig(BaseModel):
-    """Javdb-specific settings."""
-
-    session: str = ""
 
 
 class LocationConfig(BaseModel):
@@ -284,9 +255,6 @@ class LocationConfig(BaseModel):
     output: str = ""
     thumb_csv: str = ""
     genre_csv: str = ""
-    uncensor_csv: str = ""
-    history_csv: str = ""
-    tag_csv: str = ""
     log: str = ""
 
 
@@ -302,7 +270,7 @@ class JavsConfig(BaseModel):
 
     # Processing
     throttle_limit: int = 1
-    sleep: int = 3
+    sleep: int = 2
 
     # Locations
     locations: LocationConfig = Field(default_factory=LocationConfig)
@@ -318,8 +286,5 @@ class JavsConfig(BaseModel):
 
     # Source-specific
     javlibrary: JavlibraryConfig = Field(default_factory=JavlibraryConfig)
-    javdb: JavdbCookieConfig = Field(default_factory=JavdbCookieConfig)
 
-    # Admin
     log: LogConfig = Field(default_factory=LogConfig)
-    check_updates: bool = True

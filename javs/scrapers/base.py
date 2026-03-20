@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from javs.models.movie import MovieData
-from javs.services.http import HttpClient
+from javs.services.http import CloudflareBlockedError, HttpClient
 from javs.utils.logging import get_logger
 
 
@@ -69,6 +69,8 @@ class BaseScraper(ABC):
             if data:
                 data.source = self.name
             return data
+        except CloudflareBlockedError:
+            raise
         except Exception as exc:
             self.logger.error(
                 "scraper_error",

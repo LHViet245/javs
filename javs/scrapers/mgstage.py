@@ -75,10 +75,15 @@ class MgstageJaScraper(BaseScraper):
         """Try direct GET with common MGStage publisher prefixes."""
         import asyncio
 
-        # Common studio prefixes: Prestige (406, 300, 118, 428), FALENO (336), KMP (348), SOD (259, 228), Giga (200), TMA (436, 480)
-        prefixes = ["406", "336", "348", "259", "200", "300", "118", "129", "459", "436", "480", "428", "228"]
+        # Common studio prefixes:
+        # Prestige (406, 300, 118, 428), FALENO (336), KMP (348),
+        # SOD (259, 228), Giga (200), TMA (436, 480)
+        prefixes = [
+            "406", "336", "348", "259", "200", "300",
+            "118", "129", "459", "436", "480", "428", "228",
+        ]
         c_id = movie_id.upper()
-        
+
         async def check_url(url: str) -> str | None:
             try:
                 resp = await self.http.get(url, cookies={"adc": "1"}, use_proxy=self.use_proxy)
@@ -87,7 +92,7 @@ class MgstageJaScraper(BaseScraper):
                 return None
             except Exception:
                 return None
-                
+
         tasks = [check_url(f"{self.base_url}/product/product_detail/{p}{c_id}/") for p in prefixes]
         results = await asyncio.gather(*tasks)
         for r in results:
@@ -193,7 +198,11 @@ class MgstageJaScraper(BaseScraper):
                 screenshots.append(a.get("href"))
 
         trailer_url = ""
-        sample_el = soup.select_one("a.button_sample[href*='sampleplayer.html']") or soup.select_one("a[href*='sampleplayer.html']") or soup.select_one("iframe[src*='sampleplayer.html']")
+        sample_el = (
+            soup.select_one("a.button_sample[href*='sampleplayer.html']")
+            or soup.select_one("a[href*='sampleplayer.html']")
+            or soup.select_one("iframe[src*='sampleplayer.html']")
+        )
         if sample_el:
             src = sample_el.get("href") or sample_el.get("src") or ""
             pid_match = re.search(r"sampleplayer\.html/([^/]+)", src)
