@@ -170,3 +170,24 @@ class TestJavsConfig:
         assert not hasattr(config.locations, "history_csv")
         assert not hasattr(config.locations, "tag_csv")
         assert not hasattr(config, "javdb")
+
+    def test_init_csv_templates_creates_user_local_templates(self, tmp_path: Path) -> None:
+        from javs.config.csv_templates import init_csv_templates
+
+        config = JavsConfig()
+        config_path = tmp_path / "config.yaml"
+
+        result = init_csv_templates(config, config_path)
+
+        assert result.genre_csv_path.exists()
+        assert result.thumb_csv_path.exists()
+        assert result.genre_csv_path.read_text(encoding="utf-8-sig").startswith(
+            "Original,Replacement"
+        )
+        assert result.thumb_csv_path.read_text(encoding="utf-8-sig").startswith(
+            "FullName,JapaneseName,ThumbUrl"
+        )
+
+        loaded = load_config(config_path)
+        assert loaded.locations.genre_csv == str(result.genre_csv_path)
+        assert loaded.locations.thumb_csv == str(result.thumb_csv_path)

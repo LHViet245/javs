@@ -37,6 +37,8 @@ class TestCliConfigCommand:
         result = runner.invoke(app, ["config", "--help"])
 
         assert result.exit_code == 0
+        assert "csv-paths" in result.stdout
+        assert "init-csv" in result.stdout
         assert "javlibrary-cookie" in result.stdout
         assert "javlibrary-test" in result.stdout
 
@@ -146,6 +148,44 @@ class TestCliConfigCommand:
             "user_agent": "browser-ua",
         }
         assert "Javlibrary credential hợp lệ." in result.stdout
+
+    def test_config_csv_paths_shows_effective_paths(self, monkeypatch, tmp_path: Path) -> None:
+        cfg = JavsConfig()
+        cfg.locations.genre_csv = str(tmp_path / "genres.csv")
+        cfg.locations.thumb_csv = str(tmp_path / "thumbs.csv")
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
+
+        result = runner.invoke(app, ["config", "csv-paths", "--config", str(tmp_path / "x.yaml")])
+
+        assert result.exit_code == 0
+        assert "CSV Paths" in result.stdout
+        assert str(tmp_path / "genres.csv") in result.stdout
+        assert str(tmp_path / "thumbs.csv") in result.stdout
+
+    def test_config_init_csv_initializes_templates(self, monkeypatch, tmp_path: Path) -> None:
+        target = tmp_path / "config.yaml"
+        recorded: dict[str, object] = {}
+
+        def fake_init(cfg, path):
+            recorded["path"] = path
+            return SimpleNamespace(
+                created=[tmp_path / "genres.csv"],
+                existing=[tmp_path / "thumbs.csv"],
+                genre_csv_path=tmp_path / "genres.csv",
+                thumb_csv_path=tmp_path / "thumbs.csv",
+            )
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr("javs.config.csv_templates.init_csv_templates", fake_init)
+
+        result = runner.invoke(app, ["config", "init-csv", "--config", str(target)])
+
+        assert result.exit_code == 0
+        assert recorded["path"] == target
+        assert "Created CSV template:" in result.stdout
+        assert "CSV already exists:" in result.stdout
+        assert str(tmp_path / "genres.csv") in result.stdout
+        assert str(tmp_path / "thumbs.csv") in result.stdout
 
 
 class TestCliFindCommand:

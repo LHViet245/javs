@@ -72,6 +72,13 @@ python3 -m venv venv
 ./venv/bin/javs update /path/to/vidstream --recurse --refresh-images --refresh-trailer
 ```
 
+5. **Initialize Local CSV Templates:**
+
+```bash
+./venv/bin/javs config init-csv
+./venv/bin/javs config csv-paths
+```
+
 ## 📖 Documentation
 
 For detailed guides, please see the [**Usage Guide**](docs/USAGE.md).

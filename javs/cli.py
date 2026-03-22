@@ -224,7 +224,10 @@ def find(
 def config(
     action: str = typer.Argument(
         "show",
-        help="Action: show, edit, create, path, sync, javlibrary-cookie, javlibrary-test.",
+        help=(
+            "Action: show, edit, create, path, sync, csv-paths, "
+            "init-csv, javlibrary-cookie, javlibrary-test."
+        ),
     ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
@@ -270,6 +273,28 @@ def config(
         else:
             console.print("[red]Failed to sync configuration. Check logs for details.[/red]")
             raise typer.Exit(1)
+
+    elif action == "csv-paths":
+        from javs.config.csv_templates import get_effective_csv_paths
+
+        cfg = load_config(path)
+        csv_paths = get_effective_csv_paths(cfg, path)
+        console.print("[bold]CSV Paths[/bold]")
+        for filename, csv_path in csv_paths.items():
+            exists = "yes" if csv_path.exists() else "no"
+            console.print(f"{filename}: {csv_path} (exists: {exists})", soft_wrap=True)
+
+    elif action == "init-csv":
+        from javs.config.csv_templates import init_csv_templates
+
+        cfg = load_config(path)
+        result = init_csv_templates(cfg, path)
+        for created in result.created:
+            console.print(f"[green]Created CSV template:[/green] {created}", soft_wrap=True)
+        for existing in result.existing:
+            console.print(f"[yellow]CSV already exists:[/yellow] {existing}", soft_wrap=True)
+        console.print(f"[cyan]genres.csv:[/cyan] {result.genre_csv_path}", soft_wrap=True)
+        console.print(f"[cyan]thumbs.csv:[/cyan] {result.thumb_csv_path}", soft_wrap=True)
 
     elif action == "javlibrary-cookie":
         cfg = load_config(path)

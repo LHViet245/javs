@@ -75,6 +75,30 @@ When enabled, `genre_csv` can replace or remove genres, and `thumb_csv` can fill
 actress thumbnails. `auto_add` lets JavS append new genres or actresses it encounters to those
 CSV files for later curation.
 
+To create user-local copies of those templates next to your config file and wire the paths into
+config automatically:
+
+```bash
+./venv/bin/javs config init-csv
+./venv/bin/javs config csv-paths
+```
+
+Example `genres.csv`:
+
+```csv
+Original,Replacement
+Drama,Story
+Hi-Def,
+Featured Actress,
+```
+
+Example `thumbs.csv`:
+
+```csv
+FullName,JapaneseName,ThumbUrl
+Kamiki Rei,神木麗,https://example.com/rei.jpg
+```
+
 To enter Javlibrary Cloudflare credentials without editing YAML manually:
 
 ```bash
