@@ -65,6 +65,16 @@ File detection supports three matching modes in `match.mode`:
 
 `strict` still supports multipart suffixes like `-pt2` and `A/B` when the base ID was matched clearly.
 
+JavS also supports two local CSV customizations in the aggregator layer:
+
+- `locations.genre_csv`: optional path override for `genres.csv`
+- `locations.thumb_csv`: optional path override for `thumbs.csv`
+
+Default templates now live in `javs/data/genres.csv` and `javs/data/thumbs.csv`.
+When enabled, `genre_csv` can replace or remove genres, and `thumb_csv` can fill in missing
+actress thumbnails. `auto_add` lets JavS append new genres or actresses it encounters to those
+CSV files for later curation.
+
 To enter Javlibrary Cloudflare credentials without editing YAML manually:
 
 ```bash

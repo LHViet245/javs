@@ -18,6 +18,7 @@
 - 🌐 **Translation Service:** Built-in async wrappers for `googletrans` and `deepl` to translate metadata automatically.
 - 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
 - 🧠 **Flexible Detection Modes:** Supports built-in automatic matching, a stricter precision-oriented mode, custom regex matching, and multipart detection.
+- 🗃️ **CSV Metadata Overrides:** Supports local `genres.csv` and `thumbs.csv` templates for genre normalization and actress thumbnail caching.
 - ♻️ **In-Place Metadata Refresh:** Re-scan an already sorted library to refresh NFO and metadata sidecars without moving video files, with optional image and trailer re-downloads.
 - ⚙️ **Config Sync:** Merge the latest default template into your local config while preserving supported overrides and YAML comments using `ruamel.yaml` (`./venv/bin/javs config sync`).
 - 🧩 **Javlibrary Recovery:** When Javlibrary hits Cloudflare, you can refresh `cf_clearance` from the CLI (`./venv/bin/javs config javlibrary-cookie`) instead of editing YAML by hand; `browser_user_agent` is reused from config once saved.
