@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -16,6 +18,7 @@ class RegexConfig(BaseModel):
 class MatchConfig(BaseModel):
     """File matching/detection settings."""
 
+    mode: Literal["auto", "strict", "custom"] = "auto"
     minimum_file_size_mb: int = 0
     included_extensions: list[str] = Field(
         default_factory=lambda: [
@@ -33,6 +36,15 @@ class MatchConfig(BaseModel):
     excluded_patterns: list[str] = Field(default_factory=lambda: [r"^.*-trailer*", r"^.*-5\."])
     regex_enabled: bool = False
     regex: RegexConfig = Field(default_factory=RegexConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_legacy_custom_regex_mode(cls, data: object) -> object:
+        """Map legacy regex_enabled=true configs to custom mode when mode is absent."""
+        if isinstance(data, dict) and "mode" not in data and data.get("regex_enabled") is True:
+            data = dict(data)
+            data["mode"] = "custom"
+        return data
 
 
 class FormatConfig(BaseModel):

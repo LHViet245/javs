@@ -57,6 +57,14 @@ To automatically update and merge your local configuration with the latest defau
 ./venv/bin/javs config sync
 ```
 
+File detection supports three matching modes in `match.mode`:
+
+- `auto`: default built-in detection, widest filename coverage
+- `strict`: only match strongly bounded dashed IDs such as `ABP-420`
+- `custom`: use your own `match.regex` pattern
+
+`strict` still supports multipart suffixes like `-pt2` and `A/B` when the base ID was matched clearly.
+
 To enter Javlibrary Cloudflare credentials without editing YAML manually:
 
 ```bash

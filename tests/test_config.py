@@ -25,9 +25,32 @@ class TestJavsConfig:
     def test_match_defaults(self):
         """Match config should have sensible defaults."""
         config = JavsConfig()
+        assert config.match.mode == "auto"
         assert ".mp4" in config.match.included_extensions
         assert ".mkv" in config.match.included_extensions
         assert config.match.minimum_file_size_mb == 0
+
+    def test_legacy_regex_enabled_promotes_match_mode_to_custom(self, tmp_path: Path):
+        path = tmp_path / "legacy-regex.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "match": {
+                        "regex_enabled": True,
+                        "regex": {
+                            "pattern": "([A-Z]+-\\d+)",
+                            "id_match_group": 1,
+                            "part_match_group": 2,
+                        },
+                    }
+                }
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.match.mode == "custom"
+        assert config.match.regex_enabled is True
 
     def test_sort_format_defaults(self):
         """Sort format templates should match Javinizer defaults."""

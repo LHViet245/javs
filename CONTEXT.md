@@ -68,6 +68,7 @@ javs/
 ### Core Engine
 
 - ✅ File scanning and complex JAV ID extraction (Regex based).
+- ✅ File scanning now supports `auto`, `strict`, and `custom` detection modes while preserving multipart handling.
 - ✅ Multipart Detection: Intelligently handles part numbers (e.g. `cd1`, `pt2`, `A/B` attached to ID) while ignoring common subtitle suffixes (e.g., `-C`).
 - ✅ Basic CLI setup using `typer` and `rich`.
 - ✅ Configuration system using `pydantic` models and YAML storage.
