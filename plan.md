@@ -8,7 +8,7 @@ Ke hoach nay khong lap lai audit cu mot cach may moc. Muc tieu la:
 - Dong cac viec con mo theo thu tu uu tien moi
 - Tap trung vao phan con rui ro that, khong tiep tuc "fix lai" nhung muc da on
 
-Ke hoach duoi day duoc cap nhat theo trang thai code hien tai den 2026-03-20.
+Ke hoach duoi day duoc cap nhat theo trang thai code hien tai den 2026-03-22.
 
 ## 2. Trang thai tong quan cua roadmap cu
 
@@ -25,6 +25,7 @@ Ke hoach duoi day duoc cap nhat theo trang thai code hien tai den 2026-03-20.
 | Docs/runtime alignment | Xong | README, USAGE, CONTEXT, va CLI help da duoc dong bo |
 | Dead config surface | Xong | Da wire `required_fields` va loai bo/deprecate cac section placeholder con lai khoi template cong khai |
 | Javlibrary interactive recovery | Xong | Da co prompt `cf_clearance`, reuse `browser_user_agent`, desktop notification best-effort, va retry trong run hien tai |
+| In-place metadata refresh | Xong | Da co `javs update` de refresh NFO/sidecars trong thu vien da sort ma khong move video |
 
 ## 3. Nguyen tac trien khai tiep theo
 
@@ -373,7 +374,7 @@ Ly do sap xep:
 
 - Cac bug contract P0/P1 da duoc dong
 - P2.1 va P2.2 da dat muc tieu chinh; long-tail coverage cho `translator`, `registry`, va `base` da duoc dong bang test
-- Benchmark scrape that da du de giu `sleep=2`; Javlibrary interactive recovery va benchmark co cookie hop le da dong; `HttpClient.download()` cung da duoc chuyen sang async file write. Phan con lai chu yeu la policy rieng cho scraper rate-limited
+- Benchmark scrape that da du de giu `sleep=2`; Javlibrary interactive recovery va benchmark co cookie hop le da dong; `HttpClient.download()` cung da duoc chuyen sang async file write. Da bo sung them `javs update` de cap nhat metadata/NFO tai cho cho thu vien da sort. Phan con lai chu yeu la policy rieng cho scraper rate-limited
 
 ## 8. Lenh verification bat buoc sau moi pha
 

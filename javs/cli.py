@@ -115,6 +115,72 @@ def sort(
         console.print("[yellow]No files were processed.[/yellow]")
 
 
+@app.command("update")
+def update(
+    source: Path = typer.Argument(..., help="Sorted library root or a single video file."),
+    recurse: bool = typer.Option(False, "--recurse", "-r", help="Scan subdirectories."),
+    scrapers: str | None = typer.Option(
+        None, "--scrapers", "-s", help="Comma-separated scraper names to use."
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Overwrite existing sidecars and downloads during update.",
+    ),
+    refresh_images: bool = typer.Option(
+        False,
+        "--refresh-images",
+        help="Re-download existing cover, poster, actress, and screenshot images.",
+    ),
+    refresh_trailer: bool = typer.Option(
+        False,
+        "--refresh-trailer",
+        help="Re-download existing trailer files when metadata has a trailer URL.",
+    ),
+    preview: bool = typer.Option(False, "--preview", "-p", help="Dry run: show what would happen."),
+    config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
+) -> None:
+    """♻️ Refresh metadata sidecars for an already-sorted library without moving files."""
+    from javs.config import load_config
+    from javs.core.engine import JavsEngine
+
+    cfg = load_config(config_path)
+    engine = JavsEngine(
+        cfg,
+        cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
+            cfg, _resolve_config_path(config_path)
+        ),
+    )
+    scraper_list = scrapers.split(",") if scrapers else None
+
+    with _status_context("[bold green]Updating sorted library..."):
+        results = asyncio.run(
+            engine.update_path(
+                source,
+                recurse=recurse,
+                force=force,
+                preview=preview,
+                scraper_names=scraper_list,
+                refresh_images=refresh_images,
+                refresh_trailer=refresh_trailer,
+            )
+        )
+
+    if results:
+        table = Table(title=f"♻️ Updated {len(results)} files")
+        table.add_column("ID", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Studio", style="green")
+
+        for data in results:
+            table.add_row(data.id, data.title or "—", data.maker or "—")
+
+        console.print(table)
+    else:
+        console.print("[yellow]No files were updated.[/yellow]")
+
+
 @app.command()
 def find(
     movie_id: str = typer.Argument(..., help="JAV movie ID (e.g., ABP-420)."),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from pathlib import Path
 
 from javs.config.models import JavsConfig
@@ -153,7 +154,7 @@ class TestJavsEngineLifecycle:
                 id=movie_id,
                 title=f"{movie_id} title",
                 maker="Studio",
-                release_date=None,
+                release_date=date(2024, 1, 1),
                 cover_url="https://example.com/cover.jpg",
                 genres=["Drama"],
                 source="test",
@@ -169,8 +170,82 @@ class TestJavsEngineLifecycle:
 
         result = asyncio.run(engine.sort_path(source, dest, recurse=False))
 
-        assert len(result) == 0
+        assert [movie.id for movie in result] == ["ABP-420", "SSIS-001"]
         assert max_in_flight >= 1
+        assert engine.http.enter_count == 1
+        assert engine.http.exit_count == 1
+
+    def test_update_path_keeps_session_open_for_the_whole_batch(self, monkeypatch, tmp_path: Path):
+        """update_path() should share one HTTP session across the whole refresh batch."""
+        config = JavsConfig(throttle_limit=2, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        library = tmp_path / "library"
+        library.mkdir()
+
+        scanned_files = [
+            ScannedFile(
+                path=library / "ABP-420.mp4",
+                filename="ABP-420.mp4",
+                basename="ABP-420",
+                extension=".mp4",
+                directory=library,
+                size_bytes=1024,
+                movie_id="ABP-420",
+            ),
+            ScannedFile(
+                path=library / "SSIS-001.mp4",
+                filename="SSIS-001.mp4",
+                basename="SSIS-001",
+                extension=".mp4",
+                directory=library,
+                size_bytes=1024,
+                movie_id="SSIS-001",
+            ),
+        ]
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: scanned_files)
+
+        async def fake_find(movie_id: str, scraper_names=None, aggregate: bool = True):
+            assert scraper_names == ["javlibrary"]
+            assert engine.http.enter_count == 1
+            assert engine.http.exit_count == 0
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        async def fake_update_movie(
+            file,
+            data,
+            *,
+            force=False,
+            preview=False,
+            refresh_images=False,
+            refresh_trailer=False,
+        ):
+            assert engine.http.enter_count == 1
+            assert engine.http.exit_count == 0
+            assert refresh_images is True
+            assert refresh_trailer is True
+            return None
+
+        engine.find = fake_find  # type: ignore[method-assign]
+        monkeypatch.setattr(engine.organizer, "update_movie", fake_update_movie)
+
+        result = asyncio.run(
+            engine.update_path(
+                library,
+                scraper_names=["javlibrary"],
+                refresh_images=True,
+                refresh_trailer=True,
+            )
+        )
+
+        assert [movie.id for movie in result] == ["ABP-420", "SSIS-001"]
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
 

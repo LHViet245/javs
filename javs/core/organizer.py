@@ -116,6 +116,46 @@ class FileOrganizer:
             part_number=file.part_number or 0,
         )
 
+    def build_update_paths(
+        self,
+        file: ScannedFile,
+        data: MovieData,
+    ) -> SortPaths:
+        """Calculate sidecar paths for an already-sorted movie in its current folder."""
+        fmt = self.config.sort.format
+        template_data = self._build_template_data(data)
+        folder_path = file.directory
+        thumb_name = sanitize_filename(
+            format_template(fmt.thumb_img, template_data, fmt.delimiter, fmt.max_title_length)
+        )
+        poster_paths = []
+        for poster_fmt in fmt.poster_img:
+            poster_name = sanitize_filename(
+                format_template(poster_fmt, template_data, fmt.delimiter, fmt.max_title_length)
+            )
+            poster_paths.append(folder_path / f"{poster_name}.jpg")
+
+        return SortPaths(
+            folder_path=folder_path,
+            folder_name=folder_path.name,
+            file_path=file.path,
+            file_name=file.basename,
+            nfo_path=self._resolve_update_nfo_path(file, data),
+            thumb_path=folder_path / f"{thumb_name}.jpg",
+            poster_paths=poster_paths,
+            trailer_path=(
+                folder_path
+                / f"{sanitize_filename(format_template(fmt.trailer_vid, template_data))}.mp4"
+                if self.config.sort.download.trailer_vid
+                else None
+            ),
+            screenshot_folder_path=folder_path / fmt.screenshot_folder,
+            screenshot_img_name=fmt.screenshot_img,
+            actor_folder_path=folder_path / fmt.actress_img_folder,
+            parent_path=file.directory,
+            part_number=file.part_number or 0,
+        )
+
     async def sort_movie(
         self,
         file: ScannedFile,
@@ -191,6 +231,63 @@ class FileOrganizer:
         )
         return sort_paths
 
+    async def update_movie(
+        self,
+        file: ScannedFile,
+        data: MovieData,
+        force: bool = False,
+        preview: bool = False,
+        refresh_images: bool = False,
+        refresh_trailer: bool = False,
+    ) -> SortPaths:
+        """Refresh sidecars for an already-sorted movie without moving media files."""
+        update_paths = self.build_update_paths(file, data)
+
+        if preview:
+            logger.info(
+                "preview_update",
+                id=data.id,
+                source=str(file.path),
+                folder=str(update_paths.folder_path),
+                nfo=str(update_paths.nfo_path),
+            )
+            return update_paths
+
+        image_force = force or refresh_images
+        trailer_force = force or refresh_trailer
+
+        update_paths.folder_path.mkdir(parents=True, exist_ok=True)
+
+        if self.config.sort.metadata.nfo.create:
+            await self._write_nfo(data, update_paths, file, force=True)
+
+        if self.config.sort.download.thumb_img and data.cover_url:
+            await self._download_thumb(data, update_paths, image_force)
+
+        if self.config.sort.download.poster_img and data.cover_url:
+            await self._create_posters(update_paths, image_force)
+
+        if self.config.sort.download.actress_img and data.actresses:
+            await self._download_actress_images(data, update_paths, image_force)
+
+        if self.config.sort.download.screenshot_img and data.screenshot_urls:
+            await self._download_screenshots(data, update_paths, image_force)
+
+        if (
+            self.config.sort.download.trailer_vid
+            and data.trailer_url
+            and update_paths.trailer_path
+        ):
+            await self._download_trailer(data, update_paths, trailer_force)
+
+        logger.info(
+            "update_complete",
+            id=data.id,
+            source=str(file.path),
+            folder=str(update_paths.folder_path),
+        )
+        return update_paths
+
     # ─── Private helpers ─────────────────────────────────────────
 
     def _build_template_data(self, data: MovieData) -> dict:
@@ -210,6 +307,24 @@ class FileOrganizer:
             "director": data.director or "",
             "actresses": actress_names,
         }
+
+    def _resolve_update_nfo_path(self, file: ScannedFile, data: MovieData) -> Path:
+        """Pick the existing NFO path when possible, otherwise create one in the current folder."""
+        folder_path = file.directory
+        per_file_candidate = folder_path / f"{file.basename}.nfo"
+        if per_file_candidate.exists():
+            return per_file_candidate
+
+        existing_nfos = sorted(folder_path.glob("*.nfo"))
+        if len(existing_nfos) == 1:
+            return existing_nfos[0]
+
+        fmt = self.config.sort.format
+        template_data = self._build_template_data(data)
+        nfo_name = sanitize_filename(
+            format_template(fmt.nfo, template_data, fmt.delimiter, fmt.max_title_length)
+        )
+        return folder_path / f"{nfo_name}.nfo"
 
     async def _write_nfo(
         self,

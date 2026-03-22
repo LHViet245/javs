@@ -76,6 +76,7 @@ javs/
 - ✅ Data Aggregation (merging missing fields from lower priority scrapers).
 - ✅ NFO Generation (Emby/Kodi compatible).
 - ✅ File Organization (Renaming and moving based on templates, handles nested folder flattening and matching subtitle synchronization).
+- ✅ In-place Library Refresh (`javs update`) that re-scrapes already sorted folders and rewrites metadata sidecars without moving media files.
 
 ### Scrapers
 
@@ -132,4 +133,5 @@ javs/
 2. `HttpClient` now uses separate direct/proxy sessions and `verify_ssl` semantics are aligned with aiohttp.
 3. Config sync supports custom paths and the default template has been re-aligned with the runtime schema.
 4. `mgstageja` has fixture-backed parser tests and Javlibrary direct-match handling is being tightened further.
-5. Remaining priorities are regression coverage, docs/runtime alignment, and trimming stale config surface.
+5. `javs update` now refreshes NFO and optional assets/trailers in place for already sorted libraries.
+6. Remaining priorities are rate-limit policy trade-offs, deeper live benchmarking, and smaller docs/runtime cleanup.

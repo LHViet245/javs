@@ -64,6 +64,36 @@ class TestFileOrganizer:
 
         assert "pt2" in paths.file_name
 
+    def test_build_update_paths_keeps_existing_folder_and_video_path(self, tmp_path: Path):
+        """Update mode should refresh sidecars in place without renaming the movie file."""
+        folder = tmp_path / "ABP-420 [Old Studio] - Old Title (2023)"
+        folder.mkdir()
+        video = folder / "ABP-420.mp4"
+        video.write_bytes(b"video")
+        file = ScannedFile(
+            path=video,
+            filename=video.name,
+            basename=video.stem,
+            extension=video.suffix,
+            directory=folder,
+            size_bytes=video.stat().st_size,
+            movie_id="ABP-420",
+        )
+        data = MovieData(
+            id="ABP-420",
+            title="New Title",
+            maker="New Studio",
+            release_date=date(2024, 1, 1),
+            source="test",
+        )
+
+        paths = self.organizer.build_update_paths(file, data)
+
+        assert paths.folder_path == folder
+        assert paths.file_path == video
+        assert paths.file_name == "ABP-420"
+        assert paths.nfo_path == folder / "ABP-420.nfo"
+
     def test_move_subtitles_only_moves_matching_video_stem(self, tmp_path: Path):
         """Subtitle moves should be limited to files matching the video stem."""
         source_dir = tmp_path / "source"
@@ -166,6 +196,52 @@ class TestFileOrganizer:
         assert file.path.exists()
 
     @pytest.mark.asyncio
+    async def test_update_movie_preview_skips_side_effects(self, monkeypatch, tmp_path: Path):
+        """Update preview should compute in-place sidecar paths without touching files."""
+        folder = tmp_path / "ABP-420"
+        folder.mkdir()
+        file = ScannedFile(
+            path=folder / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=folder,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        data = MovieData(id="ABP-420", title="Updated Movie", source="test")
+        file.path.write_bytes(b"video")
+
+        monkeypatch.setattr(
+            self.organizer, "_write_nfo", AsyncMock(side_effect=AssertionError)
+        )
+        monkeypatch.setattr(
+            self.organizer, "_download_thumb", AsyncMock(side_effect=AssertionError)
+        )
+        monkeypatch.setattr(
+            self.organizer, "_create_posters", AsyncMock(side_effect=AssertionError)
+        )
+        monkeypatch.setattr(
+            self.organizer,
+            "_download_actress_images",
+            AsyncMock(side_effect=AssertionError),
+        )
+        monkeypatch.setattr(
+            self.organizer,
+            "_download_screenshots",
+            AsyncMock(side_effect=AssertionError),
+        )
+        monkeypatch.setattr(
+            self.organizer, "_download_trailer", AsyncMock(side_effect=AssertionError)
+        )
+
+        paths = await self.organizer.update_movie(file, data, preview=True)
+
+        assert paths.folder_path == folder
+        assert paths.file_path == file.path
+        assert file.path.exists()
+
+    @pytest.mark.asyncio
     async def test_write_nfo_includes_original_path_when_enabled(
         self, monkeypatch, tmp_path: Path
     ):
@@ -212,6 +288,40 @@ class TestFileOrganizer:
 
         assert paths.nfo_path.exists()
         assert str(source) in paths.nfo_path.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_update_movie_rewrites_existing_nfo(self, monkeypatch, tmp_path: Path):
+        """Update mode should rewrite NFO content even when the file already exists."""
+        organizer = FileOrganizer(self.config)
+        folder = tmp_path / "ABP-420"
+        folder.mkdir()
+        source = folder / "ABP-420.mp4"
+        source.write_bytes(b"video")
+        existing_nfo = folder / "ABP-420.nfo"
+        existing_nfo.write_text("old", encoding="utf-8")
+
+        async def fake_to_thread(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        from javs.core import organizer as organizer_module
+
+        monkeypatch.setattr(organizer_module.asyncio, "to_thread", fake_to_thread)
+
+        await organizer.update_movie(
+            ScannedFile(
+                path=source,
+                filename=source.name,
+                basename=source.stem,
+                extension=source.suffix,
+                directory=folder,
+                size_bytes=source.stat().st_size,
+                movie_id="ABP-420",
+            ),
+            MovieData(id="ABP-420", title="Movie", source="test"),
+        )
+
+        assert existing_nfo.exists()
+        assert "Movie" in existing_nfo.read_text(encoding="utf-8")
 
     @pytest.mark.asyncio
     async def test_download_thumb_skips_existing_file_without_force(self, tmp_path: Path):
@@ -389,6 +499,48 @@ class TestFileOrganizer:
         await organizer._download_trailer(data, paths, force=False)
 
         http.download.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_movie_refresh_flags_force_assets(self, monkeypatch, tmp_path: Path):
+        """Update mode should only force-refresh the requested asset groups."""
+        self.config.sort.download.trailer_vid = True
+        file = ScannedFile(
+            path=tmp_path / "ABP-420" / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=tmp_path / "ABP-420",
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        file.directory.mkdir()
+        file.path.write_bytes(b"video")
+        data = MovieData(
+            id="ABP-420",
+            title="Movie",
+            source="test",
+            cover_url="https://example.com/cover.jpg",
+            trailer_url="https://example.com/trailer.mp4",
+        )
+        organizer = FileOrganizer(self.config, http=AsyncMock())
+        thumb = AsyncMock()
+        posters = AsyncMock()
+        actress = AsyncMock()
+        screenshots = AsyncMock()
+        trailer = AsyncMock()
+
+        monkeypatch.setattr(organizer, "_write_nfo", AsyncMock())
+        monkeypatch.setattr(organizer, "_download_thumb", thumb)
+        monkeypatch.setattr(organizer, "_create_posters", posters)
+        monkeypatch.setattr(organizer, "_download_actress_images", actress)
+        monkeypatch.setattr(organizer, "_download_screenshots", screenshots)
+        monkeypatch.setattr(organizer, "_download_trailer", trailer)
+
+        await organizer.update_movie(file, data, refresh_images=True, refresh_trailer=False)
+
+        assert thumb.await_args.args[2] is True
+        assert posters.await_args.args[1] is True
+        assert trailer.await_args.args[2] is False
 
     def test_move_video_keeps_source_when_destination_exists_without_force(self, tmp_path: Path):
         source = tmp_path / "ABP-420.mp4"

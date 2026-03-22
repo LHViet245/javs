@@ -247,6 +247,70 @@ class TestCliSortAndScrapers:
         assert "Sorted 1 files" in result.stdout
         assert "ABP-420" in result.stdout
 
+    def test_sort_update_passes_flags_to_engine_and_shows_result_table(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+
+            async def update_path(
+                self,
+                source: Path,
+                recurse: bool,
+                force: bool,
+                preview: bool,
+                scraper_names=None,
+                refresh_images: bool = False,
+                refresh_trailer: bool = False,
+            ):
+                captured.update(
+                    {
+                        "source": source,
+                        "recurse": recurse,
+                        "force": force,
+                        "preview": preview,
+                        "scraper_names": scraper_names,
+                        "refresh_images": refresh_images,
+                        "refresh_trailer": refresh_trailer,
+                    }
+                )
+                return [_movie_data()]
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        library = tmp_path / "library"
+
+        result = runner.invoke(
+            app,
+            [
+                "update",
+                str(library),
+                "--recurse",
+                "--force",
+                "--preview",
+                "--refresh-images",
+                "--refresh-trailer",
+                "--scrapers",
+                "javlibrary,dmm",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured == {
+            "source": library,
+            "recurse": True,
+            "force": True,
+            "preview": True,
+            "scraper_names": ["javlibrary", "dmm"],
+            "refresh_images": True,
+            "refresh_trailer": True,
+        }
+        assert "Updated 1 files" in result.stdout
+        assert "ABP-420" in result.stdout
+
     def test_scrapers_lists_registered_names(self, monkeypatch) -> None:
         monkeypatch.setattr(registry_module.ScraperRegistry, "load_all", lambda: None)
         monkeypatch.setattr(
