@@ -1,6 +1,7 @@
 """Tests for file scanner and ID extraction."""
 
 import pytest
+from pydantic import ValidationError
 
 from javs.config.models import MatchConfig
 from javs.core.scanner import FileScanner
@@ -49,6 +50,73 @@ class TestFileScanner:
         """Part number detection should work."""
         _, part = self.scanner.extract_id(filename)
         assert part == expected_part
+
+    @pytest.mark.parametrize(
+        "filename, expected_id",
+        [
+            ("ABP-420", "ABP-420"),
+            ("Some.Random.Text.ABP-420.1080p", "ABP-420"),
+            ("[THZ] SSIS-001 sample", "SSIS-001"),
+            ("DVMM-377A", "DVMM-377"),
+        ],
+    )
+    def test_strict_mode_extracts_only_bounded_dashed_ids(self, filename, expected_id):
+        scanner = FileScanner(MatchConfig(mode="strict"))
+
+        movie_id, _part = scanner.extract_id(filename)
+
+        assert movie_id == expected_id
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "ABP420",
+            "movieabp420sample",
+            "subtitle_ABP420",
+        ],
+    )
+    def test_strict_mode_rejects_ambiguous_no_dash_matches(self, filename):
+        scanner = FileScanner(MatchConfig(mode="strict"))
+
+        movie_id, part = scanner.extract_id(filename)
+
+        assert movie_id is None
+        assert part is None
+
+    def test_strict_mode_keeps_part_detection_for_dashed_ids(self):
+        scanner = FileScanner(MatchConfig(mode="strict"))
+
+        movie_id, part = scanner.extract_id("ABP-420-pt2")
+
+        assert movie_id == "ABP-420"
+        assert part == 2
+
+    def test_custom_mode_uses_custom_regex(self):
+        scanner = FileScanner(
+            MatchConfig(
+                mode="custom",
+                regex_enabled=True,
+                regex={
+                    "pattern": r"custom_([a-z]{3}\d{3})_disc(\d)",
+                    "id_match_group": 1,
+                    "part_match_group": 2,
+                },
+            )
+        )
+
+        movie_id, part = scanner.extract_id("custom_abp420_disc2")
+
+        assert movie_id == "ABP420"
+        assert part == 2
+
+    def test_match_config_maps_legacy_regex_enabled_to_custom_mode(self):
+        config = MatchConfig(regex_enabled=True)
+
+        assert config.mode == "custom"
+
+    def test_match_config_rejects_unknown_mode(self):
+        with pytest.raises(ValidationError):
+            MatchConfig(mode="relaxed")  # type: ignore[arg-type]
 
     def test_scan_directory(self, tmp_path):
         """Scanner should find matching video files."""

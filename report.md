@@ -2,7 +2,7 @@
 
 ## 1. Thong tin chung
 
-- Thoi diem audit cap nhat: 2026-03-20
+- Thoi diem audit cap nhat: 2026-03-22
 - Pham vi: toan bo repo hien co trong worktree, bao gom tai lieu `.md`, ma nguon Python, test suite, script ho tro, va tinh trang quality gate hien tai
 - Nguyen tac thuc hien: ban 2026-03-16 la dot doi chieu tai lieu; ban cap nhat 2026-03-17 tong hop ket qua sau dot sua code, them regression tests, va dong bo lai tai lieu/runtime
 - Boi canh worktree: dirty; bao cao nay phan anh dung trang thai dang lam viec hien tai, khong mac dinh la mot commit sach
@@ -19,6 +19,7 @@ Theo `README.md`, `CONTEXT.md`, va `docs/USAGE.md`, JavS la mot CLI Python bat d
 - Tong hop metadata theo thu tu uu tien
 - Tao NFO, tai poster/thumb/trailer
 - Sap xep va doi ten thu vien media
+- Cap nhat metadata/sidecars cho thu vien da sort ma khong di chuyen video
 
 ### 2.2 Kien truc va phan lop
 
@@ -97,7 +98,7 @@ Tai lieu hien tai da tro lai gan hon voi runtime:
 
 | Hang muc | Ket qua | Nhan xet |
 | --- | --- | --- |
-| Test suite | `248 passed in 2.31s` | Tang tiep nho Javlibrary interactive recovery, credential helper tests, va hardening output/runtime cho Cloudflare flow |
+| Test suite | `254 passed in 1.42s` | Tang nho them coverage cho `update` mode, organizer in-place refresh, va wiring CLI/engine moi |
 | Ruff | `All checks passed!` | Da sach lint, day la cai thien ro rang so voi audit truoc |
 | Coverage | `79%` tong | Da vuot them moc `75%`, va long-tail coverage gap chinh cua P2.2 da duoc dong |
 | CLI help | `config sync` da hien trong help | Help/runtime da duoc dong bo va co test CLI bao ve |
@@ -155,6 +156,7 @@ Tuy vay, repo van chua o muc "audit clean" vi:
 13. Long-tail coverage cho `translator`, `registry`, va `scrapers/base` da duoc dong.
 14. Da them `scripts/benchmark_real_scrape.py` de do request/latency tren luong scrape that ma khong tron voi synthetic benchmark.
 15. `HttpClient.download()` da duoc harden bang temp-file `.part`, atomic replace, cleanup khi stream/request loi, va async file write bang `aiofiles`.
+16. Da bo sung `javs update` de refresh NFO/metadata sidecars trong thu vien da sort ma khong move video, kem option `--refresh-images` va `--refresh-trailer`.
 
 ### 5.2 Cac van de chi moi duoc xu ly mot phan
 
@@ -174,6 +176,7 @@ Tuy vay, repo van chua o muc "audit clean" vi:
 - `tests/test_proxy.py` da khoa them nested parent, cleanup partial file, request setup failure, no-hang close, va async-file write quanh `download()`
 - `scripts/benchmark_real_scrape.py` va `tests/test_benchmark_real_scrape.py` moi da chuan hoa luong do request/latency cho benchmark manual that
 - `javs/services/javlibrary_auth.py` moi da them helper prompt/test/save cho `cf_clearance` va `browser_user_agent`, cung voi output guidance de doc hon
+- `javs/core/organizer.py`, `javs/core/engine.py`, va `javs/cli.py` nay da co luong `update` rieng cho thu vien da sort, bao dam chi rewrite sidecars/NFO trong thu muc hien co
 - Snapshot live dau tien da cho thay:
   - `find` voi `dmm`, `4` ID, `sleep=2`: `34.7462s`, `4/4 found`
   - `sort` voi `dmm`, `4` ID: `sleep=2` -> `27.9004s`, `sleep=0` -> `21.0701s`, overhead ~ `1.32x`
@@ -510,7 +513,7 @@ Luong `scan -> scrape -> aggregate -> organize` van hop ly va de doc.
 So voi audit truoc, bug integration nghiem trong da giam ro rang. Van de lon nhat hien tai khong con la "core flow hong", ma la:
 
 - benchmark da du co baseline, nhung chua co policy cooldown rieng cho scraper rate-limited
-- file I/O strategy cua `download()` da duoc xu ly; phan con mo nghieng ve pacing/rate-limit policy theo scraper
+- file I/O strategy cua `download()` da duoc xu ly; `update` mode cho thu vien da sort da co implementation va test. Phan con mo nghieng ve pacing/rate-limit policy theo scraper
 - policy throttling theo scraper neu muon toi uu them van con mo, du global `sleep=2` da co co so de giu nguyen
 
 ## 10. Diem manh cua du an

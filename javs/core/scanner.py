@@ -28,6 +28,15 @@ DEFAULT_PATTERNS = [
     r"(T28)-(\d{3})",
 ]
 
+STRICT_PATTERNS = [
+    # Numeric prefix with explicit boundary: 259LUXU-1234
+    r"(?:^|[\s._\-\[(])(\d{3}[a-zA-Z]{3,5})-(\d{3,5})(?=$|[\s._\-\])]|[a-c](?=$|[\s._\-\])]))",
+    # Standard dashed IDs: ABC-123, SSIS-001
+    r"(?:^|[\s._\-\[(])([a-zA-Z]{2,10})-(\d{3,5})(?=$|[\s._\-\])]|[a-c](?=$|[\s._\-\])]))",
+    # Uncensored/FC2: 123456-789
+    r"(?:^|[\s._\-\[(])(\d{6,})-(\d{3,4})(?=$|[\s._\-\])]|[a-c](?=$|[\s._\-\])]))",
+]
+
 # Pattern for part/disc number detection
 PART_PATTERNS = [
     r"[-_. ](?:pt|part|cd|disc|disk)[-_. ]?(\d{1,2})",
@@ -171,11 +180,12 @@ class FileScanner:
         Returns:
             Tuple of (movie_id, part_number) or (None, None).
         """
-        # Use custom regex if enabled
-        if self.config.regex_enabled and self.config.regex:
+        if self.config.mode == "custom" and self.config.regex:
             return self._extract_with_custom_regex(filename)
+        if self.config.mode == "strict":
+            return self._extract_with_patterns(filename, STRICT_PATTERNS)
 
-        return self._extract_with_defaults(filename)
+        return self._extract_with_patterns(filename, DEFAULT_PATTERNS)
 
     def _extract_with_custom_regex(self, filename: str) -> tuple[str | None, int | None]:
         """Extract using user-configured regex pattern."""
@@ -199,12 +209,16 @@ class FileScanner:
 
         return movie_id, part
 
-    def _extract_with_defaults(self, filename: str) -> tuple[str | None, int | None]:
-        """Extract using built-in JAV ID patterns."""
+    def _extract_with_patterns(
+        self,
+        filename: str,
+        patterns: list[str],
+    ) -> tuple[str | None, int | None]:
+        """Extract using a provided ordered list of JAV ID patterns."""
         clean = filename.strip()
 
         # Try each pattern
-        for pattern in DEFAULT_PATTERNS:
+        for pattern in patterns:
             match = re.search(pattern, clean, re.IGNORECASE)
             if match:
                 prefix = match.group(1).upper()

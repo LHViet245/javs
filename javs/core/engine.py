@@ -197,7 +197,6 @@ class JavsEngine:
         Returns:
             List of successfully processed MovieData.
         """
-        # 1. Scan files
         files = self.scanner.scan(source, recurse=recurse)
         if not files:
             logger.warning("no_files_found", path=str(source))
@@ -205,7 +204,66 @@ class JavsEngine:
 
         logger.info("files_scanned", count=len(files))
 
-        # 2. Process each file
+        async def sort_one(file: ScannedFile, data: MovieData) -> None:
+            await self.organizer.sort_movie(file, data, dest, force=force, preview=preview)
+
+        results = await self._process_scanned_files(files, process_movie=sort_one)
+        logger.info("sort_complete", processed=len(results), total=len(files))
+        return results
+
+    async def update_path(
+        self,
+        source: Path,
+        recurse: bool = False,
+        force: bool = False,
+        preview: bool = False,
+        scraper_names: list[str] | None = None,
+        refresh_images: bool = False,
+        refresh_trailer: bool = False,
+    ) -> list[MovieData]:
+        """Refresh metadata sidecars for an already-sorted library without moving videos."""
+        files = self.scanner.scan(source, recurse=recurse)
+        if not files:
+            logger.warning("no_files_found", path=str(source))
+            return []
+
+        logger.info("files_scanned", count=len(files), mode="update")
+
+        async def update_one(file: ScannedFile, data: MovieData) -> None:
+            await self.organizer.update_movie(
+                file,
+                data,
+                force=force,
+                preview=preview,
+                refresh_images=refresh_images,
+                refresh_trailer=refresh_trailer,
+            )
+
+        results = await self._process_scanned_files(
+            files,
+            scraper_names=scraper_names,
+            process_movie=update_one,
+        )
+        logger.info("update_complete", processed=len(results), total=len(files))
+        return results
+
+    async def close(self) -> None:
+        """Clean up resources."""
+        await self.http.close()
+
+    async def _run_scrapers(self, scrapers, movie_id: str) -> list[MovieData | Exception | None]:
+        """Run scraper tasks concurrently and keep exception objects for inspection."""
+        tasks = [s.search_and_scrape(movie_id) for s in scrapers]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _process_scanned_files(
+        self,
+        files: list[ScannedFile],
+        *,
+        process_movie: Callable[[ScannedFile, MovieData], Awaitable[None]],
+        scraper_names: list[str] | None = None,
+    ) -> list[MovieData]:
+        """Process a batch of scanned files with shared scrape pacing and session lifecycle."""
         results: list[MovieData] = []
         scrape_sem = asyncio.Semaphore(self.config.throttle_limit)
         cooldown_tasks: set[asyncio.Task[None]] = set()
@@ -230,9 +288,8 @@ class JavsEngine:
             await scrape_sem.acquire()
             waiting_for_scrape_slot -= 1
             try:
-                data = await self.find(file.movie_id)
+                data = await self.find(file.movie_id, scraper_names=scraper_names)
             finally:
-                # Cool down scraper throughput without blocking organizer work or other slots.
                 schedule_scrape_slot_release(
                     apply_sleep=not is_last and waiting_for_scrape_slot > 0
                 )
@@ -251,12 +308,8 @@ class JavsEngine:
                 )
                 return None
 
-            # Apply original filename tracking
             data.original_filename = file.filename
-
-            # Sort
-            await self.organizer.sort_movie(file, data, dest, force=force, preview=preview)
-
+            await process_movie(file, data)
             return data
 
         async with self.http:
@@ -266,23 +319,13 @@ class JavsEngine:
             if cooldown_tasks:
                 await asyncio.gather(*cooldown_tasks, return_exceptions=True)
 
-        for r in task_results:
-            if isinstance(r, MovieData):
-                results.append(r)
-            elif isinstance(r, Exception):
-                logger.error("process_error", error=str(r))
+        for result in task_results:
+            if isinstance(result, MovieData):
+                results.append(result)
+            elif isinstance(result, Exception):
+                logger.error("process_error", error=str(result))
 
-        logger.info("sort_complete", processed=len(results), total=len(files))
         return results
-
-    async def close(self) -> None:
-        """Clean up resources."""
-        await self.http.close()
-
-    async def _run_scrapers(self, scrapers, movie_id: str) -> list[MovieData | Exception | None]:
-        """Run scraper tasks concurrently and keep exception objects for inspection."""
-        tasks = [s.search_and_scrape(movie_id) for s in scrapers]
-        return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _recover_javlibrary_and_retry(
         self,

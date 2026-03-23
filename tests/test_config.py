@@ -25,9 +25,32 @@ class TestJavsConfig:
     def test_match_defaults(self):
         """Match config should have sensible defaults."""
         config = JavsConfig()
+        assert config.match.mode == "auto"
         assert ".mp4" in config.match.included_extensions
         assert ".mkv" in config.match.included_extensions
         assert config.match.minimum_file_size_mb == 0
+
+    def test_legacy_regex_enabled_promotes_match_mode_to_custom(self, tmp_path: Path):
+        path = tmp_path / "legacy-regex.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "match": {
+                        "regex_enabled": True,
+                        "regex": {
+                            "pattern": "([A-Z]+-\\d+)",
+                            "id_match_group": 1,
+                            "part_match_group": 2,
+                        },
+                    }
+                }
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.match.mode == "custom"
+        assert config.match.regex_enabled is True
 
     def test_sort_format_defaults(self):
         """Sort format templates should match Javinizer defaults."""
@@ -147,3 +170,24 @@ class TestJavsConfig:
         assert not hasattr(config.locations, "history_csv")
         assert not hasattr(config.locations, "tag_csv")
         assert not hasattr(config, "javdb")
+
+    def test_init_csv_templates_creates_user_local_templates(self, tmp_path: Path) -> None:
+        from javs.config.csv_templates import init_csv_templates
+
+        config = JavsConfig()
+        config_path = tmp_path / "config.yaml"
+
+        result = init_csv_templates(config, config_path)
+
+        assert result.genre_csv_path.exists()
+        assert result.thumb_csv_path.exists()
+        assert result.genre_csv_path.read_text(encoding="utf-8-sig").startswith(
+            "Original,Replacement"
+        )
+        assert result.thumb_csv_path.read_text(encoding="utf-8-sig").startswith(
+            "FullName,JapaneseName,ThumbUrl"
+        )
+
+        loaded = load_config(config_path)
+        assert loaded.locations.genre_csv == str(result.genre_csv_path)
+        assert loaded.locations.thumb_csv == str(result.thumb_csv_path)

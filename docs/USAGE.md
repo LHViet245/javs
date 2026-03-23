@@ -57,6 +57,48 @@ To automatically update and merge your local configuration with the latest defau
 ./venv/bin/javs config sync
 ```
 
+File detection supports three matching modes in `match.mode`:
+
+- `auto`: default built-in detection, widest filename coverage
+- `strict`: only match strongly bounded dashed IDs such as `ABP-420`
+- `custom`: use your own `match.regex` pattern
+
+`strict` still supports multipart suffixes like `-pt2` and `A/B` when the base ID was matched clearly.
+
+JavS also supports two local CSV customizations in the aggregator layer:
+
+- `locations.genre_csv`: optional path override for `genres.csv`
+- `locations.thumb_csv`: optional path override for `thumbs.csv`
+
+Default templates now live in `javs/data/genres.csv` and `javs/data/thumbs.csv`.
+When enabled, `genre_csv` can replace or remove genres, and `thumb_csv` can fill in missing
+actress thumbnails. `auto_add` lets JavS append new genres or actresses it encounters to those
+CSV files for later curation.
+
+To create user-local copies of those templates next to your config file and wire the paths into
+config automatically:
+
+```bash
+./venv/bin/javs config init-csv
+./venv/bin/javs config csv-paths
+```
+
+Example `genres.csv`:
+
+```csv
+Original,Replacement
+Drama,Story
+Hi-Def,
+Featured Actress,
+```
+
+Example `thumbs.csv`:
+
+```csv
+FullName,JapaneseName,ThumbUrl
+Kamiki Rei,神木麗,https://example.com/rei.jpg
+```
+
 To enter Javlibrary Cloudflare credentials without editing YAML manually:
 
 ```bash
@@ -110,7 +152,33 @@ javs sort /path/to/unsorted /path/to/vidstream --recurse
 5. Generates Kodi/Emby compatible `<id>.nfo`.
 6. Renames and moves the files according to config (e.g., `Sorted/Maker - Title/ID.mp4`).
 
-### 3. `scrapers` - Manage Plugins
+### 3. `update` - Refresh an Existing Sorted Library
+
+Refresh metadata sidecars for videos that are already organized in-place. This command re-scans
+video filenames to extract IDs, scrapes fresh metadata, and updates files inside the current movie
+folder without moving or renaming the video itself.
+
+```bash
+# Refresh NFO/metadata in place
+javs update /path/to/vidstream --recurse
+
+# Re-download existing images and trailer as well
+javs update /path/to/vidstream --recurse --refresh-images --refresh-trailer
+```
+
+**Update behavior:**
+
+1. Scans the sorted library for supported video files and extracts movie IDs from filenames.
+2. Scrapes fresh metadata from the selected scrapers.
+3. Rewrites the `.nfo` in the current movie folder.
+4. Keeps the current video file and folder in place.
+5. Re-downloads posters/thumbs/screenshots/actress images only when requested with `--refresh-images`.
+6. Re-downloads the trailer only when requested with `--refresh-trailer`.
+
+This is intended for already-sorted libraries where you want better metadata without triggering a
+new move/rename pass.
+
+### 4. `scrapers` - Manage Plugins
 
 List all recognized and registered scraper plugins:
 

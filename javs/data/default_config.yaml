@@ -17,6 +17,7 @@ locations:
 
 # ─── File Matching ───────────────────────────────────────────────
 match:
+  mode: auto         # auto = regex built-in linh hoat, strict = uu tien precision, custom = dung regex ben duoi
   minimum_file_size_mb: 0
   included_extensions:
     - .asf
