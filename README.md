@@ -82,7 +82,10 @@ python3 -m venv venv
 ## 📖 Documentation
 
 For detailed guides, please see the [**Usage Guide**](docs/USAGE.md).
+If you are new to JavS and want a practical, step-by-step workflow, start with the
+[**Everyday User Playbook**](docs/PLAYBOOK.md).
 
+- [Everyday User Playbook](docs/PLAYBOOK.md)
 - [Configuration Guide](docs/USAGE.md#%EF%B8%8F-configuration)
 - [Available Commands](docs/USAGE.md#-key-commands)
 - [Scraper Plugins](docs/USAGE.md#-available-scrapers)
