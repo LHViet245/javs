@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import aiofiles
 import aiohttp
 from tenacity import (
-    retry,
+    AsyncRetrying,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -19,6 +20,8 @@ from yarl import URL
 from javs.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+T = TypeVar("T")
 
 
 # Default headers to mimic a browser
@@ -207,12 +210,23 @@ class HttpClient:
             msg = msg.replace(self._proxy_url, self._proxy_masked)
         return msg
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type(_RETRY_EXCEPTIONS),
-        reraise=True,
-    )
+    def _retrying(self) -> AsyncRetrying:
+        """Build the retry policy using the configured retry count."""
+        return AsyncRetrying(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type(_RETRY_EXCEPTIONS),
+            reraise=True,
+        )
+
+    async def _run_with_retry(self, operation: Callable[[], Awaitable[T]]) -> T:
+        """Run one async operation under the configured retry policy."""
+        async for attempt in self._retrying():
+            with attempt:
+                return await operation()
+
+        raise RuntimeError("unreachable retry state")
+
     async def get(
         self,
         url: str,
@@ -235,37 +249,39 @@ class HttpClient:
         Returns:
             Response body as string.
         """
-        async with self._semaphore:
-            session = await self._get_session(use_proxy=use_proxy)
-            merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
-            proxy_kwargs = self._get_proxy_kwargs(use_proxy)
+        async def operation() -> str:
+            async with self._semaphore:
+                session = await self._get_session(use_proxy=use_proxy)
+                merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
+                proxy_kwargs = self._get_proxy_kwargs(use_proxy)
 
-            logger.debug(
-                "http_get",
-                url=url,
-                use_proxy=use_proxy and bool(self._proxy_url),
-            )
-            try:
-                async with session.get(
-                    url,
-                    headers=merged_headers,
-                    cookies=cookies,
-                    params=params,
-                    allow_redirects=allow_redirects,
-                    ssl=self._verify_ssl,
-                    **proxy_kwargs,
-                ) as resp:
-                    self._check_proxy_status(resp)
-                    resp.raise_for_status()
-                    return await resp.text()
-            except InvalidProxyAuthError:
-                raise  # Do NOT retry 407
-            except Exception as exc:
-                # Wrap proxy connection errors for cleaner retry handling
-                sanitized = self._sanitize_error(exc)
-                if "proxy" in sanitized.lower() or "socks" in sanitized.lower():
-                    raise ProxyConnectionFailedError(sanitized) from exc
-                raise
+                logger.debug(
+                    "http_get",
+                    url=url,
+                    use_proxy=use_proxy and bool(self._proxy_url),
+                )
+                try:
+                    async with session.get(
+                        url,
+                        headers=merged_headers,
+                        cookies=cookies,
+                        params=params,
+                        allow_redirects=allow_redirects,
+                        ssl=self._verify_ssl,
+                        **proxy_kwargs,
+                    ) as resp:
+                        self._check_proxy_status(resp)
+                        resp.raise_for_status()
+                        return await resp.text()
+                except InvalidProxyAuthError:
+                    raise  # Do NOT retry 407
+                except Exception as exc:
+                    sanitized = self._sanitize_error(exc)
+                    if "proxy" in sanitized.lower() or "socks" in sanitized.lower():
+                        raise ProxyConnectionFailedError(sanitized) from exc
+                    raise
+
+        return await self._run_with_retry(operation)
 
     async def get_cf(
         self,
@@ -368,12 +384,6 @@ class HttpClient:
                 guidance=guidance,
             ) from exc
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type(_RETRY_EXCEPTIONS),
-        reraise=True,
-    )
     async def get_json(
         self,
         url: str,
@@ -383,35 +393,38 @@ class HttpClient:
         use_proxy: bool = False,
     ) -> Any:
         """HTTP GET and parse response as JSON with optional proxy."""
-        async with self._semaphore:
-            session = await self._get_session(use_proxy=use_proxy)
-            merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
-            proxy_kwargs = self._get_proxy_kwargs(use_proxy)
+        async def operation() -> Any:
+            async with self._semaphore:
+                session = await self._get_session(use_proxy=use_proxy)
+                merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
+                proxy_kwargs = self._get_proxy_kwargs(use_proxy)
 
-            logger.debug(
-                "http_get_json",
-                url=url,
-                use_proxy=use_proxy and bool(self._proxy_url),
-            )
-            try:
-                async with session.get(
-                    url,
-                    headers=merged_headers,
-                    cookies=cookies,
-                    params=params,
-                    ssl=self._verify_ssl,
-                    **proxy_kwargs,
-                ) as resp:
-                    self._check_proxy_status(resp)
-                    resp.raise_for_status()
-                    return await resp.json(content_type=None)
-            except InvalidProxyAuthError:
-                raise
-            except Exception as exc:
-                sanitized = self._sanitize_error(exc)
-                if "proxy" in sanitized.lower() or "socks" in sanitized.lower():
-                    raise ProxyConnectionFailedError(sanitized) from exc
-                raise
+                logger.debug(
+                    "http_get_json",
+                    url=url,
+                    use_proxy=use_proxy and bool(self._proxy_url),
+                )
+                try:
+                    async with session.get(
+                        url,
+                        headers=merged_headers,
+                        cookies=cookies,
+                        params=params,
+                        ssl=self._verify_ssl,
+                        **proxy_kwargs,
+                    ) as resp:
+                        self._check_proxy_status(resp)
+                        resp.raise_for_status()
+                        return await resp.json(content_type=None)
+                except InvalidProxyAuthError:
+                    raise
+                except Exception as exc:
+                    sanitized = self._sanitize_error(exc)
+                    if "proxy" in sanitized.lower() or "socks" in sanitized.lower():
+                        raise ProxyConnectionFailedError(sanitized) from exc
+                    raise
+
+        return await self._run_with_retry(operation)
 
     async def download(
         self,

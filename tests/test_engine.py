@@ -10,7 +10,11 @@ from javs.config.models import JavsConfig
 from javs.core.engine import JavsEngine
 from javs.models.file import ScannedFile
 from javs.models.movie import MovieData
-from javs.services.http import CloudflareBlockedError
+from javs.services.http import (
+    CloudflareBlockedError,
+    InvalidProxyAuthError,
+    ProxyConnectionFailedError,
+)
 from javs.services.javlibrary_auth import JavlibraryCredentials
 
 
@@ -60,6 +64,30 @@ class TestJavsEngineHttpClientConfig:
 
         assert created["cf_clearance"] == "cf-cookie"
         assert created["cf_user_agent"] == "browser-ua"
+
+    def test_engine_uses_proxy_timeout_when_proxy_enabled(self, monkeypatch):
+        """Engine should prefer proxy timeout over download timeout when proxy is enabled."""
+        created: dict[str, object] = {}
+        config = JavsConfig()
+        config.proxy.enabled = True
+        config.proxy.url = "http://1.2.3.4:8080"
+        config.proxy.timeout_seconds = 11
+        config.sort.download.timeout_seconds = 99
+
+        class DummyHttpClient:
+            def __init__(self, **kwargs):
+                created.update(kwargs)
+
+            async def close(self) -> None:
+                return None
+
+        monkeypatch.setattr("javs.core.engine.setup_logging", lambda **kwargs: None)
+        monkeypatch.setattr("javs.core.engine.ScraperRegistry.load_all", lambda: None)
+        monkeypatch.setattr("javs.core.engine.HttpClient", DummyHttpClient)
+
+        JavsEngine(config)
+
+        assert created["timeout_seconds"] == 11
 
 
 class _FakeHttpContext:
@@ -444,3 +472,70 @@ class TestJavsEngineLifecycle:
 
         assert result is None
         assert calls["recover"] == 1
+
+    def test_find_records_proxy_failure_diagnostics(self, monkeypatch):
+        """find_one() should record scraper-specific proxy diagnostics for CLI summaries."""
+        engine = self._make_engine(monkeypatch)
+
+        class BrokenScraper:
+            name = "dmm"
+
+            async def search_and_scrape(self, movie_id: str):
+                raise ProxyConnectionFailedError("proxy unreachable")
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [BrokenScraper()],
+        )
+
+        result = asyncio.run(engine.find_one("ABP-420", aggregate=False))
+
+        assert result is None
+        assert engine.last_run_diagnostics == [
+            {"kind": "proxy_unreachable", "scraper": "dmm"}
+        ]
+
+    def test_find_resets_previous_run_diagnostics(self, monkeypatch):
+        """A new public run should clear stale diagnostics before collecting fresh ones."""
+        engine = self._make_engine(monkeypatch)
+        engine.last_run_diagnostics = [{"kind": "proxy_auth_failed", "scraper": "old"}]
+
+        class BrokenScraper:
+            name = "javlibrary"
+
+            async def search_and_scrape(self, movie_id: str):
+                raise CloudflareBlockedError("blocked")
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [BrokenScraper()],
+        )
+
+        result = asyncio.run(engine.find_one("ABP-420", aggregate=False))
+
+        assert result is None
+        assert engine.last_run_diagnostics == [
+            {"kind": "cloudflare_blocked", "scraper": "javlibrary"}
+        ]
+
+    def test_find_records_proxy_auth_failure_diagnostics(self, monkeypatch):
+        """407-style proxy failures should be classified distinctly for CLI output."""
+        engine = self._make_engine(monkeypatch)
+
+        class BrokenScraper:
+            name = "mgstageja"
+
+            async def search_and_scrape(self, movie_id: str):
+                raise InvalidProxyAuthError("bad credentials")
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [BrokenScraper()],
+        )
+
+        result = asyncio.run(engine.find_one("ABP-420", aggregate=False))
+
+        assert result is None
+        assert engine.last_run_diagnostics == [
+            {"kind": "proxy_auth_failed", "scraper": "mgstageja"}
+        ]

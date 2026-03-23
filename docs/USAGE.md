@@ -2,6 +2,9 @@
 
 **JavS** is a fast, async-native Python CLI for scraping, organizing, and managing JAV media libraries. It replaces the original Javinizer with better performance, a modular plugin system, and automated metadata scraping.
 
+If you are new to JavS and want a practical end-to-end workflow, read the
+[**Everyday User Playbook**](PLAYBOOK.md) first.
+
 ---
 
 ## 🚀 Quick Setup
@@ -104,10 +107,14 @@ To enter Javlibrary Cloudflare credentials without editing YAML manually:
 ```bash
 ./venv/bin/javs config javlibrary-cookie
 ./venv/bin/javs config javlibrary-test
+./venv/bin/javs config proxy-test
 ```
 
 `javlibrary-cookie` always asks for a fresh `cf_clearance`. It only asks for
 `browser_user_agent` when that value is still empty in your config.
+
+Use `proxy-test` to verify that your configured proxy is enabled, reachable,
+and can complete a simple proxied request before you run a larger batch.
 
 ---
 

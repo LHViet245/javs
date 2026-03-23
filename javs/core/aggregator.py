@@ -47,6 +47,12 @@ class DataAggregator:
 
         if len(results) == 1:
             merged = results[0].model_copy(deep=True)
+            if merged.cover_url and not merged.cover_source and merged.source:
+                merged.cover_source = merged.source
+            if merged.screenshot_urls and not merged.screenshot_source and merged.source:
+                merged.screenshot_source = merged.source
+            if merged.trailer_url and not merged.trailer_source and merged.source:
+                merged.trailer_source = merged.source
             self._post_process(merged)
             return merged
 
@@ -71,7 +77,9 @@ class DataAggregator:
         merged.label = self._pick_field(source_map, priority.label, "label")
         merged.series = self._pick_field(source_map, priority.series, "series")
         merged.runtime = self._pick_field(source_map, priority.runtime, "runtime")
-        merged.trailer_url = self._pick_field(source_map, priority.trailer_url, "trailer_url")
+        merged.trailer_url, merged.trailer_source = self._pick_field_with_source(
+            source_map, priority.trailer_url, "trailer_url"
+        )
 
         # Date
         merged.release_date = self._pick_field(source_map, priority.release_date, "release_date")
@@ -80,10 +88,12 @@ class DataAggregator:
         merged.rating = self._pick_field(source_map, priority.rating, "rating")
 
         # Cover URL
-        merged.cover_url = self._pick_field(source_map, priority.cover_url, "cover_url")
+        merged.cover_url, merged.cover_source = self._pick_field_with_source(
+            source_map, priority.cover_url, "cover_url"
+        )
 
         # Screenshot URLs (merge all unique)
-        merged.screenshot_urls = self._pick_field(
+        merged.screenshot_urls, merged.screenshot_source = self._pick_field_with_source(
             source_map, priority.screenshot_url, "screenshot_urls"
         )
 
@@ -109,6 +119,21 @@ class DataAggregator:
             if value is not None and value != "" and value != []:
                 return value
         return None
+
+    def _pick_field_with_source(
+        self, source_map: dict[str, MovieData], priority: list[str], field: str
+    ) -> tuple[object | None, str | None]:
+        """Pick the first non-empty field value together with its source name."""
+        for source_name in priority:
+            if source_name in source_map:
+                value = getattr(source_map[source_name], field, None)
+                if value is not None and value != "" and value != []:
+                    return value, source_name
+        for source_name, data in source_map.items():
+            value = getattr(data, field, None)
+            if value is not None and value != "" and value != []:
+                return value, source_name
+        return None, None
 
     def _pick_list_field(
         self, source_map: dict[str, MovieData], priority: list[str], field: str

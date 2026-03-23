@@ -173,6 +173,36 @@ async def test_validate_javlibrary_credentials_reads_use_proxy_from_dict(monkeyp
     assert captured["url"] == "https://www.javlibrary.com/en/"
 
 
+@pytest.mark.asyncio
+async def test_validate_javlibrary_credentials_uses_proxy_timeout(monkeypatch) -> None:
+    credentials = JavlibraryCredentials("cf-cookie", "browser-ua")
+    captured: dict[str, object] = {}
+    config = JavsConfig()
+    config.proxy.enabled = True
+    config.proxy.url = "http://1.2.3.4:8080"
+    config.proxy.timeout_seconds = 12
+    config.sort.download.timeout_seconds = 77
+
+    class DummyHttpClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def get_cf(self, url: str, use_proxy: bool = False) -> str:
+            return "<html>ok</html>"
+
+    monkeypatch.setattr("javs.services.javlibrary_auth.HttpClient", DummyHttpClient)
+
+    await validate_javlibrary_credentials(config, credentials)
+
+    assert captured["timeout_seconds"] == 12
+
+
 def test_print_cloudflare_guidance_uses_multiline_panel(capsys) -> None:
     exc = CloudflareBlockedError(
         "Cloudflare blocked access to https://www.javlibrary.com/en/. All bypass methods failed.",

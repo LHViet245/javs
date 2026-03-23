@@ -13,7 +13,9 @@ from javs.config.models import JavsConfig, ProxyConfig, ScraperConfig
 from javs.services.http import (
     HttpClient,
     InvalidProxyAuthError,
+    ProxyConnectionFailedError,
 )
+from javs.services.proxy_diagnostics import ProxyDiagnosticResult, run_proxy_diagnostics
 from javs.utils.logging import MaskProxyCredentialProcessor
 
 # ─── ProxyConfig Validation Tests ────────────────────────────────────────
@@ -277,6 +279,99 @@ class TestHttpClient407Handling:
         mock_resp.status = 403
         # Should not raise (403 is a target-level error, not proxy auth)
         client._check_proxy_status(mock_resp)
+
+
+class TestHttpClientRetryConfig:
+    """Test that retry behavior honors runtime configuration."""
+
+    @pytest.mark.asyncio
+    async def test_get_honors_configured_max_retries(self, monkeypatch):
+        """get() should retry exactly max_retries times before failing."""
+        client = HttpClient(max_retries=5)
+        attempts = {"count": 0}
+
+        class BoomSession:
+            def get(self, *args, **kwargs):
+                attempts["count"] += 1
+                raise RuntimeError("proxy unreachable")
+
+        async def fake_get_session(use_proxy: bool = False):
+            return BoomSession()
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+
+        with pytest.raises(ProxyConnectionFailedError):
+            await client.get("https://example.com", use_proxy=True)
+
+        assert attempts["count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_get_json_honors_configured_max_retries(self, monkeypatch):
+        """get_json() should retry exactly max_retries times before failing."""
+        client = HttpClient(max_retries=4)
+        attempts = {"count": 0}
+
+        class BoomSession:
+            def get(self, *args, **kwargs):
+                attempts["count"] += 1
+                raise RuntimeError("proxy unreachable")
+
+        async def fake_get_session(use_proxy: bool = False):
+            return BoomSession()
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+
+        with pytest.raises(ProxyConnectionFailedError):
+            await client.get_json("https://example.com/api", use_proxy=True)
+
+        assert attempts["count"] == 4
+
+
+class TestProxyDiagnostics:
+    """Test proxy diagnostics helper behavior."""
+
+    @pytest.mark.asyncio
+    async def test_run_proxy_diagnostics_reports_success(self, monkeypatch):
+        """Diagnostics should report success when a proxied request succeeds."""
+        config = JavsConfig()
+        config.proxy.enabled = True
+        config.proxy.url = "http://1.2.3.4:8080"
+        config.proxy.timeout_seconds = 9
+        captured: dict[str, object] = {}
+
+        class DummyHttpClient:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            async def get(self, url: str, use_proxy: bool = False) -> str:
+                captured["url"] = url
+                captured["use_proxy"] = use_proxy
+                return "ok"
+
+        monkeypatch.setattr("javs.services.proxy_diagnostics.HttpClient", DummyHttpClient)
+        monkeypatch.setattr("javs.services.proxy_diagnostics.PROXY_TEST_URL", "https://probe.test")
+
+        result = await run_proxy_diagnostics(config)
+
+        assert result == ProxyDiagnosticResult(ok=True, message="Proxy reachable")
+        assert captured["proxy_url"] == "http://1.2.3.4:8080"
+        assert captured["timeout_seconds"] == 9
+        assert captured["url"] == "https://probe.test"
+        assert captured["use_proxy"] is True
+
+    @pytest.mark.asyncio
+    async def test_run_proxy_diagnostics_reports_disabled_proxy(self):
+        """Diagnostics should fail fast when proxy support is disabled."""
+        result = await run_proxy_diagnostics(JavsConfig())
+
+        assert result.ok is False
+        assert result.message == "Proxy is disabled in config"
 
 
 class _DummySession:

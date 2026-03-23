@@ -37,6 +37,12 @@ class FileOrganizer:
         self.http = http or HttpClient()
         self.nfo_gen = NfoGenerator(config.sort.metadata.nfo)
 
+    def _should_use_proxy_for_source(self, source_name: str | None) -> bool:
+        """Return whether downloads from this scraper source should use the configured proxy."""
+        if not self.config.proxy.enabled or not source_name:
+            return False
+        return bool(self.config.scrapers.use_proxy.get(source_name, False))
+
     def build_sort_paths(
         self,
         file: ScannedFile,
@@ -355,6 +361,7 @@ class FileOrganizer:
             data.cover_url,  # type: ignore
             paths.thumb_path,
             timeout=self.config.sort.download.timeout_seconds,
+            use_proxy=self._should_use_proxy_for_source(data.cover_source),
         )
 
     async def _create_posters(self, paths: SortPaths, force: bool) -> None:
@@ -404,7 +411,11 @@ class FileOrganizer:
             dest = paths.screenshot_folder_path / f"{paths.screenshot_img_name}{padded}.jpg"
             if dest.exists() and not force:
                 continue
-            await self.http.download(url, dest)
+            await self.http.download(
+                url,
+                dest,
+                use_proxy=self._should_use_proxy_for_source(data.screenshot_source),
+            )
 
     async def _download_trailer(self, data: MovieData, paths: SortPaths, force: bool) -> None:
         """Download trailer video."""
@@ -417,6 +428,7 @@ class FileOrganizer:
                 data.trailer_url,
                 paths.trailer_path,
                 timeout=self.config.sort.download.timeout_seconds,
+                use_proxy=self._should_use_proxy_for_source(data.trailer_source),
             )
 
     def _move_subtitles(self, file: ScannedFile, paths: SortPaths) -> None:
