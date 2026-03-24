@@ -14,6 +14,30 @@ DEFAULT_CONFIG_FILENAME = "config.yaml"
 logger = get_logger(__name__)
 
 
+def _merge_config_data(target: dict, update: dict) -> None:
+    """Recursively merge config values while preserving existing YAML comments."""
+    for key, value in update.items():
+        if isinstance(value, dict) and key in target and isinstance(target[key], dict):
+            _merge_config_data(target[key], value)
+        else:
+            target[key] = value
+
+
+def _load_ruamel_yaml():
+    """Create a ruamel YAML instance configured for comment-preserving writes."""
+    from ruamel.yaml import YAML
+
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    return yaml_rt
+
+
+def _get_default_template_path() -> Path:
+    """Return the packaged default config template path."""
+    return Path(__file__).parent.parent / "data" / "default_config.yaml"
+
+
 def get_default_config_dir() -> Path:
     """Return the default config directory (~/.javs/)."""
     return Path.home() / ".javs"
@@ -63,8 +87,23 @@ def save_config(config: JavsConfig, path: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     data = config.model_dump(exclude_defaults=False)
+    yaml_rt = _load_ruamel_yaml()
+
+    if path.exists():
+        with open(path, encoding="utf-8") as f:
+            existing = yaml_rt.load(f) or {}
+    else:
+        template_path = _get_default_template_path()
+        if template_path.exists():
+            with open(template_path, encoding="utf-8") as f:
+                existing = yaml_rt.load(f) or {}
+        else:
+            existing = {}
+
+    _merge_config_data(existing, data)
+
     with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        yaml_rt.dump(existing, f)
 
 
 def create_default_config(path: Path | None = None) -> JavsConfig:

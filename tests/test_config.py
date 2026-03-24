@@ -81,6 +81,29 @@ class TestJavsConfig:
         assert loaded.throttle_limit == 5
         assert loaded.sleep == 10
 
+    def test_save_config_preserves_existing_comments(self, tmp_path: Path) -> None:
+        """Saving an existing config should not strip explanatory comments."""
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            (
+                "# top level comment\n"
+                "javlibrary:\n"
+                "  # keep this explanation\n"
+                "  browser_user_agent: \"\"\n"
+                "  cookie_cf_clearance: \"\"\n"
+            ),
+            encoding="utf-8",
+        )
+
+        config = load_config(path)
+        config.javlibrary.cookie_cf_clearance = "new-cookie"
+
+        save_config(config, path)
+
+        saved = path.read_text(encoding="utf-8")
+        assert "# keep this explanation" in saved
+        assert 'cookie_cf_clearance: "new-cookie"' in saved
+
     def test_load_nonexistent_returns_default(self, tmp_path):
         """Loading from nonexistent path should return defaults."""
         config = load_config(tmp_path / "does_not_exist.yaml")
