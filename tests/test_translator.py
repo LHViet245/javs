@@ -173,7 +173,13 @@ class TestTranslateText:
             text = "translated hello"
 
         class FakeTranslator:
-            def translate(self, text: str, dest: str) -> FakeTranslated:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def translate(self, text: str, dest: str) -> FakeTranslated:
                 assert text == "hello"
                 assert dest == "ja"
                 return FakeTranslated()
@@ -181,11 +187,6 @@ class TestTranslateText:
         fake_module = ModuleType("googletrans")
         fake_module.Translator = FakeTranslator
         monkeypatch.setitem(__import__("sys").modules, "googletrans", fake_module)
-
-        async def fake_to_thread(func):
-            return func()
-
-        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
 
         result = await translator_module._translate_googletrans("hello", "ja")
 
@@ -209,18 +210,19 @@ class TestTranslateText:
     @pytest.mark.asyncio
     async def test_googletrans_exception_returns_none(self, monkeypatch) -> None:
         class FakeTranslator:
-            def translate(self, text: str, dest: str) -> SimpleNamespace:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def translate(self, text: str, dest: str) -> SimpleNamespace:
                 del text, dest
                 raise RuntimeError("boom")
 
         fake_module = ModuleType("googletrans")
         fake_module.Translator = FakeTranslator
         monkeypatch.setitem(__import__("sys").modules, "googletrans", fake_module)
-
-        async def fake_to_thread(func):
-            return func()
-
-        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
 
         result = await translator_module._translate_googletrans("hello", "ja")
 

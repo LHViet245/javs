@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 from dataclasses import dataclass
 
 from javs.config.models import TranslateConfig
@@ -173,14 +174,23 @@ async def _translate_googletrans(text: str, dest_lang: str) -> str | None:
     try:
         from googletrans import Translator
 
-        def _sync_translate() -> str:
+        async def _async_translate() -> str:
             translator = Translator()
+            if hasattr(translator, "__aenter__") and hasattr(translator, "__aexit__"):
+                async with translator as active_translator:
+                    result = active_translator.translate(text, dest=dest_lang)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result.text
+
             result = translator.translate(text, dest=dest_lang)
+            if inspect.isawaitable(result):
+                result = await result
             return result.text
 
-        return await asyncio.to_thread(_sync_translate)
+        return await _async_translate()
     except ImportError:
-        logger.error("googletrans_not_installed", msg="pip install googletrans==4.0.0-rc.1")
+        logger.error("googletrans_not_installed", msg="pip install googletrans>=4.0.2")
         return None
     except Exception as exc:
         logger.error("googletrans_error", error=str(exc))
