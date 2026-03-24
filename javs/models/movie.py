@@ -70,8 +70,11 @@ class MovieData(BaseModel):
     genres: list[str] = Field(default_factory=list)
     actresses: list[Actress] = Field(default_factory=list)
     cover_url: str | None = None
+    cover_source: str | None = None
     screenshot_urls: list[str] = Field(default_factory=list)
+    screenshot_source: str | None = None
     trailer_url: str | None = None
+    trailer_source: str | None = None
     tags: list[str] = Field(default_factory=list)
     tagline: str | None = None
     credits: list[str] = Field(default_factory=list)

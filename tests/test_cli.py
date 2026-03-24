@@ -41,6 +41,7 @@ class TestCliConfigCommand:
         assert "init-csv" in result.stdout
         assert "javlibrary-cookie" in result.stdout
         assert "javlibrary-test" in result.stdout
+        assert "proxy-test" in result.stdout
 
     def test_config_sync_supports_custom_config_path(self, tmp_path: Path) -> None:
         """config sync should work with an explicit --config path."""
@@ -187,6 +188,49 @@ class TestCliConfigCommand:
         assert str(tmp_path / "genres.csv") in result.stdout
         assert str(tmp_path / "thumbs.csv") in result.stdout
 
+    def test_config_proxy_test_runs_diagnostics(self, monkeypatch, tmp_path: Path) -> None:
+        from javs.services.proxy_diagnostics import ProxyDiagnosticResult
+
+        called = {}
+
+        async def fake_run_proxy_diagnostics(config):
+            called["ran"] = True
+            return ProxyDiagnosticResult(ok=True, message="Proxy reachable")
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(
+            "javs.services.proxy_diagnostics.run_proxy_diagnostics",
+            fake_run_proxy_diagnostics,
+        )
+
+        result = runner.invoke(app, ["config", "proxy-test", "--config", str(tmp_path / "x.yaml")])
+
+        assert result.exit_code == 0
+        assert "Proxy reachable" in result.stdout
+        assert called["ran"] is True
+
+    def test_config_proxy_test_exits_nonzero_on_failure(self, monkeypatch, tmp_path: Path) -> None:
+        from javs.services.proxy_diagnostics import ProxyDiagnosticResult
+
+        async def fake_run_proxy_diagnostics(config):
+            return ProxyDiagnosticResult(
+                ok=False,
+                message="Proxy unreachable",
+                detail="timed out",
+            )
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(
+            "javs.services.proxy_diagnostics.run_proxy_diagnostics",
+            fake_run_proxy_diagnostics,
+        )
+
+        result = runner.invoke(app, ["config", "proxy-test", "--config", str(tmp_path / "x.yaml")])
+
+        assert result.exit_code == 1
+        assert "Proxy unreachable" in result.stdout
+        assert "timed out" in result.stdout
+
 
 class TestCliFindCommand:
     """Test `find` command output and exit behavior."""
@@ -224,6 +268,7 @@ class TestCliFindCommand:
         class DummyEngine:
             def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
                 self.cfg = cfg
+                self.last_run_diagnostics = []
 
             async def find_one(self, movie_id: str, scraper_names=None):
                 return None
@@ -235,6 +280,76 @@ class TestCliFindCommand:
 
         assert result.exit_code == 1
         assert "No results found for ABP-420" in result.stdout
+
+    def test_find_prints_proxy_failure_summary(self, monkeypatch) -> None:
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = [
+                    {"kind": "proxy_unreachable", "scraper": "dmm"}
+                ]
+
+            async def find_one(self, movie_id: str, scraper_names=None):
+                return _movie_data()
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 0
+        assert "Warnings:" in result.stdout
+        assert "dmm: proxy unreachable" in result.stdout
+
+    def test_find_prints_translation_provider_warning(self, monkeypatch) -> None:
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = [
+                    {
+                        "kind": "translation_provider_unavailable",
+                        "scraper": "translate",
+                        "detail": "Install googletrans to enable translation.",
+                    }
+                ]
+
+            async def find_one(self, movie_id: str, scraper_names=None):
+                return _movie_data()
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 0
+        assert "Warnings:" in result.stdout
+        assert "translate: translation provider unavailable" in result.stdout
+        assert "Install googletrans to enable translation." in result.stdout
+
+    def test_find_prints_translation_config_warning(self, monkeypatch) -> None:
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = [
+                    {
+                        "kind": "translation_config_invalid",
+                        "scraper": "translate",
+                        "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+                    }
+                ]
+
+            async def find_one(self, movie_id: str, scraper_names=None):
+                return _movie_data()
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 0
+        assert "Warnings:" in result.stdout
+        assert "translate: translation config invalid" in result.stdout
+        assert "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'." in result.stdout
 
 
 class TestCliSortAndScrapers:
@@ -365,3 +480,34 @@ class TestCliSortAndScrapers:
         assert "Available Scrapers" in result.stdout
         assert "dmm" in result.stdout
         assert "javlibrary" in result.stdout
+
+    def test_sort_prints_proxy_failure_summary(self, monkeypatch, tmp_path: Path) -> None:
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = [
+                    {"kind": "proxy_auth_failed", "scraper": "dmm"},
+                    {"kind": "cloudflare_blocked", "scraper": "javlibrary"},
+                ]
+
+            async def sort_path(
+                self,
+                source: Path,
+                dest: Path,
+                recurse: bool,
+                force: bool,
+                preview: bool,
+            ):
+                return [_movie_data()]
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+
+        result = runner.invoke(app, ["sort", str(source), str(dest)])
+
+        assert result.exit_code == 0
+        assert "Warnings:" in result.stdout
+        assert "dmm: proxy auth failed" in result.stdout
+        assert "javlibrary: Cloudflare blocked" in result.stdout

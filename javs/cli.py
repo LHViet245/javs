@@ -23,6 +23,15 @@ app = typer.Typer(
 console = Console()
 
 
+_DIAGNOSTIC_MESSAGES = {
+    "proxy_auth_failed": "proxy auth failed",
+    "proxy_unreachable": "proxy unreachable",
+    "cloudflare_blocked": "Cloudflare blocked",
+    "translation_provider_unavailable": "translation provider unavailable",
+    "translation_config_invalid": "translation config invalid",
+}
+
+
 def _resolve_config_path(config_path: Path | None) -> Path:
     from javs.config.loader import get_default_config_path
 
@@ -58,6 +67,23 @@ def _status_context(message: str):
     if is_interactive_terminal():
         return nullcontext()
     return console.status(message, spinner="dots")
+
+
+def _print_run_diagnostics(engine) -> None:
+    """Render compact warnings collected during the last engine run."""
+    diagnostics = getattr(engine, "last_run_diagnostics", [])
+    if not diagnostics:
+        return
+
+    console.print("[yellow]Warnings:[/yellow]")
+    for item in diagnostics:
+        scraper = item.get("scraper", "unknown")
+        kind = item.get("kind", "")
+        message = _DIAGNOSTIC_MESSAGES.get(kind, kind.replace("_", " "))
+        console.print(f"- {scraper}: {message}")
+        detail = item.get("detail")
+        if detail:
+            console.print(f"  {detail}")
 
 
 def version_callback(value: bool) -> None:
@@ -113,6 +139,8 @@ def sort(
         console.print(table)
     else:
         console.print("[yellow]No files were processed.[/yellow]")
+
+    _print_run_diagnostics(engine)
 
 
 @app.command("update")
@@ -180,6 +208,8 @@ def update(
     else:
         console.print("[yellow]No files were updated.[/yellow]")
 
+    _print_run_diagnostics(engine)
+
 
 @app.command()
 def find(
@@ -219,6 +249,8 @@ def find(
     else:
         _display_movie_data(data)
 
+    _print_run_diagnostics(engine)
+
 
 @app.command()
 def config(
@@ -226,7 +258,7 @@ def config(
         "show",
         help=(
             "Action: show, edit, create, path, sync, csv-paths, "
-            "init-csv, javlibrary-cookie, javlibrary-test."
+            "init-csv, javlibrary-cookie, javlibrary-test, proxy-test."
         ),
     ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
@@ -239,6 +271,7 @@ def config(
         print_cloudflare_guidance,
         validate_javlibrary_credentials,
     )
+    from javs.services.proxy_diagnostics import run_proxy_diagnostics
 
     path = _resolve_config_path(config_path)
 
@@ -332,6 +365,18 @@ def config(
                 print_cloudflare_guidance(exc)
             raise typer.Exit(1) from exc
         console.print("[green]Javlibrary credential hợp lệ.[/green]")
+
+    elif action == "proxy-test":
+        cfg = load_config(path)
+        result = asyncio.run(run_proxy_diagnostics(cfg))
+        if result.ok:
+            console.print(f"[green]{result.message}[/green]")
+            return
+
+        console.print(f"[red]{result.message}[/red]")
+        if result.detail:
+            console.print(result.detail)
+        raise typer.Exit(1)
 
     else:
         console.print(f"[red]Unknown action: {action}[/red]")

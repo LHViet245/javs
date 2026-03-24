@@ -98,6 +98,43 @@ class TestDataAggregator:
         result = self.aggregator.merge([data1, data2])
         assert result.title == "Actual Title"
 
+    def test_merge_preserves_cover_and_trailer_source(self):
+        """Merged asset fields should remember which scraper supplied them."""
+        data1 = MovieData(
+            id="ABP-420",
+            source="dmm",
+            cover_url="https://dmm.example/cover.jpg",
+        )
+        data2 = MovieData(
+            id="ABP-420",
+            source="r18dev",
+            trailer_url="https://r18.example/trailer.mp4",
+        )
+
+        result = self.aggregator.merge([data1, data2])
+
+        assert result.cover_source == "dmm"
+        assert result.trailer_source == "r18dev"
+
+    def test_merge_preserves_screenshot_source(self):
+        """Merged screenshot URLs should remember which scraper supplied them."""
+        self.config.sort.metadata.priority.screenshot_url = ["dmm", "r18dev"]
+        self.aggregator = DataAggregator(self.config)
+        data1 = MovieData(
+            id="ABP-420",
+            source="dmm",
+            screenshot_urls=["https://dmm.example/1.jpg"],
+        )
+        data2 = MovieData(
+            id="ABP-420",
+            source="r18dev",
+            screenshot_urls=["https://r18.example/1.jpg"],
+        )
+
+        result = self.aggregator.merge([data1, data2])
+
+        assert result.screenshot_source == "dmm"
+
     def test_genre_csv_replaces_and_removes_entries(self, tmp_path):
         path = tmp_path / "genres.csv"
         path.write_text(

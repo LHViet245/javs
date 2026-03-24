@@ -68,6 +68,16 @@ class TestJavsConfig:
         assert "dmm" in config.sort.metadata.priority.actress
         assert config.sort.metadata.priority.title[0] == "r18dev"
 
+    def test_translate_affect_sort_names_defaults_to_false(self) -> None:
+        config = JavsConfig()
+
+        assert config.sort.metadata.nfo.translate.affect_sort_names is False
+
+    def test_translate_language_defaults_to_en_us(self) -> None:
+        config = JavsConfig()
+
+        assert config.sort.metadata.nfo.translate.language == "en-us"
+
     def test_serialization_roundtrip(self, tmp_path):
         """Config should survive save/load roundtrip."""
         config = JavsConfig()
@@ -80,6 +90,43 @@ class TestJavsConfig:
         loaded = load_config(path)
         assert loaded.throttle_limit == 5
         assert loaded.sleep == 10
+
+    def test_translate_affect_sort_names_survives_save_load_roundtrip(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.affect_sort_names = True
+
+        path = tmp_path / "config.yaml"
+        save_config(config, path)
+
+        loaded = load_config(path)
+
+        assert loaded.sort.metadata.nfo.translate.affect_sort_names is True
+
+    def test_save_config_preserves_existing_comments(self, tmp_path: Path) -> None:
+        """Saving an existing config should not strip explanatory comments."""
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            (
+                "# top level comment\n"
+                "javlibrary:\n"
+                "  # keep this explanation\n"
+                "  browser_user_agent: \"\"\n"
+                "  cookie_cf_clearance: \"\"\n"
+            ),
+            encoding="utf-8",
+        )
+
+        config = load_config(path)
+        config.javlibrary.cookie_cf_clearance = "new-cookie"
+
+        save_config(config, path)
+
+        saved = path.read_text(encoding="utf-8")
+        assert "# keep this explanation" in saved
+        assert 'cookie_cf_clearance: "new-cookie"' in saved
 
     def test_load_nonexistent_returns_default(self, tmp_path):
         """Loading from nonexistent path should return defaults."""

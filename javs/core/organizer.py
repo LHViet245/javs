@@ -37,6 +37,12 @@ class FileOrganizer:
         self.http = http or HttpClient()
         self.nfo_gen = NfoGenerator(config.sort.metadata.nfo)
 
+    def _should_use_proxy_for_source(self, source_name: str | None) -> bool:
+        """Return whether downloads from this scraper source should use the configured proxy."""
+        if not self.config.proxy.enabled or not source_name:
+            return False
+        return bool(self.config.scrapers.use_proxy.get(source_name, False))
+
     def build_sort_paths(
         self,
         file: ScannedFile,
@@ -163,6 +169,7 @@ class FileOrganizer:
         dest_root: Path,
         force: bool = False,
         preview: bool = False,
+        nfo_data: MovieData | None = None,
     ) -> SortPaths:
         """Execute the full sort pipeline for a single movie.
 
@@ -193,7 +200,7 @@ class FileOrganizer:
 
         # 2. Generate and write NFO
         if self.config.sort.metadata.nfo.create:
-            await self._write_nfo(data, sort_paths, file, force)
+            await self._write_nfo(nfo_data or data, sort_paths, file, force)
 
         # 3. Download cover/thumbnail
         if self.config.sort.download.thumb_img and data.cover_url:
@@ -239,6 +246,7 @@ class FileOrganizer:
         preview: bool = False,
         refresh_images: bool = False,
         refresh_trailer: bool = False,
+        nfo_data: MovieData | None = None,
     ) -> SortPaths:
         """Refresh sidecars for an already-sorted movie without moving media files."""
         update_paths = self.build_update_paths(file, data)
@@ -259,7 +267,7 @@ class FileOrganizer:
         update_paths.folder_path.mkdir(parents=True, exist_ok=True)
 
         if self.config.sort.metadata.nfo.create:
-            await self._write_nfo(data, update_paths, file, force=True)
+            await self._write_nfo(nfo_data or data, update_paths, file, force=True)
 
         if self.config.sort.download.thumb_img and data.cover_url:
             await self._download_thumb(data, update_paths, image_force)
@@ -355,6 +363,7 @@ class FileOrganizer:
             data.cover_url,  # type: ignore
             paths.thumb_path,
             timeout=self.config.sort.download.timeout_seconds,
+            use_proxy=self._should_use_proxy_for_source(data.cover_source),
         )
 
     async def _create_posters(self, paths: SortPaths, force: bool) -> None:
@@ -404,7 +413,11 @@ class FileOrganizer:
             dest = paths.screenshot_folder_path / f"{paths.screenshot_img_name}{padded}.jpg"
             if dest.exists() and not force:
                 continue
-            await self.http.download(url, dest)
+            await self.http.download(
+                url,
+                dest,
+                use_proxy=self._should_use_proxy_for_source(data.screenshot_source),
+            )
 
     async def _download_trailer(self, data: MovieData, paths: SortPaths, force: bool) -> None:
         """Download trailer video."""
@@ -417,6 +430,7 @@ class FileOrganizer:
                 data.trailer_url,
                 paths.trailer_path,
                 timeout=self.config.sort.download.timeout_seconds,
+                use_proxy=self._should_use_proxy_for_source(data.trailer_source),
             )
 
     def _move_subtitles(self, file: ScannedFile, paths: SortPaths) -> None:

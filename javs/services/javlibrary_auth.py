@@ -127,9 +127,14 @@ async def validate_javlibrary_credentials(
 ) -> None:
     """Validate Javlibrary credentials with a best-effort live request."""
     proxy_url = config.proxy.url if config.proxy.enabled else None
+    timeout_seconds = (
+        config.proxy.timeout_seconds
+        if config.proxy.enabled
+        else config.sort.download.timeout_seconds
+    )
     client = HttpClient(
         proxy_url=proxy_url,
-        timeout_seconds=config.sort.download.timeout_seconds,
+        timeout_seconds=timeout_seconds,
         max_concurrent=1,
         max_retries=config.proxy.max_retries if config.proxy.enabled else 1,
         cf_clearance=credentials.cf_clearance,

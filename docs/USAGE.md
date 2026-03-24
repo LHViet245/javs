@@ -2,6 +2,9 @@
 
 **JavS** is a fast, async-native Python CLI for scraping, organizing, and managing JAV media libraries. It replaces the original Javinizer with better performance, a modular plugin system, and automated metadata scraping.
 
+If you are new to JavS and want a practical end-to-end workflow, read the
+[**Everyday User Playbook**](PLAYBOOK.md) first.
+
 ---
 
 ## 🚀 Quick Setup
@@ -104,10 +107,56 @@ To enter Javlibrary Cloudflare credentials without editing YAML manually:
 ```bash
 ./venv/bin/javs config javlibrary-cookie
 ./venv/bin/javs config javlibrary-test
+./venv/bin/javs config proxy-test
 ```
 
 `javlibrary-cookie` always asks for a fresh `cf_clearance`. It only asks for
 `browser_user_agent` when that value is still empty in your config.
+
+Use `proxy-test` to verify that your configured proxy is enabled, reachable,
+and can complete a simple proxied request before you run a larger batch.
+
+### Translation
+
+Translation providers are optional. Install them before enabling metadata translation:
+
+```bash
+./venv/bin/pip install -e ".[translate]"
+```
+
+Translation config lives under `sort.metadata.nfo.translate`:
+
+```yaml
+sort:
+  metadata:
+    nfo:
+      translate:
+        enabled: true
+        module: deepl
+        fields:
+          - description
+        language: en-us
+        deepl_api_key: "your-deepl-api-key"
+        keep_original_description: false
+        affect_sort_names: false
+```
+
+Recommended defaults for most users:
+
+- Keep `fields` limited to `description` unless you intentionally want translated titles.
+- Keep `affect_sort_names: false` if you want translated NFO text but do not want folder/file names to change.
+- Set `affect_sort_names: true` only if you explicitly want translated metadata to affect sort naming as well.
+- For DeepL, prefer exact target variants such as `en-us`, `en-gb`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
+- JavS rejects ambiguous DeepL targets like `en`, `pt`, and `zh` before sending the translation request.
+- Common DeepL targets that work well in JavS include `en-us`, `en-gb`, `ja`, `ko`, `vi`, `de`, `fr`, `it`, `es`, `es-419`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
+
+Runtime behavior:
+
+- `find` still shows translated text when translation is enabled.
+- `sort` and `update` write translated NFO content.
+- When `affect_sort_names: false`, sort naming stays based on the original scraped metadata.
+- When the configured provider is missing, JavS keeps running and prints a warning with an install hint instead of crashing.
+- When the DeepL language code is ambiguous or unsupported, JavS keeps running and prints a warning instead of failing mid-batch.
 
 ---
 

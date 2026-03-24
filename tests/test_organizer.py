@@ -378,6 +378,43 @@ class TestFileOrganizer:
             "https://example.com/cover.jpg",
             paths.thumb_path,
             timeout=self.config.sort.download.timeout_seconds,
+            use_proxy=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_download_thumb_uses_proxy_when_cover_source_requires_it(self, tmp_path: Path):
+        http = AsyncMock()
+        self.config.proxy.enabled = True
+        self.config.proxy.url = "http://1.2.3.4:8080"
+        self.config.scrapers.use_proxy["dmm"] = True
+        organizer = FileOrganizer(self.config, http=http)
+        file = ScannedFile(
+            path=tmp_path / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=tmp_path,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        data = MovieData(
+            id="ABP-420",
+            title="Movie",
+            maker="Studio",
+            release_date=date(2024, 1, 1),
+            genres=["Demo"],
+            cover_url="https://example.com/cover.jpg",
+            cover_source="dmm",
+        )
+        paths = organizer.build_sort_paths(file, data, tmp_path / "dest")
+
+        await organizer._download_thumb(data, paths, force=False)
+
+        http.download.assert_awaited_once_with(
+            "https://example.com/cover.jpg",
+            paths.thumb_path,
+            timeout=self.config.sort.download.timeout_seconds,
+            use_proxy=True,
         )
 
     @pytest.mark.asyncio
@@ -472,6 +509,38 @@ class TestFileOrganizer:
             "https://example.com/2.jpg",
             paths.screenshot_folder_path / "fanart02.jpg",
         )
+        assert http.download.await_args_list[0].kwargs == {"use_proxy": False}
+        assert http.download.await_args_list[1].kwargs == {"use_proxy": False}
+
+    @pytest.mark.asyncio
+    async def test_download_screenshots_uses_proxy_when_source_requires_it(self, tmp_path: Path):
+        http = AsyncMock()
+        self.config.proxy.enabled = True
+        self.config.proxy.url = "http://1.2.3.4:8080"
+        self.config.scrapers.use_proxy["dmm"] = True
+        organizer = FileOrganizer(self.config, http=http)
+        file = ScannedFile(
+            path=tmp_path / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=tmp_path,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        data = MovieData(
+            id="ABP-420",
+            title="Movie",
+            source="test",
+            screenshot_urls=["https://example.com/1.jpg", "https://example.com/2.jpg"],
+            screenshot_source="dmm",
+        )
+        paths = organizer.build_sort_paths(file, data, tmp_path / "dest")
+
+        await organizer._download_screenshots(data, paths, force=False)
+
+        assert http.download.await_args_list[0].kwargs == {"use_proxy": True}
+        assert http.download.await_args_list[1].kwargs == {"use_proxy": True}
 
     @pytest.mark.asyncio
     async def test_download_trailer_skips_later_parts(self, tmp_path: Path):
@@ -499,6 +568,43 @@ class TestFileOrganizer:
         await organizer._download_trailer(data, paths, force=False)
 
         http.download.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_download_trailer_uses_proxy_when_trailer_source_requires_it(
+        self, tmp_path: Path
+    ):
+        http = AsyncMock()
+        self.config.proxy.enabled = True
+        self.config.proxy.url = "http://1.2.3.4:8080"
+        self.config.scrapers.use_proxy["r18dev"] = True
+        self.config.sort.download.trailer_vid = True
+        organizer = FileOrganizer(self.config, http=http)
+        file = ScannedFile(
+            path=tmp_path / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=tmp_path,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        data = MovieData(
+            id="ABP-420",
+            title="Movie",
+            source="test",
+            trailer_url="https://example.com/trailer.mp4",
+            trailer_source="r18dev",
+        )
+        paths = organizer.build_sort_paths(file, data, tmp_path / "dest")
+
+        await organizer._download_trailer(data, paths, force=False)
+
+        http.download.assert_awaited_once_with(
+            "https://example.com/trailer.mp4",
+            paths.trailer_path,
+            timeout=self.config.sort.download.timeout_seconds,
+            use_proxy=True,
+        )
 
     @pytest.mark.asyncio
     async def test_update_movie_refresh_flags_force_assets(self, monkeypatch, tmp_path: Path):

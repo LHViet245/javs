@@ -17,9 +17,14 @@ from javs.core.scanner import FileScanner
 from javs.models.file import ScannedFile
 from javs.models.movie import MovieData
 from javs.scrapers.registry import ScraperRegistry
-from javs.services.http import CloudflareBlockedError, HttpClient
+from javs.services.http import (
+    CloudflareBlockedError,
+    HttpClient,
+    InvalidProxyAuthError,
+    ProxyConnectionFailedError,
+)
 from javs.services.javlibrary_auth import JavlibraryCredentials
-from javs.services.translator import translate_movie_data
+from javs.services.translator import get_translation_provider_issue, translate_movie_data
 from javs.utils.logging import get_logger, get_mask_processor, setup_logging
 
 logger = get_logger(__name__)
@@ -54,6 +59,7 @@ class JavsEngine:
         self._cloudflare_recovery_handler = cloudflare_recovery_handler
         self._cloudflare_recovery_lock = asyncio.Lock()
         self._cloudflare_recovery_used = False
+        self.last_run_diagnostics: list[dict[str, str]] = []
 
         # Initialize components
         proxy_url = self.config.proxy.url if self.config.proxy.enabled else None
@@ -63,9 +69,15 @@ class JavsEngine:
             mask_proc = get_mask_processor()
             mask_proc.set_proxy_url(proxy_url, self.config.proxy.masked_url)
 
+        timeout_seconds = (
+            self.config.proxy.timeout_seconds
+            if self.config.proxy.enabled
+            else self.config.sort.download.timeout_seconds
+        )
+
         self.http = HttpClient(
             proxy_url=proxy_url,
-            timeout_seconds=self.config.sort.download.timeout_seconds,
+            timeout_seconds=timeout_seconds,
             max_concurrent=self.config.throttle_limit * 3,
             max_retries=self.config.proxy.max_retries if self.config.proxy.enabled else 3,
             cf_clearance=self.config.javlibrary.cookie_cf_clearance,
@@ -98,6 +110,19 @@ class JavsEngine:
         Returns:
             MovieData or None.
         """
+        data = await self._find_merged(movie_id, scraper_names=scraper_names, aggregate=aggregate)
+        if not data:
+            return None
+
+        return await self._translate_for_display(data)
+
+    async def _find_merged(
+        self,
+        movie_id: str,
+        scraper_names: list[str] | None = None,
+        aggregate: bool = True,
+    ) -> MovieData | None:
+        """Look up and aggregate raw movie metadata without translation side effects."""
         if scraper_names:
             scrapers = ScraperRegistry.get_by_names(
                 scraper_names, self.http, self.config.scrapers, self.config.proxy
@@ -133,15 +158,25 @@ class JavsEngine:
                 idx = scrapers.index(scraper)
                 results[idx] = recovered
 
-        # Filter valid results
-        valid = [r for r in results if isinstance(r, MovieData)]
-        errors = [r for r in results if isinstance(r, Exception)]
-
-        for err in errors:
-            if isinstance(err, CloudflareBlockedError):
-                logger.warning("scraper_cloudflare_blocked", error=str(err))
-            else:
-                logger.warning("scraper_exception", error=str(err))
+        valid: list[MovieData] = []
+        for scraper, result in zip(scrapers, results, strict=False):
+            if isinstance(result, MovieData):
+                valid.append(result)
+                continue
+            if isinstance(result, Exception):
+                self._record_run_diagnostic(scraper.name, result)
+                if isinstance(result, CloudflareBlockedError):
+                    logger.warning(
+                        "scraper_cloudflare_blocked",
+                        scraper=scraper.name,
+                        error=str(result),
+                    )
+                else:
+                    logger.warning(
+                        "scraper_exception",
+                        scraper=scraper.name,
+                        error=str(result),
+                    )
 
         if not valid:
             logger.warning("no_results", movie_id=movie_id)
@@ -152,15 +187,7 @@ class JavsEngine:
         if not aggregate:
             return valid[0]
 
-        # Aggregate
-        merged = self.aggregator.merge(valid)
-
-        # Translate if configured
-        translate_config = self.config.sort.metadata.nfo.translate
-        if translate_config.enabled:
-            merged = await translate_movie_data(merged, translate_config)
-
-        return merged
+        return self.aggregator.merge(valid)
 
     async def find_one(
         self,
@@ -173,6 +200,7 @@ class JavsEngine:
         Unlike ``find()``, this opens and closes the HTTP session automatically.
         Use this from CLI commands or other standalone callers.
         """
+        self._reset_run_diagnostics()
         self._reset_cloudflare_recovery_state()
         async with self.http:
             return await self.find(movie_id, scraper_names, aggregate)
@@ -197,6 +225,7 @@ class JavsEngine:
         Returns:
             List of successfully processed MovieData.
         """
+        self._reset_run_diagnostics()
         files = self.scanner.scan(source, recurse=recurse)
         if not files:
             logger.warning("no_files_found", path=str(source))
@@ -204,8 +233,15 @@ class JavsEngine:
 
         logger.info("files_scanned", count=len(files))
 
-        async def sort_one(file: ScannedFile, data: MovieData) -> None:
-            await self.organizer.sort_movie(file, data, dest, force=force, preview=preview)
+        async def sort_one(file: ScannedFile, data: MovieData, nfo_data: MovieData | None) -> None:
+            await self.organizer.sort_movie(
+                file,
+                data,
+                dest,
+                force=force,
+                preview=preview,
+                nfo_data=nfo_data,
+            )
 
         results = await self._process_scanned_files(files, process_movie=sort_one)
         logger.info("sort_complete", processed=len(results), total=len(files))
@@ -222,6 +258,7 @@ class JavsEngine:
         refresh_trailer: bool = False,
     ) -> list[MovieData]:
         """Refresh metadata sidecars for an already-sorted library without moving videos."""
+        self._reset_run_diagnostics()
         files = self.scanner.scan(source, recurse=recurse)
         if not files:
             logger.warning("no_files_found", path=str(source))
@@ -229,7 +266,11 @@ class JavsEngine:
 
         logger.info("files_scanned", count=len(files), mode="update")
 
-        async def update_one(file: ScannedFile, data: MovieData) -> None:
+        async def update_one(
+            file: ScannedFile,
+            data: MovieData,
+            nfo_data: MovieData | None,
+        ) -> None:
             await self.organizer.update_movie(
                 file,
                 data,
@@ -237,6 +278,7 @@ class JavsEngine:
                 preview=preview,
                 refresh_images=refresh_images,
                 refresh_trailer=refresh_trailer,
+                nfo_data=nfo_data,
             )
 
         results = await self._process_scanned_files(
@@ -260,7 +302,7 @@ class JavsEngine:
         self,
         files: list[ScannedFile],
         *,
-        process_movie: Callable[[ScannedFile, MovieData], Awaitable[None]],
+        process_movie: Callable[[ScannedFile, MovieData, MovieData | None], Awaitable[None]],
         scraper_names: list[str] | None = None,
     ) -> list[MovieData]:
         """Process a batch of scanned files with shared scrape pacing and session lifecycle."""
@@ -288,17 +330,24 @@ class JavsEngine:
             await scrape_sem.acquire()
             waiting_for_scrape_slot -= 1
             try:
-                data = await self.find(file.movie_id, scraper_names=scraper_names)
+                raw_data = await self._find_merged(file.movie_id, scraper_names=scraper_names)
             finally:
                 schedule_scrape_slot_release(
                     apply_sleep=not is_last and waiting_for_scrape_slot > 0
                 )
 
-            if not data:
+            if not raw_data:
                 logger.warning("skip_no_data", file=file.filename, id=file.movie_id)
                 return None
 
-            missing_fields = self._missing_required_fields(data)
+            translated_data = await self._translate_for_display(raw_data)
+            active_data = (
+                translated_data
+                if self.config.sort.metadata.nfo.translate.affect_sort_names
+                else raw_data
+            )
+
+            missing_fields = self._missing_required_fields(active_data)
             if missing_fields:
                 logger.warning(
                     "skip_missing_required_fields",
@@ -308,9 +357,10 @@ class JavsEngine:
                 )
                 return None
 
-            data.original_filename = file.filename
-            await process_movie(file, data)
-            return data
+            active_data.original_filename = file.filename
+            translated_data.original_filename = file.filename
+            await process_movie(file, active_data, translated_data)
+            return active_data
 
         async with self.http:
             self._reset_cloudflare_recovery_state()
@@ -337,11 +387,17 @@ class JavsEngine:
         if not scrapers:
             return []
 
-        original_auth = (self.http.cf_clearance, self.http.cf_user_agent)
+        original_auth = (
+            getattr(self.http, "cf_clearance", ""),
+            getattr(self.http, "cf_user_agent", ""),
+        )
         should_retry = False
 
         async with self._cloudflare_recovery_lock:
-            if (self.http.cf_clearance, self.http.cf_user_agent) != original_auth:
+            if (
+                getattr(self.http, "cf_clearance", ""),
+                getattr(self.http, "cf_user_agent", ""),
+            ) != original_auth:
                 should_retry = True
             elif (
                 self._cloudflare_recovery_handler is not None
@@ -367,9 +423,62 @@ class JavsEngine:
             cf_user_agent=credentials.browser_user_agent,
         )
 
+    async def _translate_for_display(self, data: MovieData) -> MovieData:
+        """Return translated movie data when translation is enabled, otherwise the original data."""
+        translate_config = self.config.sort.metadata.nfo.translate
+        if not translate_config.enabled:
+            return data
+
+        issue = get_translation_provider_issue(translate_config)
+        if issue is not None:
+            self._record_diagnostic_item(
+                kind=issue.kind,
+                scraper="translate",
+                detail=issue.detail,
+            )
+            return data
+
+        return await translate_movie_data(data.model_copy(deep=True), translate_config)
+
     def _reset_cloudflare_recovery_state(self) -> None:
         """Reset once-per-run Javlibrary Cloudflare recovery guard."""
         self._cloudflare_recovery_used = False
+
+    def _reset_run_diagnostics(self) -> None:
+        """Clear user-facing run diagnostics before a new public operation."""
+        self.last_run_diagnostics = []
+
+    def _record_run_diagnostic(self, scraper: str, error: Exception) -> None:
+        """Record compact scraper diagnostics for CLI summaries."""
+        kind = self._diagnostic_kind_for_error(error)
+        if kind is None:
+            return
+
+        self._record_diagnostic_item(kind=kind, scraper=scraper)
+
+    def _record_diagnostic_item(
+        self,
+        *,
+        kind: str,
+        scraper: str,
+        detail: str | None = None,
+    ) -> None:
+        """Record a compact diagnostic item once per public run."""
+        diagnostic = {"kind": kind, "scraper": scraper}
+        if detail:
+            diagnostic["detail"] = detail
+        if diagnostic not in self.last_run_diagnostics:
+            self.last_run_diagnostics.append(diagnostic)
+
+    def _diagnostic_kind_for_error(self, error: Exception) -> str | None:
+        """Map runtime exceptions to compact diagnostic kinds."""
+        if isinstance(error, InvalidProxyAuthError):
+            return "proxy_auth_failed"
+        if isinstance(error, ProxyConnectionFailedError):
+            return "proxy_unreachable"
+        if isinstance(error, CloudflareBlockedError):
+            return "cloudflare_blocked"
+        return None
 
     def _missing_required_fields(self, data: MovieData) -> list[str]:
         """Return configured required fields missing from aggregated movie data."""
