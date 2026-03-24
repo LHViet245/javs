@@ -147,8 +147,9 @@ Recommended defaults for most users:
 - Keep `affect_sort_names: false` if you want translated NFO text but do not want folder/file names to change.
 - Set `affect_sort_names: true` only if you explicitly want translated metadata to affect sort naming as well.
 - For DeepL, prefer exact target variants such as `en-us`, `en-gb`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
-- JavS rejects ambiguous DeepL targets like `en`, `pt`, and `zh` before sending the translation request.
-- Common DeepL targets that work well in JavS include `en-us`, `en-gb`, `ja`, `ko`, `vi`, `de`, `fr`, `it`, `es`, `es-419`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
+- JavS accepts generic DeepL targets such as `en`, `pt`, and `zh` because DeepL still supports them, but variant-specific codes are preferred when you care about locale-specific output.
+- Common DeepL targets that work well in JavS include `en`, `en-us`, `en-gb`, `ja`, `ko`, `vi`, `de`, `fr`, `it`, `es`, `es-419`, `pt`, `pt-br`, `pt-pt`, `zh`, `zh-hans`, and `zh-hant`.
+- You can set `DEEPL_API_KEY` in the environment to override `deepl_api_key` at runtime without storing the key in `config.yaml`.
 
 Runtime behavior:
 
@@ -156,7 +157,7 @@ Runtime behavior:
 - `sort` and `update` write translated NFO content.
 - When `affect_sort_names: false`, sort naming stays based on the original scraped metadata.
 - When the configured provider is missing, JavS keeps running and prints a warning with an install hint instead of crashing.
-- When the DeepL language code is ambiguous or unsupported, JavS keeps running and prints a warning instead of failing mid-batch.
+- When the DeepL language code is unsupported, JavS keeps running and prints a warning instead of failing mid-batch.
 
 ---
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+import os
 from dataclasses import dataclass
 
 from javs.config.models import TranslateConfig
@@ -25,6 +26,7 @@ _DEEPL_TARGET_LANGUAGES = frozenset(
         "DA",
         "DE",
         "EL",
+        "EN",
         "EN-GB",
         "EN-US",
         "ES",
@@ -43,6 +45,7 @@ _DEEPL_TARGET_LANGUAGES = frozenset(
         "NB",
         "NL",
         "PL",
+        "PT",
         "PT-BR",
         "PT-PT",
         "RO",
@@ -54,15 +57,11 @@ _DEEPL_TARGET_LANGUAGES = frozenset(
         "TR",
         "UK",
         "VI",
+        "ZH",
         "ZH-HANS",
         "ZH-HANT",
     }
 )
-_DEEPL_AMBIGUOUS_LANGUAGES = {
-    "EN": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
-    "PT": "DeepL language 'pt' is ambiguous; use 'pt-br' or 'pt-pt'.",
-    "ZH": "DeepL language 'zh' is ambiguous; use 'zh-hans' or 'zh-hant'.",
-}
 
 
 @dataclass(slots=True)
@@ -163,7 +162,7 @@ async def _translate_text(text: str, config: TranslateConfig) -> str | None:
     if config.module == "googletrans":
         return await _translate_googletrans(text, config.language)
     elif config.module == "deepl":
-        return await _translate_deepl(text, config.language, config.deepl_api_key)
+        return await _translate_deepl(text, config.language, _get_effective_deepl_api_key(config))
     else:
         logger.warning("unknown_translate_module", module=config.module)
         return None
@@ -229,13 +228,16 @@ def _normalize_deepl_target_language(target_lang: str) -> str:
     return target_lang.strip().replace("_", "-").upper()
 
 
+def _get_effective_deepl_api_key(config: TranslateConfig) -> str:
+    """Prefer runtime env override without persisting it into config files."""
+    return os.getenv("DEEPL_API_KEY") or config.deepl_api_key
+
+
 def _get_deepl_target_language_issue(target_lang: str) -> str | None:
     """Return a user-facing validation message for invalid DeepL target languages."""
     normalized = _normalize_deepl_target_language(target_lang)
     if not normalized:
         return "DeepL language cannot be empty."
-    if normalized in _DEEPL_AMBIGUOUS_LANGUAGES:
-        return _DEEPL_AMBIGUOUS_LANGUAGES[normalized]
     if normalized not in _DEEPL_TARGET_LANGUAGES:
         return (
             f"DeepL language '{target_lang}' is not a supported target language. "

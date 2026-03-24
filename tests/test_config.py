@@ -4,7 +4,13 @@ from pathlib import Path
 
 import yaml
 
-from javs.config import JavsConfig, create_default_config, load_config, save_config
+from javs.config import (
+    JavsConfig,
+    create_default_config,
+    load_config,
+    redact_config_for_display,
+    save_config,
+)
 
 
 class TestJavsConfig:
@@ -77,6 +83,18 @@ class TestJavsConfig:
         config = JavsConfig()
 
         assert config.sort.metadata.nfo.translate.language == "en-us"
+
+    def test_redact_config_for_display_masks_sensitive_values(self) -> None:
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.deepl_api_key = "super-secret-deepl-key"
+        config.proxy.url = "http://user:pass@example.com:8080"
+        config.javlibrary.cookie_cf_clearance = "cf-secret"
+
+        safe = redact_config_for_display(config)
+
+        assert safe["sort"]["metadata"]["nfo"]["translate"]["deepl_api_key"] == "***"
+        assert safe["proxy"]["url"] == "http://***:***@example.com:8080"
+        assert safe["javlibrary"]["cookie_cf_clearance"] == "***"
 
     def test_serialization_roundtrip(self, tmp_path):
         """Config should survive save/load roundtrip."""

@@ -93,6 +93,24 @@ class TestCliConfigCommand:
         assert result.exit_code == 0
         assert "Unknown action: nope" in result.stdout
 
+    def test_config_show_masks_sensitive_values(self, monkeypatch) -> None:
+        cfg = JavsConfig()
+        cfg.sort.metadata.nfo.translate.deepl_api_key = "super-secret"
+        cfg.proxy.url = "http://user:pass@example.com:8080"
+        cfg.javlibrary.cookie_cf_clearance = "cf-cookie"
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
+
+        result = runner.invoke(app, ["config", "show"])
+
+        assert result.exit_code == 0
+        assert "super-secret" not in result.stdout
+        assert "cf-cookie" not in result.stdout
+        assert "http://user:pass@example.com:8080" not in result.stdout
+        assert '"deepl_api_key": "***"' in result.stdout
+        assert '"cookie_cf_clearance": "***"' in result.stdout
+        assert '"url": "http://***:***@example.com:8080"' in result.stdout
+
     def test_config_javlibrary_cookie_prompts_and_saves(self, monkeypatch, tmp_path: Path) -> None:
         target = tmp_path / "config.yaml"
         saved: dict[str, str] = {}

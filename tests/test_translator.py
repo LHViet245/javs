@@ -90,7 +90,7 @@ class TestTranslateMovieData:
 class TestTranslateText:
     """Test module selection and fallback behavior."""
 
-    def test_get_translation_provider_issue_rejects_ambiguous_deepl_language(
+    def test_get_translation_provider_issue_accepts_generic_deepl_english_target(
         self,
         monkeypatch,
     ) -> None:
@@ -104,10 +104,7 @@ class TestTranslateText:
 
         issue = translator_module.get_translation_provider_issue(config)
 
-        assert issue is not None
-        assert issue.kind == "translation_config_invalid"
-        assert "en-us" in issue.detail
-        assert "en-gb" in issue.detail
+        assert issue is None
 
     def test_get_translation_provider_issue_accepts_valid_deepl_variant(
         self,
@@ -124,6 +121,18 @@ class TestTranslateText:
         issue = translator_module.get_translation_provider_issue(config)
 
         assert issue is None
+
+    def test_get_effective_deepl_api_key_prefers_environment(self, monkeypatch) -> None:
+        config = TranslateConfig(enabled=True, module="deepl", deepl_api_key="from-file")
+        monkeypatch.setenv("DEEPL_API_KEY", "from-env")
+
+        assert translator_module._get_effective_deepl_api_key(config) == "from-env"
+
+    def test_get_effective_deepl_api_key_falls_back_to_config(self, monkeypatch) -> None:
+        config = TranslateConfig(enabled=True, module="deepl", deepl_api_key="from-file")
+        monkeypatch.delenv("DEEPL_API_KEY", raising=False)
+
+        assert translator_module._get_effective_deepl_api_key(config) == "from-file"
 
     def test_get_translation_provider_issue_returns_install_hint_for_missing_googletrans(
         self,
@@ -283,10 +292,31 @@ class TestTranslateText:
         assert result == "translated hello"
 
     @pytest.mark.asyncio
-    async def test_deepl_ambiguous_language_returns_none(self) -> None:
+    async def test_deepl_generic_english_target_is_allowed(self, monkeypatch) -> None:
+        class FakeTranslated:
+            text = "translated hello"
+
+        class FakeTranslator:
+            def __init__(self, api_key: str) -> None:
+                assert api_key == "secret-key"
+
+            def translate_text(self, text: str, target_lang: str) -> FakeTranslated:
+                assert text == "hello"
+                assert target_lang == "EN"
+                return FakeTranslated()
+
+        fake_module = ModuleType("deepl")
+        fake_module.Translator = FakeTranslator
+        monkeypatch.setitem(__import__("sys").modules, "deepl", fake_module)
+
+        async def fake_to_thread(func):
+            return func()
+
+        monkeypatch.setattr(translator_module.asyncio, "to_thread", fake_to_thread)
+
         result = await translator_module._translate_deepl("hello", "en", "secret-key")
 
-        assert result is None
+        assert result == "translated hello"
 
     @pytest.mark.asyncio
     async def test_deepl_importerror_returns_none(self, monkeypatch) -> None:

@@ -276,8 +276,10 @@ def config(
     path = _resolve_config_path(config_path)
 
     if action == "show":
+        from javs.config import redact_config_for_display
+
         cfg = load_config(path)
-        console.print(cfg.model_dump_json(indent=2))
+        console.print_json(data=redact_config_for_display(cfg))
 
     elif action == "create":
         create_default_config(path)
