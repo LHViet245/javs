@@ -326,6 +326,31 @@ class TestCliFindCommand:
         assert "translate: translation provider unavailable" in result.stdout
         assert "Install googletrans to enable translation." in result.stdout
 
+    def test_find_prints_translation_config_warning(self, monkeypatch) -> None:
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = [
+                    {
+                        "kind": "translation_config_invalid",
+                        "scraper": "translate",
+                        "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+                    }
+                ]
+
+            async def find_one(self, movie_id: str, scraper_names=None):
+                return _movie_data()
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 0
+        assert "Warnings:" in result.stdout
+        assert "translate: translation config invalid" in result.stdout
+        assert "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'." in result.stdout
+
 
 class TestCliSortAndScrapers:
     """Test sort command wiring and scraper listing output."""

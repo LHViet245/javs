@@ -28,6 +28,7 @@ _DIAGNOSTIC_MESSAGES = {
     "proxy_unreachable": "proxy unreachable",
     "cloudflare_blocked": "Cloudflare blocked",
     "translation_provider_unavailable": "translation provider unavailable",
+    "translation_config_invalid": "translation config invalid",
 }
 
 

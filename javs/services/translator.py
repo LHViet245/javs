@@ -16,6 +16,54 @@ from javs.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+_DEEPL_TARGET_LANGUAGES = frozenset(
+    {
+        "AR",
+        "BG",
+        "CS",
+        "DA",
+        "DE",
+        "EL",
+        "EN-GB",
+        "EN-US",
+        "ES",
+        "ES-419",
+        "ET",
+        "FI",
+        "FR",
+        "HE",
+        "HU",
+        "ID",
+        "IT",
+        "JA",
+        "KO",
+        "LT",
+        "LV",
+        "NB",
+        "NL",
+        "PL",
+        "PT-BR",
+        "PT-PT",
+        "RO",
+        "RU",
+        "SK",
+        "SL",
+        "SV",
+        "TH",
+        "TR",
+        "UK",
+        "VI",
+        "ZH-HANS",
+        "ZH-HANT",
+    }
+)
+_DEEPL_AMBIGUOUS_LANGUAGES = {
+    "EN": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+    "PT": "DeepL language 'pt' is ambiguous; use 'pt-br' or 'pt-pt'.",
+    "ZH": "DeepL language 'zh' is ambiguous; use 'zh-hans' or 'zh-hant'.",
+}
+
+
 @dataclass(slots=True)
 class TranslationProviderIssue:
     """Compact diagnostic describing why translation cannot run."""
@@ -48,6 +96,12 @@ def get_translation_provider_issue(config: TranslateConfig) -> TranslationProvid
                     "Install deepl to enable translation. "
                     "Try: ./venv/bin/pip install '.[translate]'"
                 ),
+            )
+        language_issue = _get_deepl_target_language_issue(config.language)
+        if language_issue:
+            return TranslationProviderIssue(
+                kind="translation_config_invalid",
+                detail=language_issue,
             )
         return None
 
@@ -135,12 +189,20 @@ async def _translate_googletrans(text: str, dest_lang: str) -> str | None:
 
 async def _translate_deepl(text: str, target_lang: str, api_key: str) -> str | None:
     """Translate using DeepL API."""
+    language_issue = _get_deepl_target_language_issue(target_lang)
+    if language_issue:
+        logger.error("deepl_invalid_target_lang", error=language_issue)
+        return None
+
     try:
         import deepl
 
         def _sync_translate() -> str:
             translator = deepl.Translator(api_key)
-            result = translator.translate_text(text, target_lang=target_lang.upper())
+            result = translator.translate_text(
+                text,
+                target_lang=_normalize_deepl_target_language(target_lang),
+            )
             return result.text
 
         return await asyncio.to_thread(_sync_translate)
@@ -150,3 +212,23 @@ async def _translate_deepl(text: str, target_lang: str, api_key: str) -> str | N
     except Exception as exc:
         logger.error("deepl_error", error=str(exc))
         return None
+
+
+def _normalize_deepl_target_language(target_lang: str) -> str:
+    """Normalize DeepL target language casing and separators."""
+    return target_lang.strip().replace("_", "-").upper()
+
+
+def _get_deepl_target_language_issue(target_lang: str) -> str | None:
+    """Return a user-facing validation message for invalid DeepL target languages."""
+    normalized = _normalize_deepl_target_language(target_lang)
+    if not normalized:
+        return "DeepL language cannot be empty."
+    if normalized in _DEEPL_AMBIGUOUS_LANGUAGES:
+        return _DEEPL_AMBIGUOUS_LANGUAGES[normalized]
+    if normalized not in _DEEPL_TARGET_LANGUAGES:
+        return (
+            f"DeepL language '{target_lang}' is not a supported target language. "
+            "Use a supported DeepL target code such as 'en-us', 'ja', 'vi', or 'pt-br'."
+        )
+    return None

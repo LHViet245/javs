@@ -73,6 +73,11 @@ class TestJavsConfig:
 
         assert config.sort.metadata.nfo.translate.affect_sort_names is False
 
+    def test_translate_language_defaults_to_en_us(self) -> None:
+        config = JavsConfig()
+
+        assert config.sort.metadata.nfo.translate.language == "en-us"
+
     def test_serialization_roundtrip(self, tmp_path):
         """Config should survive save/load roundtrip."""
         config = JavsConfig()

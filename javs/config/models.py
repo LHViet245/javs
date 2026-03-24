@@ -81,7 +81,7 @@ class TranslateConfig(BaseModel):
     enabled: bool = False
     module: str = "googletrans"  # "googletrans" or "deepl"
     fields: list[str] = Field(default_factory=lambda: ["description"])
-    language: str = "en"
+    language: str = "en-us"
     deepl_api_key: str = ""
     keep_original_description: bool = False
     affect_sort_names: bool = False

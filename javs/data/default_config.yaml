@@ -117,7 +117,7 @@ sort:
         module: googletrans    # "googletrans" or "deepl"
         fields:
           - description
-        language: en
+        language: en-us        # DeepL users should prefer exact targets like "en-us", "en-gb", "pt-br", or "zh-hans"
         deepl_api_key: ""
         keep_original_description: false
         affect_sort_names: false

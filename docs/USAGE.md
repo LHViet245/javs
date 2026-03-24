@@ -132,10 +132,11 @@ sort:
     nfo:
       translate:
         enabled: true
-        module: googletrans
+        module: deepl
         fields:
           - description
-        language: en
+        language: en-us
+        deepl_api_key: "your-deepl-api-key"
         keep_original_description: false
         affect_sort_names: false
 ```
@@ -145,6 +146,9 @@ Recommended defaults for most users:
 - Keep `fields` limited to `description` unless you intentionally want translated titles.
 - Keep `affect_sort_names: false` if you want translated NFO text but do not want folder/file names to change.
 - Set `affect_sort_names: true` only if you explicitly want translated metadata to affect sort naming as well.
+- For DeepL, prefer exact target variants such as `en-us`, `en-gb`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
+- JavS rejects ambiguous DeepL targets like `en`, `pt`, and `zh` before sending the translation request.
+- Common DeepL targets that work well in JavS include `en-us`, `en-gb`, `ja`, `ko`, `vi`, `de`, `fr`, `it`, `es`, `es-419`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
 
 Runtime behavior:
 
@@ -152,6 +156,7 @@ Runtime behavior:
 - `sort` and `update` write translated NFO content.
 - When `affect_sort_names: false`, sort naming stays based on the original scraped metadata.
 - When the configured provider is missing, JavS keeps running and prints a warning with an install hint instead of crashing.
+- When the DeepL language code is ambiguous or unsupported, JavS keeps running and prints a warning instead of failing mid-batch.
 
 ---
 

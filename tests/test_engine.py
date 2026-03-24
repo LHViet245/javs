@@ -982,3 +982,46 @@ class TestJavsEngineLifecycle:
                 "detail": "Install googletrans to enable translation.",
             }
         ]
+
+    def test_find_records_translation_config_invalid_diagnostic(self, monkeypatch):
+        """Ambiguous DeepL target languages should surface as a compact CLI diagnostic."""
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.enabled = True
+        engine = self._make_engine(monkeypatch, config=config)
+
+        class WorkingScraper:
+            name = "r18dev"
+
+            async def search_and_scrape(self, movie_id: str):
+                return MovieData(id=movie_id, title="Original", source="r18dev")
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [WorkingScraper()],
+        )
+        monkeypatch.setattr(
+            "javs.core.engine.get_translation_provider_issue",
+            lambda _config: TranslationProviderIssue(
+                kind="translation_config_invalid",
+                detail="DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+            ),
+        )
+
+        async def fail_translate(data, config):
+            raise AssertionError(
+                "translate_movie_data should not be called when translation config is invalid"
+            )
+
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fail_translate)
+
+        result = asyncio.run(engine.find_one("ABP-420"))
+
+        assert result is not None
+        assert result.title == "Original"
+        assert engine.last_run_diagnostics == [
+            {
+                "kind": "translation_config_invalid",
+                "scraper": "translate",
+                "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+            }
+        ]
