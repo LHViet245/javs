@@ -6,12 +6,55 @@ Replaces Javinizer's googletrans integration.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from dataclasses import dataclass
 
 from javs.config.models import TranslateConfig
 from javs.models.movie import MovieData
 from javs.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass(slots=True)
+class TranslationProviderIssue:
+    """Compact diagnostic describing why translation cannot run."""
+
+    kind: str
+    detail: str
+
+
+def get_translation_provider_issue(config: TranslateConfig) -> TranslationProviderIssue | None:
+    """Return a user-facing issue when the configured translation provider is unavailable."""
+    if not config.enabled:
+        return None
+
+    if config.module == "googletrans":
+        if importlib.util.find_spec("googletrans") is None:
+            return TranslationProviderIssue(
+                kind="translation_provider_unavailable",
+                detail=(
+                    "Install googletrans to enable translation. "
+                    "Try: ./venv/bin/pip install '.[translate]'"
+                ),
+            )
+        return None
+
+    if config.module == "deepl":
+        if importlib.util.find_spec("deepl") is None:
+            return TranslationProviderIssue(
+                kind="translation_provider_unavailable",
+                detail=(
+                    "Install deepl to enable translation. "
+                    "Try: ./venv/bin/pip install '.[translate]'"
+                ),
+            )
+        return None
+
+    return TranslationProviderIssue(
+        kind="translation_provider_unavailable",
+        detail=f"Unknown translation module: {config.module}",
+    )
 
 
 async def translate_movie_data(

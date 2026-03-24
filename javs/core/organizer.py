@@ -169,6 +169,7 @@ class FileOrganizer:
         dest_root: Path,
         force: bool = False,
         preview: bool = False,
+        nfo_data: MovieData | None = None,
     ) -> SortPaths:
         """Execute the full sort pipeline for a single movie.
 
@@ -199,7 +200,7 @@ class FileOrganizer:
 
         # 2. Generate and write NFO
         if self.config.sort.metadata.nfo.create:
-            await self._write_nfo(data, sort_paths, file, force)
+            await self._write_nfo(nfo_data or data, sort_paths, file, force)
 
         # 3. Download cover/thumbnail
         if self.config.sort.download.thumb_img and data.cover_url:
@@ -245,6 +246,7 @@ class FileOrganizer:
         preview: bool = False,
         refresh_images: bool = False,
         refresh_trailer: bool = False,
+        nfo_data: MovieData | None = None,
     ) -> SortPaths:
         """Refresh sidecars for an already-sorted movie without moving media files."""
         update_paths = self.build_update_paths(file, data)
@@ -265,7 +267,7 @@ class FileOrganizer:
         update_paths.folder_path.mkdir(parents=True, exist_ok=True)
 
         if self.config.sort.metadata.nfo.create:
-            await self._write_nfo(data, update_paths, file, force=True)
+            await self._write_nfo(nfo_data or data, update_paths, file, force=True)
 
         if self.config.sort.download.thumb_img and data.cover_url:
             await self._download_thumb(data, update_paths, image_force)

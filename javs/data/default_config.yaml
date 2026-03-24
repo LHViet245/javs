@@ -120,6 +120,7 @@ sort:
         language: en
         deepl_api_key: ""
         keep_original_description: false
+        affect_sort_names: false
 
     # Metadata field priority across scrapers (first match wins)
     priority:

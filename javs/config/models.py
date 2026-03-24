@@ -84,6 +84,7 @@ class TranslateConfig(BaseModel):
     language: str = "en"
     deepl_api_key: str = ""
     keep_original_description: bool = False
+    affect_sort_names: bool = False
 
 
 class NfoConfig(BaseModel):

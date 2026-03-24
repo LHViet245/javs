@@ -90,6 +90,40 @@ class TestTranslateMovieData:
 class TestTranslateText:
     """Test module selection and fallback behavior."""
 
+    def test_get_translation_provider_issue_returns_install_hint_for_missing_googletrans(
+        self,
+        monkeypatch,
+    ) -> None:
+        config = TranslateConfig(enabled=True, module="googletrans", language="en")
+
+        monkeypatch.setattr(
+            translator_module.importlib.util,
+            "find_spec",
+            lambda name: None if name == "googletrans" else object(),
+        )
+
+        issue = translator_module.get_translation_provider_issue(config)
+
+        assert issue is not None
+        assert issue.kind == "translation_provider_unavailable"
+        assert "googletrans" in issue.detail
+
+    def test_get_translation_provider_issue_returns_none_when_provider_is_available(
+        self,
+        monkeypatch,
+    ) -> None:
+        config = TranslateConfig(enabled=True, module="deepl", language="en")
+
+        monkeypatch.setattr(
+            translator_module.importlib.util,
+            "find_spec",
+            lambda name: object() if name == "deepl" else None,
+        )
+
+        issue = translator_module.get_translation_provider_issue(config)
+
+        assert issue is None
+
     @pytest.mark.asyncio
     async def test_unknown_module_returns_none(self) -> None:
         config = TranslateConfig(enabled=True, module="unknown", language="en")

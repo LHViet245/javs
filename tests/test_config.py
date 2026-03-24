@@ -68,6 +68,11 @@ class TestJavsConfig:
         assert "dmm" in config.sort.metadata.priority.actress
         assert config.sort.metadata.priority.title[0] == "r18dev"
 
+    def test_translate_affect_sort_names_defaults_to_false(self) -> None:
+        config = JavsConfig()
+
+        assert config.sort.metadata.nfo.translate.affect_sort_names is False
+
     def test_serialization_roundtrip(self, tmp_path):
         """Config should survive save/load roundtrip."""
         config = JavsConfig()
@@ -80,6 +85,20 @@ class TestJavsConfig:
         loaded = load_config(path)
         assert loaded.throttle_limit == 5
         assert loaded.sleep == 10
+
+    def test_translate_affect_sort_names_survives_save_load_roundtrip(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.affect_sort_names = True
+
+        path = tmp_path / "config.yaml"
+        save_config(config, path)
+
+        loaded = load_config(path)
+
+        assert loaded.sort.metadata.nfo.translate.affect_sort_names is True
 
     def test_save_config_preserves_existing_comments(self, tmp_path: Path) -> None:
         """Saving an existing config should not strip explanatory comments."""

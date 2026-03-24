@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+
+from lxml import etree
 
 from javs.config.models import JavsConfig
 from javs.core.engine import JavsEngine
@@ -16,6 +19,7 @@ from javs.services.http import (
     ProxyConnectionFailedError,
 )
 from javs.services.javlibrary_auth import JavlibraryCredentials
+from javs.services.translator import TranslationProviderIssue
 
 
 class TestJavsEngineHttpClientConfig:
@@ -170,7 +174,7 @@ class TestJavsEngineLifecycle:
         in_flight = 0
         max_in_flight = 0
 
-        async def fake_find(movie_id: str, scraper_names=None, aggregate: bool = True):
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
             nonlocal in_flight, max_in_flight
             assert engine.http.enter_count == 1
             assert engine.http.exit_count == 0
@@ -188,12 +192,20 @@ class TestJavsEngineLifecycle:
                 source="test",
             )
 
-        async def fake_sort_movie(file, data, dest_root, force=False, preview=False):
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+        ):
+            del file, data, dest_root, force, preview, nfo_data
             assert engine.http.enter_count == 1
             assert engine.http.exit_count == 0
             return None
 
-        engine.find = fake_find  # type: ignore[method-assign]
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
         monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
 
         result = asyncio.run(engine.sort_path(source, dest, recurse=False))
@@ -202,6 +214,38 @@ class TestJavsEngineLifecycle:
         assert max_in_flight >= 1
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
+
+    def test_find_returns_translated_metadata_for_display(self, monkeypatch):
+        """find() should still return translated metadata when translation is enabled."""
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.enabled = True
+        engine = self._make_engine(monkeypatch, config=config)
+        merged = MovieData(id="ABP-420", title="Original", source="fake")
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [SimpleNamespace(name="fake")],
+        )
+
+        async def fake_run_scrapers(scrapers, movie_id):
+            del scrapers, movie_id
+            return [merged]
+
+        monkeypatch.setattr(engine, "_run_scrapers", fake_run_scrapers)
+        monkeypatch.setattr(engine.aggregator, "merge", lambda valid: merged)
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            translated = data.model_copy(deep=True)
+            translated.title = "Translated"
+            return translated
+
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        result = asyncio.run(engine.find("ABP-420"))
+
+        assert result is not None
+        assert result.title == "Translated"
 
     def test_update_path_keeps_session_open_for_the_whole_batch(self, monkeypatch, tmp_path: Path):
         """update_path() should share one HTTP session across the whole refresh batch."""
@@ -232,7 +276,7 @@ class TestJavsEngineLifecycle:
         ]
         monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: scanned_files)
 
-        async def fake_find(movie_id: str, scraper_names=None, aggregate: bool = True):
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
             assert scraper_names == ["javlibrary"]
             assert engine.http.enter_count == 1
             assert engine.http.exit_count == 0
@@ -254,14 +298,16 @@ class TestJavsEngineLifecycle:
             preview=False,
             refresh_images=False,
             refresh_trailer=False,
+            nfo_data=None,
         ):
+            del file, data, nfo_data
             assert engine.http.enter_count == 1
             assert engine.http.exit_count == 0
             assert refresh_images is True
             assert refresh_trailer is True
             return None
 
-        engine.find = fake_find  # type: ignore[method-assign]
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
         monkeypatch.setattr(engine.organizer, "update_movie", fake_update_movie)
 
         result = asyncio.run(
@@ -276,6 +322,352 @@ class TestJavsEngineLifecycle:
         assert [movie.id for movie in result] == ["ABP-420", "SSIS-001"]
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
+
+    def test_sort_path_preserves_original_naming_data_when_translate_affect_sort_names_disabled(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """sort_path() should pass original naming data plus translated NFO data separately."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.metadata.required_fields = ["title"]
+        config.sort.metadata.nfo.translate.enabled = True
+        config.sort.metadata.nfo.translate.fields = ["title"]
+        config.sort.metadata.nfo.translate.affect_sort_names = False
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_file = ScannedFile(
+            path=source / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=source,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [SimpleNamespace(name="fake")],
+        )
+
+        merged = MovieData(id="ABP-420", title="Original", source="fake")
+
+        async def fake_run_scrapers(scrapers, movie_id):
+            del scrapers, movie_id
+            return [merged]
+
+        monkeypatch.setattr(engine, "_run_scrapers", fake_run_scrapers)
+        monkeypatch.setattr(engine.aggregator, "merge", lambda valid: merged)
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            translated = data.model_copy(deep=True)
+            translated.title = "Translated"
+            return translated
+
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        captured: dict[str, str | None] = {}
+
+        async def fake_sort_movie(file, data, dest_root, force=False, preview=False, nfo_data=None):
+            del file, dest_root, force, preview
+            captured["title"] = data.title
+            captured["nfo_title"] = nfo_data.title if nfo_data else None
+            return None
+
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        assert [movie.title for movie in result] == ["Original"]
+        assert captured == {"title": "Original", "nfo_title": "Translated"}
+
+    def test_update_path_preserves_original_naming_data_when_translate_affect_sort_names_disabled(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """update_path() should refresh NFO with translated data without changing naming data."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.metadata.required_fields = ["title"]
+        config.sort.metadata.nfo.translate.enabled = True
+        config.sort.metadata.nfo.translate.fields = ["title"]
+        config.sort.metadata.nfo.translate.affect_sort_names = False
+        engine = self._make_engine(monkeypatch, config=config)
+        library = tmp_path / "library"
+        library.mkdir()
+
+        scanned_file = ScannedFile(
+            path=library / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=library,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [SimpleNamespace(name="fake")],
+        )
+
+        merged = MovieData(id="ABP-420", title="Original", source="fake")
+
+        async def fake_run_scrapers(scrapers, movie_id):
+            del scrapers, movie_id
+            return [merged]
+
+        monkeypatch.setattr(engine, "_run_scrapers", fake_run_scrapers)
+        monkeypatch.setattr(engine.aggregator, "merge", lambda valid: merged)
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            translated = data.model_copy(deep=True)
+            translated.title = "Translated"
+            return translated
+
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        captured: dict[str, str | None] = {}
+
+        async def fake_update_movie(
+            file,
+            data,
+            *,
+            force=False,
+            preview=False,
+            refresh_images=False,
+            refresh_trailer=False,
+            nfo_data=None,
+        ):
+            del file, force, preview, refresh_images, refresh_trailer
+            captured["title"] = data.title
+            captured["nfo_title"] = nfo_data.title if nfo_data else None
+            return None
+
+        monkeypatch.setattr(engine.organizer, "update_movie", fake_update_movie)
+
+        result = asyncio.run(engine.update_path(library))
+
+        assert [movie.title for movie in result] == ["Original"]
+        assert captured == {"title": "Original", "nfo_title": "Translated"}
+
+    def test_sort_path_keeps_original_folder_name_with_translated_nfo(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """sort_path() should keep original naming while writing translated NFO content."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.metadata.nfo.translate.enabled = True
+        config.sort.metadata.nfo.translate.fields = ["title", "description"]
+        config.sort.metadata.nfo.translate.affect_sort_names = False
+        config.sort.download.thumb_img = False
+        config.sort.download.poster_img = False
+        config.sort.download.actress_img = False
+        config.sort.download.screenshot_img = False
+        config.sort.download.trailer_vid = False
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+        video = source / "ABP-420.mp4"
+        video.write_bytes(b"video")
+
+        scanned_file = ScannedFile(
+            path=video,
+            filename=video.name,
+            basename=video.stem,
+            extension=video.suffix,
+            directory=source,
+            size_bytes=video.stat().st_size,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        raw = MovieData(
+            id="ABP-420",
+            title="Original Title",
+            description="Original Description",
+            maker="Studio",
+            release_date=date(2024, 1, 1),
+            cover_url="https://example.com/cover.jpg",
+            genres=["Drama"],
+            source="fake",
+        )
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del movie_id, scraper_names, aggregate
+            return raw
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            translated = data.model_copy(deep=True)
+            translated.title = "Translated Title"
+            translated.description = "Translated Description"
+            return translated
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        folders = list(dest.iterdir())
+        assert [movie.title for movie in result] == ["Original Title"]
+        assert len(folders) == 1
+        assert "Original Title" in folders[0].name
+        assert "Translated Title" not in folders[0].name
+
+        nfo_path = folders[0] / "ABP-420.nfo"
+        root = etree.fromstring(nfo_path.read_text(encoding="utf-8").encode("utf-8"))
+        assert root.find("title").text == "Translated Title"
+        assert root.find("plot").text == "Translated Description"
+
+    def test_sort_path_uses_translated_folder_name_when_affect_sort_names_enabled(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """sort_path() should let translated metadata affect naming when explicitly enabled."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.metadata.nfo.translate.enabled = True
+        config.sort.metadata.nfo.translate.fields = ["title", "description"]
+        config.sort.metadata.nfo.translate.affect_sort_names = True
+        config.sort.download.thumb_img = False
+        config.sort.download.poster_img = False
+        config.sort.download.actress_img = False
+        config.sort.download.screenshot_img = False
+        config.sort.download.trailer_vid = False
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+        video = source / "ABP-420.mp4"
+        video.write_bytes(b"video")
+
+        scanned_file = ScannedFile(
+            path=video,
+            filename=video.name,
+            basename=video.stem,
+            extension=video.suffix,
+            directory=source,
+            size_bytes=video.stat().st_size,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        raw = MovieData(
+            id="ABP-420",
+            title="Original Title",
+            description="Original Description",
+            maker="Studio",
+            release_date=date(2024, 1, 1),
+            cover_url="https://example.com/cover.jpg",
+            genres=["Drama"],
+            source="fake",
+        )
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del movie_id, scraper_names, aggregate
+            return raw
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            translated = data.model_copy(deep=True)
+            translated.title = "Translated Title"
+            translated.description = "Translated Description"
+            return translated
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        folders = list(dest.iterdir())
+        assert [movie.title for movie in result] == ["Translated Title"]
+        assert len(folders) == 1
+        assert "Translated Title" in folders[0].name
+
+        nfo_path = folders[0] / "ABP-420.nfo"
+        root = etree.fromstring(nfo_path.read_text(encoding="utf-8").encode("utf-8"))
+        assert root.find("title").text == "Translated Title"
+        assert root.find("plot").text == "Translated Description"
+
+    def test_update_path_rewrites_existing_nfo_with_translated_content(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """update_path() should keep existing paths while rewriting NFO with translated text."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.metadata.nfo.translate.enabled = True
+        config.sort.metadata.nfo.translate.fields = ["title", "description"]
+        config.sort.metadata.nfo.translate.affect_sort_names = False
+        config.sort.download.thumb_img = False
+        config.sort.download.poster_img = False
+        config.sort.download.actress_img = False
+        config.sort.download.screenshot_img = False
+        config.sort.download.trailer_vid = False
+        engine = self._make_engine(monkeypatch, config=config)
+        folder = tmp_path / "ABP-420 [Studio] - Original Title (2024)"
+        folder.mkdir()
+        video = folder / "ABP-420.mp4"
+        video.write_bytes(b"video")
+        nfo_path = folder / "ABP-420.nfo"
+        nfo_path.write_text("old", encoding="utf-8")
+
+        scanned_file = ScannedFile(
+            path=video,
+            filename=video.name,
+            basename=video.stem,
+            extension=video.suffix,
+            directory=folder,
+            size_bytes=video.stat().st_size,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        raw = MovieData(
+            id="ABP-420",
+            title="Original Title",
+            description="Original Description",
+            maker="Studio",
+            release_date=date(2024, 1, 1),
+            cover_url="https://example.com/cover.jpg",
+            genres=["Drama"],
+            source="fake",
+        )
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del movie_id, scraper_names, aggregate
+            return raw
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            translated = data.model_copy(deep=True)
+            translated.title = "Translated Title"
+            translated.description = "Translated Description"
+            return translated
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        result = asyncio.run(engine.update_path(folder))
+
+        assert [movie.title for movie in result] == ["Original Title"]
+        assert video.exists()
+        assert nfo_path.exists()
+        root = etree.fromstring(nfo_path.read_text(encoding="utf-8").encode("utf-8"))
+        assert root.find("title").text == "Translated Title"
+        assert root.find("plot").text == "Translated Description"
 
     def test_sort_path_skips_movies_missing_required_fields(self, monkeypatch, tmp_path: Path):
         """sort_path() should honor sort.metadata.required_fields before organizing files."""
@@ -299,13 +691,13 @@ class TestJavsEngineLifecycle:
         )
         monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
 
-        async def fake_find(movie_id: str, scraper_names=None, aggregate: bool = True):
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
             return MovieData(id=movie_id, title="Has title only", source="test")
 
         async def fail_sort_movie(*args, **kwargs):
             raise AssertionError("sort_movie should not be called when required fields are missing")
 
-        engine.find = fake_find  # type: ignore[method-assign]
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
         monkeypatch.setattr(engine.organizer, "sort_movie", fail_sort_movie)
 
         result = asyncio.run(engine.sort_path(source, dest))
@@ -350,7 +742,7 @@ class TestJavsEngineLifecycle:
         release_first_organizer = asyncio.Event()
         second_find_started = asyncio.Event()
 
-        async def fake_find(movie_id: str, scraper_names=None, aggregate: bool = True):
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
             if movie_id == "SSIS-001":
                 second_find_started.set()
             return MovieData(
@@ -362,13 +754,21 @@ class TestJavsEngineLifecycle:
                 source="test",
             )
 
-        async def fake_sort_movie(file, data, dest_root, force=False, preview=False):
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+        ):
+            del file, dest_root, force, preview, nfo_data
             if data.id == "ABP-420":
                 organizer_started.set()
                 await release_first_organizer.wait()
             return None
 
-        engine.find = fake_find  # type: ignore[method-assign]
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
         monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
 
         async def exercise() -> list[MovieData]:
@@ -538,4 +938,47 @@ class TestJavsEngineLifecycle:
         assert result is None
         assert engine.last_run_diagnostics == [
             {"kind": "proxy_auth_failed", "scraper": "mgstageja"}
+        ]
+
+    def test_find_records_translation_provider_unavailable_diagnostic(self, monkeypatch):
+        """Missing translation providers should surface as one compact CLI diagnostic."""
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.enabled = True
+        engine = self._make_engine(monkeypatch, config=config)
+
+        class WorkingScraper:
+            name = "r18dev"
+
+            async def search_and_scrape(self, movie_id: str):
+                return MovieData(id=movie_id, title="Original", source="r18dev")
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [WorkingScraper()],
+        )
+        monkeypatch.setattr(
+            "javs.core.engine.get_translation_provider_issue",
+            lambda _config: TranslationProviderIssue(
+                kind="translation_provider_unavailable",
+                detail="Install googletrans to enable translation.",
+            ),
+        )
+
+        async def fail_translate(data, config):
+            raise AssertionError(
+                "translate_movie_data should not be called when provider is missing"
+            )
+
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fail_translate)
+
+        result = asyncio.run(engine.find_one("ABP-420"))
+
+        assert result is not None
+        assert result.title == "Original"
+        assert engine.last_run_diagnostics == [
+            {
+                "kind": "translation_provider_unavailable",
+                "scraper": "translate",
+                "detail": "Install googletrans to enable translation.",
+            }
         ]

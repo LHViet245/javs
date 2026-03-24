@@ -24,7 +24,7 @@ from javs.services.http import (
     ProxyConnectionFailedError,
 )
 from javs.services.javlibrary_auth import JavlibraryCredentials
-from javs.services.translator import translate_movie_data
+from javs.services.translator import get_translation_provider_issue, translate_movie_data
 from javs.utils.logging import get_logger, get_mask_processor, setup_logging
 
 logger = get_logger(__name__)
@@ -110,6 +110,19 @@ class JavsEngine:
         Returns:
             MovieData or None.
         """
+        data = await self._find_merged(movie_id, scraper_names=scraper_names, aggregate=aggregate)
+        if not data:
+            return None
+
+        return await self._translate_for_display(data)
+
+    async def _find_merged(
+        self,
+        movie_id: str,
+        scraper_names: list[str] | None = None,
+        aggregate: bool = True,
+    ) -> MovieData | None:
+        """Look up and aggregate raw movie metadata without translation side effects."""
         if scraper_names:
             scrapers = ScraperRegistry.get_by_names(
                 scraper_names, self.http, self.config.scrapers, self.config.proxy
@@ -174,15 +187,7 @@ class JavsEngine:
         if not aggregate:
             return valid[0]
 
-        # Aggregate
-        merged = self.aggregator.merge(valid)
-
-        # Translate if configured
-        translate_config = self.config.sort.metadata.nfo.translate
-        if translate_config.enabled:
-            merged = await translate_movie_data(merged, translate_config)
-
-        return merged
+        return self.aggregator.merge(valid)
 
     async def find_one(
         self,
@@ -228,8 +233,15 @@ class JavsEngine:
 
         logger.info("files_scanned", count=len(files))
 
-        async def sort_one(file: ScannedFile, data: MovieData) -> None:
-            await self.organizer.sort_movie(file, data, dest, force=force, preview=preview)
+        async def sort_one(file: ScannedFile, data: MovieData, nfo_data: MovieData | None) -> None:
+            await self.organizer.sort_movie(
+                file,
+                data,
+                dest,
+                force=force,
+                preview=preview,
+                nfo_data=nfo_data,
+            )
 
         results = await self._process_scanned_files(files, process_movie=sort_one)
         logger.info("sort_complete", processed=len(results), total=len(files))
@@ -254,7 +266,11 @@ class JavsEngine:
 
         logger.info("files_scanned", count=len(files), mode="update")
 
-        async def update_one(file: ScannedFile, data: MovieData) -> None:
+        async def update_one(
+            file: ScannedFile,
+            data: MovieData,
+            nfo_data: MovieData | None,
+        ) -> None:
             await self.organizer.update_movie(
                 file,
                 data,
@@ -262,6 +278,7 @@ class JavsEngine:
                 preview=preview,
                 refresh_images=refresh_images,
                 refresh_trailer=refresh_trailer,
+                nfo_data=nfo_data,
             )
 
         results = await self._process_scanned_files(
@@ -285,7 +302,7 @@ class JavsEngine:
         self,
         files: list[ScannedFile],
         *,
-        process_movie: Callable[[ScannedFile, MovieData], Awaitable[None]],
+        process_movie: Callable[[ScannedFile, MovieData, MovieData | None], Awaitable[None]],
         scraper_names: list[str] | None = None,
     ) -> list[MovieData]:
         """Process a batch of scanned files with shared scrape pacing and session lifecycle."""
@@ -313,17 +330,24 @@ class JavsEngine:
             await scrape_sem.acquire()
             waiting_for_scrape_slot -= 1
             try:
-                data = await self.find(file.movie_id, scraper_names=scraper_names)
+                raw_data = await self._find_merged(file.movie_id, scraper_names=scraper_names)
             finally:
                 schedule_scrape_slot_release(
                     apply_sleep=not is_last and waiting_for_scrape_slot > 0
                 )
 
-            if not data:
+            if not raw_data:
                 logger.warning("skip_no_data", file=file.filename, id=file.movie_id)
                 return None
 
-            missing_fields = self._missing_required_fields(data)
+            translated_data = await self._translate_for_display(raw_data)
+            active_data = (
+                translated_data
+                if self.config.sort.metadata.nfo.translate.affect_sort_names
+                else raw_data
+            )
+
+            missing_fields = self._missing_required_fields(active_data)
             if missing_fields:
                 logger.warning(
                     "skip_missing_required_fields",
@@ -333,9 +357,10 @@ class JavsEngine:
                 )
                 return None
 
-            data.original_filename = file.filename
-            await process_movie(file, data)
-            return data
+            active_data.original_filename = file.filename
+            translated_data.original_filename = file.filename
+            await process_movie(file, active_data, translated_data)
+            return active_data
 
         async with self.http:
             self._reset_cloudflare_recovery_state()
@@ -398,6 +423,23 @@ class JavsEngine:
             cf_user_agent=credentials.browser_user_agent,
         )
 
+    async def _translate_for_display(self, data: MovieData) -> MovieData:
+        """Return translated movie data when translation is enabled, otherwise the original data."""
+        translate_config = self.config.sort.metadata.nfo.translate
+        if not translate_config.enabled:
+            return data
+
+        issue = get_translation_provider_issue(translate_config)
+        if issue is not None:
+            self._record_diagnostic_item(
+                kind=issue.kind,
+                scraper="translate",
+                detail=issue.detail,
+            )
+            return data
+
+        return await translate_movie_data(data.model_copy(deep=True), translate_config)
+
     def _reset_cloudflare_recovery_state(self) -> None:
         """Reset once-per-run Javlibrary Cloudflare recovery guard."""
         self._cloudflare_recovery_used = False
@@ -412,7 +454,19 @@ class JavsEngine:
         if kind is None:
             return
 
+        self._record_diagnostic_item(kind=kind, scraper=scraper)
+
+    def _record_diagnostic_item(
+        self,
+        *,
+        kind: str,
+        scraper: str,
+        detail: str | None = None,
+    ) -> None:
+        """Record a compact diagnostic item once per public run."""
         diagnostic = {"kind": kind, "scraper": scraper}
+        if detail:
+            diagnostic["detail"] = detail
         if diagnostic not in self.last_run_diagnostics:
             self.last_run_diagnostics.append(diagnostic)
 

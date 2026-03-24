@@ -27,6 +27,7 @@ _DIAGNOSTIC_MESSAGES = {
     "proxy_auth_failed": "proxy auth failed",
     "proxy_unreachable": "proxy unreachable",
     "cloudflare_blocked": "Cloudflare blocked",
+    "translation_provider_unavailable": "translation provider unavailable",
 }
 
 
@@ -79,6 +80,9 @@ def _print_run_diagnostics(engine) -> None:
         kind = item.get("kind", "")
         message = _DIAGNOSTIC_MESSAGES.get(kind, kind.replace("_", " "))
         console.print(f"- {scraper}: {message}")
+        detail = item.get("detail")
+        if detail:
+            console.print(f"  {detail}")
 
 
 def version_callback(value: bool) -> None:
