@@ -19,6 +19,11 @@ The following areas are already in place and should be treated as established un
 - `verify_ssl` contract cleanup and regression coverage
 - Javlibrary direct-match and interactive recovery improvements
 - in-place metadata refresh via `javs update`
+- translate pipeline hardening:
+  - `affect_sort_names` added with a safe default of `false`
+  - `find` keeps translated display output while `sort`/`update` can keep original naming
+  - translated NFO output is covered by integration tests
+  - missing translation providers now warn clearly instead of failing noisily
 - lint-clean baseline and broader regression coverage
 
 ## Active Priorities
@@ -44,6 +49,7 @@ The following risk-heavy modules improved recently and should now shift from
 - `javs/core/organizer.py`
 - `javs/cli.py`
 - `javs/services/javlibrary_auth.py`
+- `javs/services/translator.py`
 
 ### P3. Product Surface Decisions
 

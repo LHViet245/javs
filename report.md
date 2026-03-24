@@ -3,7 +3,7 @@
 ## Scope
 
 - Snapshot date: 2026-03-24
-- Scope: current repository state after proxy hardening follow-up and doc consolidation
+- Scope: current repository state after proxy hardening and translate pipeline follow-up
 - Focus: code health, verification status, remaining risk, and practical maturity
 
 ## Verification Snapshot
@@ -30,6 +30,7 @@ Latest observed results:
 - Core architecture is cleanly layered around `scan -> scrape -> aggregate -> organize`.
 - Async session lifecycle and proxy routing have been hardened with regression tests.
 - Proxy config now matches runtime behavior for retries, timeouts, diagnostics, and asset downloads.
+- Translation flow now supports NFO-only translation by default while keeping sort naming stable unless explicitly opted in.
 - Config sync, CSV helpers, Javlibrary credential management, and update-in-place flow are implemented.
 - Scraper registry and fixture-backed scraper tests make the codebase extensible.
 - The local test suite is strong enough to support refactors with reasonable confidence.
@@ -59,6 +60,11 @@ Recent repo state includes:
   - `javs config proxy-test` for preflight diagnostics
   - CLI warning summaries for proxy/auth/Cloudflare failures
   - proxy-aware cover, trailer, and screenshot downloads via field-level source tracking
+- translation follow-up:
+  - `affect_sort_names` now controls whether translated metadata can affect folder/file naming
+  - batch flows keep original naming data while writing translated NFO content by default
+  - missing translation providers now surface a compact warning with install guidance
+  - integration tests cover `find`, `sort`, `update`, and generated NFO output
 - schema-aligned config sync and default config cleanup
 - Javlibrary helper commands and interactive recovery path
 - MGStage implementation plus fixture-backed tests

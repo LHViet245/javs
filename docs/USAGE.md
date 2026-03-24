@@ -116,6 +116,43 @@ To enter Javlibrary Cloudflare credentials without editing YAML manually:
 Use `proxy-test` to verify that your configured proxy is enabled, reachable,
 and can complete a simple proxied request before you run a larger batch.
 
+### Translation
+
+Translation providers are optional. Install them before enabling metadata translation:
+
+```bash
+./venv/bin/pip install -e ".[translate]"
+```
+
+Translation config lives under `sort.metadata.nfo.translate`:
+
+```yaml
+sort:
+  metadata:
+    nfo:
+      translate:
+        enabled: true
+        module: googletrans
+        fields:
+          - description
+        language: en
+        keep_original_description: false
+        affect_sort_names: false
+```
+
+Recommended defaults for most users:
+
+- Keep `fields` limited to `description` unless you intentionally want translated titles.
+- Keep `affect_sort_names: false` if you want translated NFO text but do not want folder/file names to change.
+- Set `affect_sort_names: true` only if you explicitly want translated metadata to affect sort naming as well.
+
+Runtime behavior:
+
+- `find` still shows translated text when translation is enabled.
+- `sort` and `update` write translated NFO content.
+- When `affect_sort_names: false`, sort naming stays based on the original scraped metadata.
+- When the configured provider is missing, JavS keeps running and prints a warning with an install hint instead of crashing.
+
 ---
 
 ## 🔎 Key Commands
