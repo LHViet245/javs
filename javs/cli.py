@@ -12,6 +12,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
 
 from javs import __version__
@@ -22,6 +23,21 @@ app = typer.Typer(
     add_completion=True,
 )
 console = Console()
+
+_PROVENANCE_FIELD_ORDER = (
+    "title",
+    "description",
+    "maker",
+    "release_date",
+    "runtime",
+    "rating",
+    "genres",
+    "actresses",
+    "director",
+    "cover_url",
+    "trailer_url",
+    "screenshot_urls",
+)
 
 
 _DIAGNOSTIC_MESSAGES = {
@@ -457,40 +473,104 @@ def scrapers() -> None:
 
 
 def _display_movie_data(data) -> None:
-    """Pretty-print movie data to console."""
-    from rich.panel import Panel
+    """Render movie data as a sectioned inspector view."""
 
-    lines = []
-    lines.append(f"[bold cyan]ID:[/bold cyan] {data.id}")
-    if data.title:
-        lines.append(f"[bold]Title:[/bold] {data.title}")
-    if data.alternate_title:
-        lines.append(f"[bold]Alt Title:[/bold] {data.alternate_title}")
-    if data.maker:
-        lines.append(f"[bold]Studio:[/bold] {data.maker}")
-    if data.label:
-        lines.append(f"[bold]Label:[/bold] {data.label}")
-    if data.series:
-        lines.append(f"[bold]Series:[/bold] {data.series}")
-    if data.director:
-        lines.append(f"[bold]Director:[/bold] {data.director}")
+    def add_row(rows: list[tuple[str, str]], label: str, value: object) -> None:
+        if value in (None, "", [], {}):
+            return
+        rows.append((label, str(value)))
+
+    def make_section(title: str, rows: list[tuple[str, str]]) -> Panel | None:
+        if not rows:
+            return None
+        grid = Table.grid(expand=True, padding=(0, 1))
+        grid.add_column(style="bold cyan", no_wrap=True)
+        grid.add_column(overflow="fold")
+        for label, value in rows:
+            grid.add_row(label, value)
+        return Panel(grid, title=title, border_style="cyan")
+
+    def shorten_url(url: str, limit: int = 72) -> str:
+        if len(url) <= limit:
+            return url
+        return f"{url[:limit - 3]}..."
+
+    def shorten_text(text: str, limit: int = 200) -> str:
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit - 3].rstrip()}..."
+
+    sections: list[Panel] = []
+
+    identity_rows: list[tuple[str, str]] = []
+    add_row(identity_rows, "ID", data.id)
+    add_row(identity_rows, "Title", data.title)
+    add_row(identity_rows, "Original Title", data.alternate_title)
+    add_row(identity_rows, "Primary Source", data.source)
+    identity_section = make_section("Identity", identity_rows)
+    if identity_section is not None:
+        sections.append(identity_section)
+
+    release_rows: list[tuple[str, str]] = []
+    add_row(release_rows, "Studio", data.maker)
+    add_row(release_rows, "Label", data.label)
+    add_row(release_rows, "Series", data.series)
     if data.release_date:
-        lines.append(f"[bold]Release:[/bold] {data.release_date}")
+        add_row(release_rows, "Release Date", data.release_date.isoformat())
     if data.runtime:
-        lines.append(f"[bold]Runtime:[/bold] {data.runtime} min")
+        add_row(release_rows, "Runtime", f"{data.runtime} min")
     if data.rating:
-        lines.append(f"[bold]Rating:[/bold] {data.rating.rating}/10 ({data.rating.votes} votes)")
-    if data.genres:
-        lines.append(f"[bold]Genres:[/bold] {', '.join(data.genres)}")
-    if data.actresses:
-        actress_names = [a.full_name for a in data.actresses]
-        lines.append(f"[bold]Actresses:[/bold] {', '.join(actress_names)}")
-    if data.description:
-        desc = data.description[:200] + "..." if len(data.description) > 200 else data.description
-        lines.append(f"\n[dim]{desc}[/dim]")
+        rating_text = (
+            f"{data.rating.rating}/10 ({data.rating.votes} votes)"
+            if data.rating.votes is not None
+            else f"{data.rating.rating}/10"
+        )
+        add_row(release_rows, "Rating", rating_text)
+    release_section = make_section("Release", release_rows)
+    if release_section is not None:
+        sections.append(release_section)
 
-    content = "\n".join(lines)
-    console.print(Panel(content, title=f"🎬 {data.id}", border_style="cyan"))
+    people_rows: list[tuple[str, str]] = []
+    if data.actresses:
+        actress_names = ", ".join(actress.full_name for actress in data.actresses)
+        add_row(people_rows, "Actresses", actress_names)
+    add_row(people_rows, "Director", data.director)
+    people_section = make_section("People", people_rows)
+    if people_section is not None:
+        sections.append(people_section)
+
+    content_rows: list[tuple[str, str]] = []
+    if data.genres:
+        add_row(content_rows, "Genres", ", ".join(data.genres))
+    if data.description:
+        add_row(content_rows, "Description", shorten_text(data.description))
+    content_section = make_section("Content", content_rows)
+    if content_section is not None:
+        sections.append(content_section)
+
+    asset_rows: list[tuple[str, str]] = []
+    if data.cover_url:
+        add_row(asset_rows, "Cover URL", shorten_url(data.cover_url))
+    if data.trailer_url:
+        add_row(asset_rows, "Trailer URL", shorten_url(data.trailer_url))
+    if data.screenshot_urls:
+        add_row(asset_rows, "Screenshot Count", len(data.screenshot_urls))
+    assets_section = make_section("Assets", asset_rows)
+    if assets_section is not None:
+        sections.append(assets_section)
+
+    provenance_rows: list[tuple[str, str]] = []
+    field_sources = data.field_sources or {}
+    ordered_fields = [field for field in _PROVENANCE_FIELD_ORDER if field in field_sources]
+    extra_fields = sorted(field for field in field_sources if field not in _PROVENANCE_FIELD_ORDER)
+    for field_name in ordered_fields + extra_fields:
+        add_row(provenance_rows, field_name, field_sources[field_name])
+    provenance_section = make_section("Field Provenance", provenance_rows)
+    if provenance_section is not None:
+        sections.append(provenance_section)
+
+    for section in sections:
+        console.print(section)
 
 
 if __name__ == "__main__":

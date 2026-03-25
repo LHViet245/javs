@@ -13,7 +13,7 @@ import javs.core.engine as engine_module
 import javs.scrapers.registry as registry_module
 from javs.cli import app
 from javs.config import JavsConfig
-from javs.models.movie import MovieData
+from javs.models.movie import Actress, MovieData, Rating
 from javs.services.javlibrary_auth import JavlibraryCredentials
 
 runner = CliRunner()
@@ -378,6 +378,126 @@ class TestCliFindCommand:
         assert "translate: translation config invalid" in result.stdout
         assert "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'." in result.stdout
         assert "Next: update `sort.metadata.nfo.translate` in your config." in result.stdout
+
+    def test_find_renders_inspector_sections_with_assets_and_provenance(self, monkeypatch) -> None:
+        long_description = "Translated Plot " + ("detail " * 40)
+        long_cover_url = "https://example.com/assets/" + ("cover-segment/" * 8) + "cover.jpg"
+        long_trailer_url = (
+            "https://example.com/assets/" + ("trailer-segment/" * 8) + "trailer.mp4"
+        )
+        movie = MovieData(
+            id="ABP-420",
+            title="Translated Title",
+            alternate_title="Original Title",
+            description=long_description,
+            maker="IdeaPocket",
+            label="Premium",
+            series="Midnight Series",
+            director="Director One",
+            release_date=date(2023, 6, 15),
+            runtime=120,
+            rating=Rating(rating=8.4, votes=1289),
+            genres=["Drama", "Romance"],
+            actresses=[Actress(first_name="Aoi", last_name="Sora")],
+            cover_url=long_cover_url,
+            trailer_url=long_trailer_url,
+            screenshot_urls=[
+                "https://example.com/assets/1.jpg",
+                "https://example.com/assets/2.jpg",
+            ],
+            source="dmm",
+            field_sources={
+                "title": "deepl",
+                "description": "deepl",
+                "maker": "dmm",
+                "release_date": "dmm",
+                "runtime": "dmm",
+                "rating": "r18dev",
+                "genres": "r18dev",
+                "actresses": "dmm",
+                "director": "mgstageja",
+                "cover_url": "dmm",
+                "trailer_url": "mgstageja",
+                "screenshot_urls": "dmm",
+            },
+        )
+
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = []
+
+            async def find_one(self, movie_id: str, scraper_names=None):
+                return movie
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 0
+        section_order = [
+            "Identity",
+            "Release",
+            "People",
+            "Content",
+            "Assets",
+            "Field Provenance",
+        ]
+        section_positions = [result.stdout.index(section) for section in section_order]
+        assert section_positions == sorted(section_positions)
+        assert "Primary Source" in result.stdout
+        assert "dmm" in result.stdout
+        assert "Original Title" in result.stdout
+        assert "Cover URL" in result.stdout
+        assert "Trailer URL" in result.stdout
+        assert "Screenshot Count" in result.stdout
+        assert "2" in result.stdout
+        assert long_cover_url not in result.stdout
+        assert long_trailer_url not in result.stdout
+        assert "https://example.com/assets/cover-segment/cover-segment/" in result.stdout
+        assert "..." in result.stdout
+        assert long_description not in result.stdout
+        assert "Translated Plot detail detail detail" in result.stdout
+        assert "detail..." in result.stdout
+        assert "title" in result.stdout
+        assert "deepl" in result.stdout
+        assert "description" in result.stdout
+        assert "maker" in result.stdout
+        assert "genres" in result.stdout
+        assert "actresses" in result.stdout
+        assert "cover_url" in result.stdout
+        assert "trailer_url" in result.stdout
+        assert "screenshot_urls" in result.stdout
+
+    def test_find_omits_empty_optional_rows_in_inspector_view(self, monkeypatch) -> None:
+        movie = MovieData(
+            id="ABP-420",
+            title="Test Movie",
+            source="dmm",
+            field_sources={"title": "dmm"},
+        )
+
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = []
+
+            async def find_one(self, movie_id: str, scraper_names=None):
+                return movie
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 0
+        assert "Label" not in result.stdout
+        assert "Series" not in result.stdout
+        assert "Director" not in result.stdout
+        assert "Cover URL" not in result.stdout
+        assert "Trailer URL" not in result.stdout
+        assert "Screenshot Count" not in result.stdout
 
 
 class TestCliSortAndScrapers:
