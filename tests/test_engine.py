@@ -140,6 +140,59 @@ class TestJavsEngineLifecycle:
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
 
+    def test_find_preserves_field_sources_through_aggregation_and_translation(
+        self, monkeypatch
+    ):
+        """find() should keep field provenance intact after merge and translation."""
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.enabled = True
+        engine = self._make_engine(monkeypatch, config=config)
+        raw = MovieData(
+            id="ABP-420",
+            title="Original Title",
+            description="Original Plot",
+            source="dmm",
+            field_sources={"title": "dmm", "description": "dmm"},
+        )
+        merged = raw.model_copy(deep=True)
+        merged.title = "Merged Title"
+        merged.field_sources["title"] = "dmm"
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [SimpleNamespace(name="dmm")],
+        )
+
+        async def fake_run_scrapers(scrapers, movie_id):
+            del scrapers, movie_id
+            return [raw]
+
+        monkeypatch.setattr(engine, "_run_scrapers", fake_run_scrapers)
+        monkeypatch.setattr(engine.aggregator, "merge", lambda valid: merged)
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            assert data is not raw
+            assert data is not merged
+            assert data.title == "Merged Title"
+            assert data.field_sources == {"title": "dmm", "description": "dmm"}
+            data.title = "Translated Title"
+            data.field_sources["title"] = "deepl"
+            return data
+
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        result = asyncio.run(engine.find("ABP-420"))
+
+        assert result is not None
+        assert result.title == "Translated Title"
+        assert result.description == "Original Plot"
+        assert result.field_sources == {"title": "deepl", "description": "dmm"}
+        assert merged.title == "Merged Title"
+        assert merged.field_sources == {"title": "dmm", "description": "dmm"}
+        assert raw.title == "Original Title"
+        assert raw.field_sources == {"title": "dmm", "description": "dmm"}
+
     def test_sort_path_keeps_session_open_for_the_whole_batch(self, monkeypatch, tmp_path: Path):
         """sort_path() should open the shared session once for the whole batch."""
         config = JavsConfig(throttle_limit=2, sleep=0)
