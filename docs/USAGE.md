@@ -153,7 +153,8 @@ Recommended defaults for most users:
 
 Runtime behavior:
 
-- `find` still shows translated text when translation is enabled.
+- `find` still shows translated text when translation is enabled, and now renders as a sectioned inspector with `Identity`, `Release`, `People`, `Content`, `Assets`, and `Field Provenance` blocks.
+- When a field is actually changed by translation, the translation provider may appear as that field's provenance source in `find`.
 - `sort` and `update` write translated NFO content.
 - When `affect_sort_names: false`, sort naming stays based on the original scraped metadata.
 - When the configured provider is missing, JavS keeps running and prints a warning with an install hint instead of crashing.
@@ -165,13 +166,13 @@ Runtime behavior:
 
 ### 1. `find` - Manual Metadata Search
 
-Search for a specific ID with visual output in the terminal.
+Search for a specific ID with rich, sectioned output in the terminal.
 
 ```bash
 javs find "ABP-420"
 ```
 
-The tool will query all active scrapers in parallel, aggregate the best data according to your priorities, and display a rich summary of the movie (Title, Actresses, Genres, Maker, Cover URL, etc.).
+The tool will query all active scrapers in parallel, aggregate the best data according to your priorities, and display a sectioned inspector view with provenance for traceable fields.
 
 ### 2. `sort` - Auto-Organize Media
 
