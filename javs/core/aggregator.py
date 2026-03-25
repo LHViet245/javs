@@ -47,12 +47,19 @@ class DataAggregator:
 
         if len(results) == 1:
             merged = results[0].model_copy(deep=True)
+            self._backfill_field_sources_from_source(merged)
             if merged.cover_url and not merged.cover_source and merged.source:
                 merged.cover_source = merged.source
             if merged.screenshot_urls and not merged.screenshot_source and merged.source:
                 merged.screenshot_source = merged.source
             if merged.trailer_url and not merged.trailer_source and merged.source:
                 merged.trailer_source = merged.source
+            if merged.cover_url and merged.cover_source:
+                merged.field_sources["cover_url"] = merged.cover_source
+            if merged.screenshot_urls and merged.screenshot_source:
+                merged.field_sources["screenshot_urls"] = merged.screenshot_source
+            if merged.trailer_url and merged.trailer_source:
+                merged.field_sources["trailer_url"] = merged.trailer_source
             self._post_process(merged)
             return merged
 
@@ -65,41 +72,73 @@ class DataAggregator:
         merged = MovieData()
 
         # Merge each field by priority
-        merged.id = self._pick_field(source_map, priority.id, "id")
-        merged.content_id = self._pick_field(source_map, priority.content_id, "content_id")
-        merged.title = self._pick_field(source_map, priority.title, "title")
-        merged.alternate_title = self._pick_field(
+        merged.id, source = self._pick_field_with_source(source_map, priority.id, "id")
+        self._set_field_source(merged, "id", source)
+        merged.content_id, source = self._pick_field_with_source(
+            source_map, priority.content_id, "content_id"
+        )
+        self._set_field_source(merged, "content_id", source)
+        merged.title, source = self._pick_field_with_source(source_map, priority.title, "title")
+        self._set_field_source(merged, "title", source)
+        merged.alternate_title, source = self._pick_field_with_source(
             source_map, priority.alternate_title, "alternate_title"
         )
-        merged.description = self._pick_field(source_map, priority.description, "description")
-        merged.director = self._pick_field(source_map, priority.director, "director")
-        merged.maker = self._pick_field(source_map, priority.maker, "maker")
-        merged.label = self._pick_field(source_map, priority.label, "label")
-        merged.series = self._pick_field(source_map, priority.series, "series")
-        merged.runtime = self._pick_field(source_map, priority.runtime, "runtime")
+        self._set_field_source(merged, "alternate_title", source)
+        merged.description, source = self._pick_field_with_source(
+            source_map, priority.description, "description"
+        )
+        self._set_field_source(merged, "description", source)
+        merged.director, source = self._pick_field_with_source(
+            source_map, priority.director, "director"
+        )
+        self._set_field_source(merged, "director", source)
+        merged.maker, source = self._pick_field_with_source(source_map, priority.maker, "maker")
+        self._set_field_source(merged, "maker", source)
+        merged.label, source = self._pick_field_with_source(source_map, priority.label, "label")
+        self._set_field_source(merged, "label", source)
+        merged.series, source = self._pick_field_with_source(source_map, priority.series, "series")
+        self._set_field_source(merged, "series", source)
+        merged.runtime, source = self._pick_field_with_source(
+            source_map, priority.runtime, "runtime"
+        )
+        self._set_field_source(merged, "runtime", source)
         merged.trailer_url, merged.trailer_source = self._pick_field_with_source(
             source_map, priority.trailer_url, "trailer_url"
         )
+        self._set_field_source(merged, "trailer_url", merged.trailer_source)
 
         # Date
-        merged.release_date = self._pick_field(source_map, priority.release_date, "release_date")
+        merged.release_date, source = self._pick_field_with_source(
+            source_map, priority.release_date, "release_date"
+        )
+        self._set_field_source(merged, "release_date", source)
 
         # Rating (object, not scalar)
-        merged.rating = self._pick_field(source_map, priority.rating, "rating")
+        merged.rating, source = self._pick_field_with_source(source_map, priority.rating, "rating")
+        self._set_field_source(merged, "rating", source)
 
         # Cover URL
         merged.cover_url, merged.cover_source = self._pick_field_with_source(
             source_map, priority.cover_url, "cover_url"
         )
+        self._set_field_source(merged, "cover_url", merged.cover_source)
 
         # Screenshot URLs (merge all unique)
         merged.screenshot_urls, merged.screenshot_source = self._pick_field_with_source(
             source_map, priority.screenshot_url, "screenshot_urls"
         )
+        merged.screenshot_urls = merged.screenshot_urls or []
+        self._set_field_source(merged, "screenshot_urls", merged.screenshot_source)
 
         # Lists: genres, actresses
-        merged.genres = self._pick_list_field(source_map, priority.genre, "genres")
-        merged.actresses = self._pick_list_field(source_map, priority.actress, "actresses")
+        merged.genres, source = self._pick_field_with_source(source_map, priority.genre, "genres")
+        merged.genres = merged.genres or []
+        self._set_field_source(merged, "genres", source)
+        merged.actresses, source = self._pick_field_with_source(
+            source_map, priority.actress, "actresses"
+        )
+        merged.actresses = merged.actresses or []
+        self._set_field_source(merged, "actresses", source)
 
         # Post-process
         self._post_process(merged)
@@ -149,6 +188,39 @@ class DataAggregator:
             if value:
                 return value
         return []
+
+    def _set_field_source(self, data: MovieData, field: str, source: str | None) -> None:
+        """Record provenance for a merged field when the winning source is known."""
+        if source:
+            data.field_sources[field] = source
+
+    def _backfill_field_sources_from_source(self, data: MovieData) -> None:
+        """Populate provenance from a single source for any traceable populated field."""
+        if not data.source:
+            return
+
+        for field in (
+            "id",
+            "content_id",
+            "title",
+            "alternate_title",
+            "description",
+            "director",
+            "maker",
+            "label",
+            "series",
+            "runtime",
+            "release_date",
+            "rating",
+            "genres",
+            "actresses",
+            "cover_url",
+            "trailer_url",
+            "screenshot_urls",
+        ):
+            value = getattr(data, field, None)
+            if value is not None and value != "" and value != []:
+                data.field_sources.setdefault(field, data.source)
 
     def _post_process(self, data: MovieData) -> None:
         """Apply post-processing: genre replacement, display name, etc."""

@@ -4,7 +4,7 @@ import csv
 
 from javs.config import JavsConfig
 from javs.core.aggregator import DataAggregator
-from javs.models.movie import Actress, ActressAlias, JapaneseAlias, MovieData
+from javs.models.movie import Actress, ActressAlias, JapaneseAlias, MovieData, Rating
 
 
 class TestDataAggregator:
@@ -115,6 +115,8 @@ class TestDataAggregator:
 
         assert result.cover_source == "dmm"
         assert result.trailer_source == "r18dev"
+        assert result.field_sources["cover_url"] == "dmm"
+        assert result.field_sources["trailer_url"] == "r18dev"
 
     def test_merge_preserves_screenshot_source(self):
         """Merged screenshot URLs should remember which scraper supplied them."""
@@ -134,6 +136,77 @@ class TestDataAggregator:
         result = self.aggregator.merge([data1, data2])
 
         assert result.screenshot_source == "dmm"
+        assert result.field_sources["screenshot_urls"] == "dmm"
+
+    def test_single_source_asset_source_overrides_general_source(self):
+        """Single-source asset provenance should stay aligned with the asset source field."""
+        data = MovieData(
+            id="ABP-420",
+            title="Example",
+            cover_url="https://example.com/cover.jpg",
+            cover_source="r18dev",
+            source="dmm",
+        )
+
+        result = self.aggregator.merge([data])
+
+        assert result.cover_source == "r18dev"
+        assert result.field_sources["cover_url"] == "r18dev"
+
+    def test_single_source_populates_field_sources_from_source(self):
+        """Single-source data should backfill field provenance from its scraper."""
+        data = MovieData(
+            id="ABP-420",
+            title="Example",
+            description="Plot",
+            maker="IdeaPocket",
+            rating=Rating(rating=9.1, votes=120),
+            genres=["Drama"],
+            actresses=[Actress(last_name="Doe", first_name="Jane")],
+            source="dmm",
+        )
+
+        result = self.aggregator.merge([data])
+
+        assert result.field_sources["title"] == "dmm"
+        assert result.field_sources["description"] == "dmm"
+        assert result.field_sources["maker"] == "dmm"
+        assert result.field_sources["rating"] == "dmm"
+        assert result.field_sources["genres"] == "dmm"
+        assert result.field_sources["actresses"] == "dmm"
+
+    def test_multi_source_populates_winning_scalar_field_sources(self):
+        """Merged scalar fields should record the source that won each field."""
+        self.config.sort.metadata.priority.title = ["dmm", "javlibrary"]
+        self.config.sort.metadata.priority.maker = ["dmm", "javlibrary"]
+        self.aggregator = DataAggregator(self.config)
+        data1 = MovieData(
+            id="ABP-420",
+            title="Winner Title",
+            description="Winner Description",
+            maker="Winner Studio",
+            rating=Rating(rating=9.2, votes=80),
+            source="dmm",
+        )
+        data2 = MovieData(
+            id="ABP-420",
+            title="Loser Title",
+            description="Loser Description",
+            maker="Loser Studio",
+            rating=Rating(rating=6.5, votes=12),
+            source="javlibrary",
+        )
+
+        result = self.aggregator.merge([data1, data2])
+
+        assert result.title == "Winner Title"
+        assert result.description == "Winner Description"
+        assert result.maker == "Winner Studio"
+        assert result.rating == Rating(rating=9.2, votes=80)
+        assert result.field_sources["title"] == "dmm"
+        assert result.field_sources["description"] == "dmm"
+        assert result.field_sources["maker"] == "dmm"
+        assert result.field_sources["rating"] == "dmm"
 
     def test_movie_data_preserves_field_sources_and_asset_sources(self):
         """MovieData should keep general provenance alongside asset source fields."""
