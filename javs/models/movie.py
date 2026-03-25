@@ -71,6 +71,7 @@ class MovieData(BaseModel):
     actresses: list[Actress] = Field(default_factory=list)
     cover_url: str | None = None
     cover_source: str | None = None
+    field_sources: dict[str, str] = Field(default_factory=dict)
     screenshot_urls: list[str] = Field(default_factory=list)
     screenshot_source: str | None = None
     trailer_url: str | None = None

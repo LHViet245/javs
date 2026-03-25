@@ -135,6 +135,27 @@ class TestDataAggregator:
 
         assert result.screenshot_source == "dmm"
 
+    def test_movie_data_preserves_field_sources_and_asset_sources(self):
+        """MovieData should keep general provenance alongside asset source fields."""
+        data = MovieData(
+            id="ABP-420",
+            title="Example",
+            field_sources={"title": "dmm", "cover_url": "r18dev"},
+            cover_source="dmm",
+            trailer_source="r18dev",
+            screenshot_source="mgstageja",
+        )
+
+        copied = data.model_copy(deep=True)
+        copied.field_sources["title"] = "javlibrary"
+        data.field_sources["cover_url"] = "dmm"
+
+        assert copied.field_sources == {"title": "javlibrary", "cover_url": "r18dev"}
+        assert data.field_sources == {"title": "dmm", "cover_url": "dmm"}
+        assert copied.cover_source == "dmm"
+        assert copied.trailer_source == "r18dev"
+        assert copied.screenshot_source == "mgstageja"
+
     def test_genre_csv_replaces_and_removes_entries(self, tmp_path):
         path = tmp_path / "genres.csv"
         path.write_text(
