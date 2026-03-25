@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from javs import __version__
@@ -29,6 +30,16 @@ _DIAGNOSTIC_MESSAGES = {
     "cloudflare_blocked": "Cloudflare blocked",
     "translation_provider_unavailable": "translation provider unavailable",
     "translation_config_invalid": "translation config invalid",
+}
+
+_DIAGNOSTIC_HINTS = {
+    "proxy_auth_failed": "Next: run `javs config proxy-test`.",
+    "proxy_unreachable": "Next: run `javs config proxy-test`.",
+    "cloudflare_blocked": "Next: run `javs config javlibrary-cookie`.",
+    "translation_provider_unavailable": (
+        "Next: install translation extras with `./venv/bin/pip install -e \".[translate]\"`."
+    ),
+    "translation_config_invalid": "Next: update `sort.metadata.nfo.translate` in your config.",
 }
 
 
@@ -84,6 +95,43 @@ def _print_run_diagnostics(engine) -> None:
         detail = item.get("detail")
         if detail:
             console.print(f"  {detail}")
+        hint = _DIAGNOSTIC_HINTS.get(kind)
+        if hint:
+            console.print(f"  {escape(hint)}")
+
+
+def _print_run_summary(engine) -> None:
+    """Render a compact batch summary for sort/update commands."""
+    summary = getattr(engine, "last_run_summary", None)
+    if not summary:
+        return
+
+    warning_label = "warning" if summary["warnings"] == 1 else "warnings"
+    console.print(
+        "[bold]Summary:[/bold] "
+        f"{summary['total']} scanned, "
+        f"{summary['processed']} processed, "
+        f"{summary['skipped']} skipped, "
+        f"{summary['failed']} failed, "
+        f"{summary['warnings']} {warning_label}"
+    )
+
+
+def _print_preview_plan(engine) -> None:
+    """Render planned preview actions for sort/update dry runs."""
+    preview_plan = getattr(engine, "last_preview_plan", [])
+    if not preview_plan:
+        return
+
+    table = Table(title="Preview Plan")
+    table.add_column("Source", style="cyan", overflow="fold")
+    table.add_column("ID", style="white")
+    table.add_column("Target", style="green", overflow="fold")
+
+    for item in preview_plan:
+        table.add_row(item["source"], item["id"], item["target"])
+
+    console.print(table)
 
 
 def version_callback(value: bool) -> None:
@@ -140,6 +188,9 @@ def sort(
     else:
         console.print("[yellow]No files were processed.[/yellow]")
 
+    if preview:
+        _print_preview_plan(engine)
+    _print_run_summary(engine)
     _print_run_diagnostics(engine)
 
 
@@ -208,6 +259,9 @@ def update(
     else:
         console.print("[yellow]No files were updated.[/yellow]")
 
+    if preview:
+        _print_preview_plan(engine)
+    _print_run_summary(engine)
     _print_run_diagnostics(engine)
 
 
