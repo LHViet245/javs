@@ -135,10 +135,15 @@ async def translate_movie_data(
         try:
             translated = await _translate_text(value, config)
             if translated:
+                final_value = translated
                 if config.keep_original_description and field_name == "description":
-                    setattr(data, field_name, f"{translated}\n\n---\n{value}")
-                else:
-                    setattr(data, field_name, translated)
+                    final_value = f"{translated}\n\n---\n{value}"
+
+                setattr(data, field_name, final_value)
+
+                if translated != value and data.field_sources.get(field_name) != config.module:
+                    data.field_sources = dict(data.field_sources)
+                    data.field_sources[field_name] = config.module
         except Exception as exc:
             logger.error(
                 "translation_error",

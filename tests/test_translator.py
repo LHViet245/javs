@@ -86,6 +86,103 @@ class TestTranslateMovieData:
             "translated:Original description\n\n---\nOriginal description"
         )
 
+    @pytest.mark.asyncio
+    async def test_changed_translation_overrides_field_source(self, monkeypatch) -> None:
+        data = MovieData(
+            id="ABP-420",
+            description="Original description",
+            title="Original title",
+            field_sources={"description": "dmm", "title": "r18dev"},
+        )
+        config = TranslateConfig(enabled=True, module="deepl", fields=["description"])
+
+        async def fake_translate_text(text: str, cfg: TranslateConfig) -> str | None:
+            del text, cfg
+            return "Translated description"
+
+        monkeypatch.setattr(translator_module, "_translate_text", fake_translate_text)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result.description == "Translated description"
+        assert result.field_sources["description"] == "deepl"
+        assert result.field_sources["title"] == "r18dev"
+
+    @pytest.mark.asyncio
+    async def test_unchanged_translation_preserves_field_source(self, monkeypatch) -> None:
+        data = MovieData(
+            id="ABP-420",
+            description="Original description",
+            field_sources={"description": "dmm"},
+        )
+        original_field_sources = data.field_sources
+        config = TranslateConfig(enabled=True, module="deepl", fields=["description"])
+
+        async def fake_translate_text(text: str, cfg: TranslateConfig) -> str | None:
+            del cfg
+            return text
+
+        monkeypatch.setattr(translator_module, "_translate_text", fake_translate_text)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result.description == "Original description"
+        assert result.field_sources["description"] == "dmm"
+        assert result.field_sources is original_field_sources
+
+    @pytest.mark.asyncio
+    async def test_unchanged_translation_with_original_description_preserves_provenance(
+        self, monkeypatch
+    ) -> None:
+        data = MovieData(
+            id="ABP-420",
+            description="Original description",
+            field_sources={"description": "dmm"},
+        )
+        original_field_sources = data.field_sources
+        config = TranslateConfig(
+            enabled=True,
+            module="deepl",
+            fields=["description"],
+            keep_original_description=True,
+        )
+
+        async def fake_translate_text(text: str, cfg: TranslateConfig) -> str | None:
+            del cfg
+            return text
+
+        monkeypatch.setattr(translator_module, "_translate_text", fake_translate_text)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result.description == (
+            "Original description\n\n---\nOriginal description"
+        )
+        assert result.field_sources["description"] == "dmm"
+        assert result.field_sources is original_field_sources
+
+    @pytest.mark.asyncio
+    async def test_none_translation_preserves_field_source(self, monkeypatch) -> None:
+        data = MovieData(
+            id="ABP-420",
+            description="Original description",
+            field_sources={"description": "dmm"},
+        )
+        original_field_sources = data.field_sources
+        config = TranslateConfig(enabled=True, module="deepl", fields=["description"])
+
+        async def fake_translate_text(text: str, cfg: TranslateConfig) -> str | None:
+            del text, cfg
+            return None
+
+        monkeypatch.setattr(translator_module, "_translate_text", fake_translate_text)
+
+        result = await translator_module.translate_movie_data(data, config)
+
+        assert result.description == "Original description"
+        assert result.field_sources["description"] == "dmm"
+        assert result.field_sources is original_field_sources
+
 
 class TestTranslateText:
     """Test module selection and fallback behavior."""
