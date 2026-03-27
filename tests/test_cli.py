@@ -379,7 +379,7 @@ class TestCliFindCommand:
         assert "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'." in result.stdout
         assert "Next: update `sort.metadata.nfo.translate` in your config." in result.stdout
 
-    def test_find_renders_inspector_sections_with_assets_and_provenance(self, monkeypatch) -> None:
+    def test_find_renders_compact_layout_with_inline_provenance(self, monkeypatch) -> None:
         long_description = "Translated Plot " + ("detail " * 40)
         long_cover_url = "https://example.com/assets/" + ("cover-segment/" * 8) + "cover.jpg"
         long_trailer_url = (
@@ -410,6 +410,7 @@ class TestCliFindCommand:
                 "title": "deepl",
                 "description": "deepl",
                 "maker": "dmm",
+                "series": "dmm",
                 "release_date": "dmm",
                 "runtime": "dmm",
                 "rating": "r18dev",
@@ -434,43 +435,42 @@ class TestCliFindCommand:
         monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
 
         result = runner.invoke(app, ["find", "ABP-420"])
+        normalized_output = " ".join(result.stdout.split())
 
         assert result.exit_code == 0
-        section_order = [
-            "Identity",
-            "Release",
-            "People",
-            "Content",
-            "Assets",
-            "Field Provenance",
-        ]
-        section_positions = [result.stdout.index(section) for section in section_order]
-        assert section_positions == sorted(section_positions)
-        assert "Primary Source" in result.stdout
-        assert "dmm" in result.stdout
-        assert "Original Title" in result.stdout
-        assert "Cover URL" in result.stdout
-        assert "Trailer URL" in result.stdout
-        assert "Screenshot Count" in result.stdout
+        assert "Field Provenance" not in result.stdout
+        assert "Identity" not in result.stdout
+        assert "ABP-420" in result.stdout
+        assert "Translated Title [deepl]" in result.stdout
+        assert "Original: Original Title" in normalized_output
+        assert "Primary Source" not in result.stdout
+        assert "Source" in result.stdout
+        assert "Studio" in result.stdout
+        assert "Release Date" in result.stdout
+        assert "Rating" in result.stdout
+        assert "Actresses" in result.stdout
+        assert "Cover" in result.stdout
+        assert "Trailer" in result.stdout
+        assert "Screenshots" in result.stdout
+        assert "Series Midnight Series [dmm]" in normalized_output
         assert "2" in result.stdout
         assert long_cover_url not in result.stdout
         assert long_trailer_url not in result.stdout
         assert "https://example.com/assets/cover-segment/cover-segment/" in result.stdout
         assert "..." in result.stdout
-        assert long_description not in result.stdout
-        assert "Translated Plot detail detail detail" in result.stdout
-        assert "detail..." in result.stdout
-        assert "title" in result.stdout
-        assert "deepl" in result.stdout
-        assert "description" in result.stdout
-        assert "maker" in result.stdout
-        assert "genres" in result.stdout
-        assert "actresses" in result.stdout
-        assert "cover_url" in result.stdout
-        assert "trailer_url" in result.stdout
-        assert "screenshot_urls" in result.stdout
+        assert "Description" in result.stdout
+        assert normalized_output.count("detail") >= 40
+        assert "IdeaPocket [dmm]" in normalized_output
+        assert "2023-06-15 [dmm]" in normalized_output
+        assert "8.4/10 (1289 votes)" in normalized_output
+        assert "Drama, Romance [r18dev]" in normalized_output
+        assert f"{movie.actresses[0].full_name} [dmm]" in normalized_output
+        assert "Director One [mgstageja]" in normalized_output
+        assert "[deepl]" in result.stdout
+        assert "[dmm]" in result.stdout
+        assert "[mgstageja]" in result.stdout
 
-    def test_find_omits_empty_optional_rows_in_inspector_view(self, monkeypatch) -> None:
+    def test_find_omits_empty_optional_rows_in_compact_view(self, monkeypatch) -> None:
         movie = MovieData(
             id="ABP-420",
             title="Test Movie",
@@ -492,12 +492,14 @@ class TestCliFindCommand:
         result = runner.invoke(app, ["find", "ABP-420"])
 
         assert result.exit_code == 0
+        assert "Test Movie [dmm]" in result.stdout
         assert "Label" not in result.stdout
         assert "Series" not in result.stdout
         assert "Director" not in result.stdout
-        assert "Cover URL" not in result.stdout
-        assert "Trailer URL" not in result.stdout
-        assert "Screenshot Count" not in result.stdout
+        assert "Cover" not in result.stdout
+        assert "Trailer" not in result.stdout
+        assert "Screenshots" not in result.stdout
+        assert "Field Provenance" not in result.stdout
 
 
 class TestCliSortAndScrapers:

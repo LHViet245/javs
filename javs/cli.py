@@ -10,10 +10,11 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from javs import __version__
 
@@ -23,22 +24,6 @@ app = typer.Typer(
     add_completion=True,
 )
 console = Console()
-
-_PROVENANCE_FIELD_ORDER = (
-    "title",
-    "description",
-    "maker",
-    "release_date",
-    "runtime",
-    "rating",
-    "genres",
-    "actresses",
-    "director",
-    "cover_url",
-    "trailer_url",
-    "screenshot_urls",
-)
-
 
 _DIAGNOSTIC_MESSAGES = {
     "proxy_auth_failed": "proxy auth failed",
@@ -473,104 +458,142 @@ def scrapers() -> None:
 
 
 def _display_movie_data(data) -> None:
-    """Render movie data as a sectioned inspector view."""
-
-    def add_row(rows: list[tuple[str, str]], label: str, value: object) -> None:
-        if value in (None, "", [], {}):
-            return
-        rows.append((label, str(value)))
-
-    def make_section(title: str, rows: list[tuple[str, str]]) -> Panel | None:
-        if not rows:
-            return None
-        grid = Table.grid(expand=True, padding=(0, 1))
-        grid.add_column(style="bold cyan", no_wrap=True)
-        grid.add_column(overflow="fold")
-        for label, value in rows:
-            grid.add_row(label, value)
-        return Panel(grid, title=title, border_style="cyan")
+    """Render movie data with a compact hero-and-details layout."""
 
     def shorten_url(url: str, limit: int = 72) -> str:
         if len(url) <= limit:
             return url
         return f"{url[:limit - 3]}..."
 
-    def shorten_text(text: str, limit: int = 200) -> str:
-        if len(text) <= limit:
-            return text
-        return f"{text[:limit - 3].rstrip()}..."
+    field_sources = data.field_sources or {}
 
-    sections: list[Panel] = []
+    def with_source(value: str, field_name: str | None = None) -> Text:
+        text = Text(value)
+        if field_name:
+            source = field_sources.get(field_name)
+            if source:
+                text.append(f" [{source}]", style="dim")
+        return text
 
-    identity_rows: list[tuple[str, str]] = []
-    add_row(identity_rows, "ID", data.id)
-    add_row(identity_rows, "Title", data.title)
-    add_row(identity_rows, "Original Title", data.alternate_title)
-    add_row(identity_rows, "Primary Source", data.source)
-    identity_section = make_section("Identity", identity_rows)
-    if identity_section is not None:
-        sections.append(identity_section)
+    def add_pair_row(
+        table: Table,
+        left: tuple[str, str, str] | None,
+        right: tuple[str, str, str] | None = None,
+    ) -> None:
+        row: list[Text] = []
+        if left:
+            row.extend([Text(left[0], style="bold cyan"), with_source(left[1], left[2])])
+        else:
+            row.extend([Text(""), Text("")])
+        if right:
+            row.extend([Text(right[0], style="bold cyan"), with_source(right[1], right[2])])
+        else:
+            row.extend([Text(""), Text("")])
+        table.add_row(*row)
 
-    release_rows: list[tuple[str, str]] = []
-    add_row(release_rows, "Studio", data.maker)
-    add_row(release_rows, "Label", data.label)
-    add_row(release_rows, "Series", data.series)
-    if data.release_date:
-        add_row(release_rows, "Release Date", data.release_date.isoformat())
-    if data.runtime:
-        add_row(release_rows, "Runtime", f"{data.runtime} min")
+    meta = Table.grid(expand=True, padding=(0, 1))
+    meta.add_column(style="bold cyan", no_wrap=True)
+    meta.add_column(ratio=1)
+    meta.add_column(style="bold cyan", no_wrap=True)
+    meta.add_column(justify="right", ratio=1)
+    meta.add_row(
+        Text("ID", style="bold cyan"),
+        with_source(data.id, "id"),
+        Text("Source", style="bold cyan"),
+        Text(data.source or "-", style="dim"),
+    )
+
+    hero = Table.grid(expand=True, padding=(0, 0))
+    hero.add_column(ratio=1)
+    title_text = with_source(data.title or data.id, "title")
+    title_text.stylize("bold")
+    hero.add_row(title_text)
+    if data.alternate_title:
+        original_title = Text("Original: ", style="dim")
+        original_title.append_text(with_source(data.alternate_title, "alternate_title"))
+        original_title.stylize("dim", 0, len("Original: "))
+        hero.add_row(original_title)
+
+    details = Table.grid(expand=True, padding=(0, 2))
+    details.add_column(style="bold cyan", no_wrap=True)
+    details.add_column(ratio=1, overflow="fold")
+    details.add_column(style="bold cyan", no_wrap=True)
+    details.add_column(ratio=1, overflow="fold")
+
+    rating_text = None
     if data.rating:
         rating_text = (
             f"{data.rating.rating}/10 ({data.rating.votes} votes)"
             if data.rating.votes is not None
             else f"{data.rating.rating}/10"
         )
-        add_row(release_rows, "Rating", rating_text)
-    release_section = make_section("Release", release_rows)
-    if release_section is not None:
-        sections.append(release_section)
 
-    people_rows: list[tuple[str, str]] = []
+    actress_names = None
     if data.actresses:
         actress_names = ", ".join(actress.full_name for actress in data.actresses)
-        add_row(people_rows, "Actresses", actress_names)
-    add_row(people_rows, "Director", data.director)
-    people_section = make_section("People", people_rows)
-    if people_section is not None:
-        sections.append(people_section)
 
-    content_rows: list[tuple[str, str]] = []
+    pair_rows = [
+        (("Studio", data.maker, "maker") if data.maker else None,
+         ("Label", data.label, "label") if data.label else None),
+        (("Release Date", data.release_date.isoformat(), "release_date")
+         if data.release_date
+         else None,
+         None),
+        (("Runtime", f"{data.runtime} min", "runtime") if data.runtime else None,
+         ("Rating", rating_text, "rating") if rating_text else None),
+        (("Director", data.director, "director") if data.director else None,
+         ("Actresses", actress_names, "actresses") if actress_names else None),
+    ]
+    for left, right in pair_rows:
+        if left or right:
+            add_pair_row(details, left, right)
+
+    long_rows = Table.grid(expand=True, padding=(0, 2))
+    long_rows.add_column(style="bold cyan", no_wrap=True)
+    long_rows.add_column(ratio=1, overflow="fold")
     if data.genres:
-        add_row(content_rows, "Genres", ", ".join(data.genres))
-    if data.description:
-        add_row(content_rows, "Description", shorten_text(data.description))
-    content_section = make_section("Content", content_rows)
-    if content_section is not None:
-        sections.append(content_section)
-
-    asset_rows: list[tuple[str, str]] = []
+        long_rows.add_row(
+            Text("Genres", style="bold cyan"),
+            with_source(", ".join(data.genres), "genres"),
+        )
+    if data.series:
+        long_rows.add_row(
+            Text("Series", style="bold cyan"),
+            with_source(data.series, "series"),
+        )
     if data.cover_url:
-        add_row(asset_rows, "Cover URL", shorten_url(data.cover_url))
+        long_rows.add_row(
+            Text("Cover", style="bold cyan"), with_source(shorten_url(data.cover_url), "cover_url")
+        )
     if data.trailer_url:
-        add_row(asset_rows, "Trailer URL", shorten_url(data.trailer_url))
+        long_rows.add_row(
+            Text("Trailer", style="bold cyan"),
+            with_source(shorten_url(data.trailer_url), "trailer_url"),
+        )
     if data.screenshot_urls:
-        add_row(asset_rows, "Screenshot Count", len(data.screenshot_urls))
-    assets_section = make_section("Assets", asset_rows)
-    if assets_section is not None:
-        sections.append(assets_section)
+        long_rows.add_row(
+            Text("Screenshots", style="bold cyan"),
+            with_source(str(len(data.screenshot_urls)), "screenshot_urls"),
+        )
 
-    provenance_rows: list[tuple[str, str]] = []
-    field_sources = data.field_sources or {}
-    ordered_fields = [field for field in _PROVENANCE_FIELD_ORDER if field in field_sources]
-    extra_fields = sorted(field for field in field_sources if field not in _PROVENANCE_FIELD_ORDER)
-    for field_name in ordered_fields + extra_fields:
-        add_row(provenance_rows, field_name, field_sources[field_name])
-    provenance_section = make_section("Field Provenance", provenance_rows)
-    if provenance_section is not None:
-        sections.append(provenance_section)
+    renderables: list[object] = [meta, Text(""), hero]
+    if details.rows:
+        renderables.append(Text(""))
+        renderables.append(details)
+    if long_rows.rows:
+        renderables.append(Text(""))
+        renderables.append(long_rows)
+    if data.description:
+        description_label = Text("Description", style="bold cyan")
+        description_value = with_source(data.description, "description")
+        description = Table.grid(expand=True)
+        description.add_column(ratio=1, overflow="fold")
+        description.add_row(description_label)
+        description.add_row(description_value)
+        renderables.append(Text(""))
+        renderables.append(description)
 
-    for section in sections:
-        console.print(section)
+    console.print(Panel(Group(*renderables), title=f"Find Result · {data.id}", border_style="cyan"))
 
 
 if __name__ == "__main__":
