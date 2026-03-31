@@ -225,6 +225,7 @@ class JavsEngine:
         recurse: bool = False,
         force: bool = False,
         preview: bool = False,
+        cleanup_empty_source_dir: bool | None = None,
     ) -> list[MovieData]:
         """Scan a directory and sort all matching files.
 
@@ -239,6 +240,11 @@ class JavsEngine:
             List of successfully processed MovieData.
         """
         self._reset_run_diagnostics()
+        effective_cleanup_empty_source_dir = (
+            self.config.sort.cleanup_empty_source_dir
+            if cleanup_empty_source_dir is None
+            else cleanup_empty_source_dir
+        )
         files = self.scanner.scan(source, recurse=recurse)
         if not files:
             logger.warning("no_files_found", path=str(source))
@@ -254,6 +260,7 @@ class JavsEngine:
                 force=force,
                 preview=preview,
                 nfo_data=nfo_data,
+                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
             )
             if preview:
                 self.last_preview_plan.append(

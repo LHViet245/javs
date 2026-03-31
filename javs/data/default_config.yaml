@@ -64,6 +64,7 @@ sort:
   move_to_folder: true
   rename_file: true
   move_subtitles: true
+  cleanup_empty_source_dir: false
 
   # Naming format templates
   # Available tokens: {id}, {title}, {maker}, {studio}, {label},

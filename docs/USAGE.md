@@ -40,6 +40,7 @@ Configuration is automatically generated on your first run. You can configure:
 - **Priorities:** Define which scrapers to trust most if data contradicts.
 - **Scrapers:** Enable/disable scrapers and set their languages (e.g., `javlibrary` vs `javlibraryja`).
 - **Renaming:** Configure how files are sorted and renamed.
+- **Cleanup:** Control whether `sort` removes an empty source directory after a successful sort with `sort.cleanup_empty_source_dir`.
 - **NFOs:** Format settings for Emby/Jellyfin/Kodi NFOs.
 
 To view the current configuration:
@@ -182,6 +183,10 @@ Scan directories, identify movie IDs in filenames, fetch metadata, create `.nfo`
 # Sort a directory, move to the destination directory, scan recursively
 javs sort /path/to/unsorted /path/to/vidstream --recurse
 ```
+
+`javs sort` also supports `--cleanup-empty-source-dir` / `--no-cleanup-empty-source-dir` or the
+`sort.cleanup_empty_source_dir` config key. It removes only the direct source directory, and only
+after a successful sort when that directory is empty.
 
 **Sorting Workflow:**
 

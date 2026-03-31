@@ -43,6 +43,13 @@ class TestDefaultConfigTemplate:
         assert "r18dev" in cfg.sort.metadata.priority.title
         assert "javlibrary" in cfg.sort.metadata.priority.title
 
+    def test_template_includes_cleanup_empty_source_dir_flag(self) -> None:
+        """Template YAML must explicitly ship the cleanup flag with a false value."""
+        with open(TEMPLATE_PATH) as f:
+            raw = yaml.safe_load(f)
+
+        assert raw["sort"]["cleanup_empty_source_dir"] is False
+
     def test_template_proxy_defaults(self) -> None:
         """Proxy should default to disabled with empty URL."""
         with open(TEMPLATE_PATH) as f:

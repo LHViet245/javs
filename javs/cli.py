@@ -162,6 +162,11 @@ def sort(
     recurse: bool = typer.Option(False, "--recurse", "-r", help="Scan subdirectories."),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files."),
     preview: bool = typer.Option(False, "--preview", "-p", help="Dry run: show what would happen."),
+    cleanup_empty_source_dir: bool | None = typer.Option(
+        None,
+        "--cleanup-empty-source-dir/--no-cleanup-empty-source-dir",
+        help="Remove empty source directories after a successful sort.",
+    ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """📂 Scan, scrape, and sort video files into an organized library."""
@@ -169,12 +174,26 @@ def sort(
     from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
+    effective_cleanup_empty_source_dir = (
+        cleanup_empty_source_dir
+        if cleanup_empty_source_dir is not None
+        else cfg.sort.cleanup_empty_source_dir
+    )
     engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
         cfg, _resolve_config_path(config_path)
     ))
 
     with _status_context("[bold green]Sorting files..."):
-        results = asyncio.run(engine.sort_path(source, dest, recurse, force, preview))
+        results = asyncio.run(
+            engine.sort_path(
+                source,
+                dest,
+                recurse,
+                force,
+                preview,
+                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+            )
+        )
 
     if results:
         table = Table(title=f"✅ Sorted {len(results)} files")

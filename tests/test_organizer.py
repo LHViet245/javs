@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
+from errno import ENOTEMPTY
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -139,6 +140,183 @@ class TestFileOrganizer:
         assert (paths.folder_path / f"{paths.file_name}.srt").exists()
         assert (paths.folder_path / f"{paths.file_name}.ass").exists()
         assert unrelated_srt.exists()
+
+    def _build_cleanup_sort_case(
+        self,
+        tmp_path: Path,
+        *,
+        unrelated_file: bool = False,
+    ) -> tuple[ScannedFile, MovieData, Path, Path]:
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        video_path = source_dir / "ABP-420.mp4"
+        video_path.write_bytes(b"video")
+        if unrelated_file:
+            (source_dir / "keep.txt").write_text("keep", encoding="utf-8")
+
+        self.config.sort.metadata.nfo.create = False
+        self.config.sort.download.thumb_img = False
+        self.config.sort.download.poster_img = False
+        self.config.sort.download.actress_img = False
+        self.config.sort.download.screenshot_img = False
+        self.config.sort.download.trailer_vid = False
+
+        file = ScannedFile(
+            path=video_path,
+            filename=video_path.name,
+            basename=video_path.stem,
+            extension=video_path.suffix,
+            directory=source_dir,
+            size_bytes=video_path.stat().st_size,
+            movie_id="ABP-420",
+        )
+        data = MovieData(id="ABP-420", title="Cleanup Movie", source="test")
+        dest = tmp_path / "dest"
+        return file, data, dest, source_dir
+
+    @pytest.mark.asyncio
+    async def test_sort_movie_removes_empty_source_directory_when_cleanup_enabled(
+        self, tmp_path: Path
+    ):
+        file, data, dest, source_dir = self._build_cleanup_sort_case(tmp_path)
+        organizer = FileOrganizer(self.config)
+
+        paths = await organizer.sort_movie(file, data, dest, cleanup_empty_source_dir=True)
+
+        assert not source_dir.exists()
+        assert not file.path.exists()
+        assert paths.file_path.exists()
+        assert paths.file_path.read_bytes() == b"video"
+
+    @pytest.mark.asyncio
+    async def test_sort_movie_keeps_source_directory_when_cleanup_disabled(
+        self, tmp_path: Path
+    ):
+        file, data, dest, source_dir = self._build_cleanup_sort_case(tmp_path)
+        organizer = FileOrganizer(self.config)
+
+        paths = await organizer.sort_movie(file, data, dest)
+
+        assert source_dir.exists()
+        assert not file.path.exists()
+        assert paths.file_path.exists()
+        assert paths.file_path.read_bytes() == b"video"
+
+    @pytest.mark.asyncio
+    async def test_sort_movie_keeps_source_directory_when_unrelated_files_remain(
+        self, tmp_path: Path
+    ):
+        file, data, dest, source_dir = self._build_cleanup_sort_case(
+            tmp_path,
+            unrelated_file=True,
+        )
+        organizer = FileOrganizer(self.config)
+
+        paths = await organizer.sort_movie(file, data, dest, cleanup_empty_source_dir=True)
+
+        assert source_dir.exists()
+        assert (source_dir / "keep.txt").exists()
+        assert not file.path.exists()
+        assert paths.file_path.exists()
+        assert paths.file_path.read_bytes() == b"video"
+
+    @pytest.mark.asyncio
+    async def test_sort_movie_preview_does_not_remove_source_directory(self, tmp_path: Path):
+        file, data, dest, source_dir = self._build_cleanup_sort_case(tmp_path)
+        organizer = FileOrganizer(self.config)
+
+        paths = await organizer.sort_movie(
+            file,
+            data,
+            dest,
+            preview=True,
+            cleanup_empty_source_dir=True,
+        )
+
+        assert source_dir.exists()
+        assert file.path.exists()
+        assert not paths.file_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_sort_movie_does_not_remove_source_directory_when_video_move_fails(
+        self, tmp_path: Path
+    ):
+        file, data, dest, source_dir = self._build_cleanup_sort_case(tmp_path)
+        organizer = FileOrganizer(self.config)
+
+        def fail_move(_file: ScannedFile, _paths, _force: bool) -> None:
+            file.path.unlink()
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(organizer, "_move_video", fail_move)
+        try:
+            paths = await organizer.sort_movie(
+                file,
+                data,
+                dest,
+                cleanup_empty_source_dir=True,
+            )
+        finally:
+            monkeypatch.undo()
+
+        assert source_dir.exists()
+        assert not file.path.exists()
+        assert not paths.file_path.exists()
+
+    def test_remove_empty_source_dir_ignores_missing_directory_without_logging(
+        self, monkeypatch, tmp_path: Path
+    ):
+        organizer = FileOrganizer(self.config)
+        source_dir = tmp_path / "missing"
+        logger_mock = Mock()
+
+        from javs.core import organizer as organizer_module
+
+        monkeypatch.setattr(organizer_module, "logger", logger_mock)
+
+        organizer._remove_empty_source_dir(source_dir)
+
+        logger_mock.debug.assert_not_called()
+
+    def test_remove_empty_source_dir_logs_unexpected_oserror(
+        self, monkeypatch, tmp_path: Path
+    ):
+        organizer = FileOrganizer(self.config)
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        logger_mock = Mock()
+
+        def fail_rmdir(_self: Path) -> None:
+            raise PermissionError("denied")
+
+        from javs.core import organizer as organizer_module
+
+        monkeypatch.setattr(organizer_module, "logger", logger_mock)
+        monkeypatch.setattr(type(source_dir), "rmdir", fail_rmdir)
+
+        organizer._remove_empty_source_dir(source_dir)
+
+        logger_mock.debug.assert_called_once()
+
+    def test_remove_empty_source_dir_ignores_non_empty_directory_without_logging(
+        self, monkeypatch, tmp_path: Path
+    ):
+        organizer = FileOrganizer(self.config)
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        logger_mock = Mock()
+
+        def fail_rmdir(_self: Path) -> None:
+            raise OSError(ENOTEMPTY, "Directory not empty")
+
+        from javs.core import organizer as organizer_module
+
+        monkeypatch.setattr(organizer_module, "logger", logger_mock)
+        monkeypatch.setattr(type(source_dir), "rmdir", fail_rmdir)
+
+        organizer._remove_empty_source_dir(source_dir)
+
+        logger_mock.debug.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sort_movie_preview_skips_side_effects(self, monkeypatch, tmp_path: Path):

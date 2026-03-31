@@ -252,8 +252,9 @@ class TestJavsEngineLifecycle:
             force=False,
             preview=False,
             nfo_data=None,
+            cleanup_empty_source_dir=False,
         ):
-            del file, data, dest_root, force, preview, nfo_data
+            del file, data, dest_root, force, preview, nfo_data, cleanup_empty_source_dir
             assert engine.http.enter_count == 1
             assert engine.http.exit_count == 0
             return None
@@ -267,6 +268,127 @@ class TestJavsEngineLifecycle:
         assert max_in_flight >= 1
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
+
+    def test_sort_path_passes_cleanup_toggle_to_organizer(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """sort_path() should forward the effective cleanup toggle to organizer.sort_movie()."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_file = ScannedFile(
+            path=source / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=source,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        captured: dict[str, object] = {}
+
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del file, data, dest_root, force, preview, nfo_data
+            captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+            return None
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+
+        result = asyncio.run(
+            engine.sort_path(
+                source,
+                dest,
+                cleanup_empty_source_dir=True,
+            )
+        )
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert captured == {"cleanup_empty_source_dir": True}
+
+    def test_sort_path_uses_config_cleanup_toggle_when_kwarg_omitted(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """sort_path() should honor config.sort.cleanup_empty_source_dir when omitted."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.cleanup_empty_source_dir = True
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_file = ScannedFile(
+            path=source / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=source,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        captured: dict[str, object] = {}
+
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del file, data, dest_root, force, preview, nfo_data
+            captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+            return None
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert captured == {"cleanup_empty_source_dir": True}
 
     def test_find_returns_translated_metadata_for_display(self, monkeypatch):
         """find() should still return translated metadata when translation is enabled."""
@@ -427,8 +549,16 @@ class TestJavsEngineLifecycle:
 
         captured: dict[str, str | None] = {}
 
-        async def fake_sort_movie(file, data, dest_root, force=False, preview=False, nfo_data=None):
-            del file, dest_root, force, preview
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del file, dest_root, force, preview, cleanup_empty_source_dir
             captured["title"] = data.title
             captured["nfo_title"] = nfo_data.title if nfo_data else None
             return None
@@ -814,8 +944,9 @@ class TestJavsEngineLifecycle:
             force=False,
             preview=False,
             nfo_data=None,
+            cleanup_empty_source_dir=False,
         ):
-            del file, dest_root, force, preview, nfo_data
+            del file, dest_root, force, preview, nfo_data, cleanup_empty_source_dir
             if data.id == "ABP-420":
                 organizer_started.set()
                 await release_first_organizer.wait()
@@ -1141,8 +1272,9 @@ class TestJavsEngineLifecycle:
             force=False,
             preview=False,
             nfo_data=None,
+            cleanup_empty_source_dir=False,
         ):
-            del data, dest_root, force, preview, nfo_data
+            del data, dest_root, force, preview, nfo_data, cleanup_empty_source_dir
             if file.movie_id == "IPX-001":
                 raise RuntimeError("disk full")
             return None

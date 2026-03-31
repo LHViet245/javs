@@ -527,6 +527,7 @@ class TestCliSortAndScrapers:
                 recurse: bool,
                 force: bool,
                 preview: bool,
+                cleanup_empty_source_dir: bool = False,
             ):
                 captured.update(
                     {
@@ -535,6 +536,7 @@ class TestCliSortAndScrapers:
                         "recurse": recurse,
                         "force": force,
                         "preview": preview,
+                        "cleanup_empty_source_dir": cleanup_empty_source_dir,
                     }
                 )
                 return [_movie_data()]
@@ -556,9 +558,140 @@ class TestCliSortAndScrapers:
             "recurse": True,
             "force": True,
             "preview": True,
+            "cleanup_empty_source_dir": False,
         }
         assert "Sorted 1 files" in result.stdout
         assert "ABP-420" in result.stdout
+
+    def test_sort_explicitly_enables_cleanup_for_one_run(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = []
+                self.last_run_summary = {
+                    "total": 1,
+                    "processed": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "warnings": 0,
+                }
+
+            async def sort_path(
+                self,
+                source: Path,
+                dest: Path,
+                recurse: bool,
+                force: bool,
+                preview: bool,
+                cleanup_empty_source_dir: bool = False,
+            ):
+                captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+                return [_movie_data()]
+
+        cfg = JavsConfig()
+        cfg.sort.cleanup_empty_source_dir = False
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        result = runner.invoke(
+            app,
+            [
+                "sort",
+                str(tmp_path / "source"),
+                str(tmp_path / "dest"),
+                "--cleanup-empty-source-dir",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured == {"cleanup_empty_source_dir": True}
+
+    def test_sort_explicitly_disables_cleanup_for_one_run(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = []
+                self.last_run_summary = {
+                    "total": 1,
+                    "processed": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "warnings": 0,
+                }
+
+            async def sort_path(
+                self,
+                source: Path,
+                dest: Path,
+                recurse: bool,
+                force: bool,
+                preview: bool,
+                cleanup_empty_source_dir: bool = False,
+            ):
+                captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+                return [_movie_data()]
+
+        cfg = JavsConfig()
+        cfg.sort.cleanup_empty_source_dir = True
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        result = runner.invoke(
+            app,
+            [
+                "sort",
+                str(tmp_path / "source"),
+                str(tmp_path / "dest"),
+                "--no-cleanup-empty-source-dir",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured == {"cleanup_empty_source_dir": False}
+
+    def test_sort_falls_back_to_config_cleanup_setting_when_flag_omitted(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = []
+                self.last_run_summary = {
+                    "total": 1,
+                    "processed": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "warnings": 0,
+                }
+
+            async def sort_path(
+                self,
+                source: Path,
+                dest: Path,
+                recurse: bool,
+                force: bool,
+                preview: bool,
+                cleanup_empty_source_dir: bool = False,
+            ):
+                captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+                return [_movie_data()]
+
+        cfg = JavsConfig()
+        cfg.sort.cleanup_empty_source_dir = True
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
+
+        assert result.exit_code == 0
+        assert captured == {"cleanup_empty_source_dir": True}
 
     def test_sort_prints_run_summary(self, monkeypatch, tmp_path: Path) -> None:
         class DummyEngine:
@@ -584,6 +717,7 @@ class TestCliSortAndScrapers:
                 recurse: bool,
                 force: bool,
                 preview: bool,
+                cleanup_empty_source_dir: bool = False,
             ):
                 return [_movie_data()]
 
@@ -625,6 +759,7 @@ class TestCliSortAndScrapers:
                 recurse: bool,
                 force: bool,
                 preview: bool,
+                cleanup_empty_source_dir: bool = False,
             ):
                 return [_movie_data()]
 
@@ -832,6 +967,7 @@ class TestCliSortAndScrapers:
                 recurse: bool,
                 force: bool,
                 preview: bool,
+                cleanup_empty_source_dir: bool = False,
             ):
                 return [_movie_data()]
 
