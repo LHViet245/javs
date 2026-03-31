@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-translate = ["googletrans==4.0.0-rc.1", "deepl>=1.0"]
+translate = ["googletrans>=4.0.2", "deepl>=1.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",

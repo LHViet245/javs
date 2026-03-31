@@ -40,6 +40,7 @@ Configuration is automatically generated on your first run. You can configure:
 - **Priorities:** Define which scrapers to trust most if data contradicts.
 - **Scrapers:** Enable/disable scrapers and set their languages (e.g., `javlibrary` vs `javlibraryja`).
 - **Renaming:** Configure how files are sorted and renamed.
+- **Cleanup:** Control whether `sort` removes an empty source directory after a successful sort with `sort.cleanup_empty_source_dir`.
 - **NFOs:** Format settings for Emby/Jellyfin/Kodi NFOs.
 
 To view the current configuration:
@@ -147,16 +148,18 @@ Recommended defaults for most users:
 - Keep `affect_sort_names: false` if you want translated NFO text but do not want folder/file names to change.
 - Set `affect_sort_names: true` only if you explicitly want translated metadata to affect sort naming as well.
 - For DeepL, prefer exact target variants such as `en-us`, `en-gb`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
-- JavS rejects ambiguous DeepL targets like `en`, `pt`, and `zh` before sending the translation request.
-- Common DeepL targets that work well in JavS include `en-us`, `en-gb`, `ja`, `ko`, `vi`, `de`, `fr`, `it`, `es`, `es-419`, `pt-br`, `pt-pt`, `zh-hans`, and `zh-hant`.
+- JavS accepts generic DeepL targets such as `en`, `pt`, and `zh` because DeepL still supports them, but variant-specific codes are preferred when you care about locale-specific output.
+- Common DeepL targets that work well in JavS include `en`, `en-us`, `en-gb`, `ja`, `ko`, `vi`, `de`, `fr`, `it`, `es`, `es-419`, `pt`, `pt-br`, `pt-pt`, `zh`, `zh-hans`, and `zh-hant`.
+- You can set `DEEPL_API_KEY` in the environment to override `deepl_api_key` at runtime without storing the key in `config.yaml`.
 
 Runtime behavior:
 
-- `find` still shows translated text when translation is enabled.
+- `find` still shows translated text when translation is enabled, and now renders as a compact inspector with a prominent title, dense detail rows, full description output, and inline provenance tags beside traceable fields.
+- When a field is actually changed by translation, the translation provider may appear as that field's provenance source in `find`.
 - `sort` and `update` write translated NFO content.
 - When `affect_sort_names: false`, sort naming stays based on the original scraped metadata.
 - When the configured provider is missing, JavS keeps running and prints a warning with an install hint instead of crashing.
-- When the DeepL language code is ambiguous or unsupported, JavS keeps running and prints a warning instead of failing mid-batch.
+- When the DeepL language code is unsupported, JavS keeps running and prints a warning instead of failing mid-batch.
 
 ---
 
@@ -164,13 +167,13 @@ Runtime behavior:
 
 ### 1. `find` - Manual Metadata Search
 
-Search for a specific ID with visual output in the terminal.
+Search for a specific ID with a rich but compact terminal layout.
 
 ```bash
 javs find "ABP-420"
 ```
 
-The tool will query all active scrapers in parallel, aggregate the best data according to your priorities, and display a rich summary of the movie (Title, Actresses, Genres, Maker, Cover URL, etc.).
+The tool will query all active scrapers in parallel, aggregate the best data according to your priorities, and display a compact inspector view with inline provenance for traceable fields.
 
 ### 2. `sort` - Auto-Organize Media
 
@@ -180,6 +183,10 @@ Scan directories, identify movie IDs in filenames, fetch metadata, create `.nfo`
 # Sort a directory, move to the destination directory, scan recursively
 javs sort /path/to/unsorted /path/to/vidstream --recurse
 ```
+
+`javs sort` also supports `--cleanup-empty-source-dir` / `--no-cleanup-empty-source-dir` or the
+`sort.cleanup_empty_source_dir` config key. It removes only the direct source directory, and only
+after a successful sort when that directory is empty.
 
 **Sorting Workflow:**
 

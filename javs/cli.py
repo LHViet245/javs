@@ -10,8 +10,11 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group
+from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from javs import __version__
 
@@ -22,13 +25,22 @@ app = typer.Typer(
 )
 console = Console()
 
-
 _DIAGNOSTIC_MESSAGES = {
     "proxy_auth_failed": "proxy auth failed",
     "proxy_unreachable": "proxy unreachable",
     "cloudflare_blocked": "Cloudflare blocked",
     "translation_provider_unavailable": "translation provider unavailable",
     "translation_config_invalid": "translation config invalid",
+}
+
+_DIAGNOSTIC_HINTS = {
+    "proxy_auth_failed": "Next: run `javs config proxy-test`.",
+    "proxy_unreachable": "Next: run `javs config proxy-test`.",
+    "cloudflare_blocked": "Next: run `javs config javlibrary-cookie`.",
+    "translation_provider_unavailable": (
+        "Next: install translation extras with `./venv/bin/pip install -e \".[translate]\"`."
+    ),
+    "translation_config_invalid": "Next: update `sort.metadata.nfo.translate` in your config.",
 }
 
 
@@ -84,6 +96,43 @@ def _print_run_diagnostics(engine) -> None:
         detail = item.get("detail")
         if detail:
             console.print(f"  {detail}")
+        hint = _DIAGNOSTIC_HINTS.get(kind)
+        if hint:
+            console.print(f"  {escape(hint)}")
+
+
+def _print_run_summary(engine) -> None:
+    """Render a compact batch summary for sort/update commands."""
+    summary = getattr(engine, "last_run_summary", None)
+    if not summary:
+        return
+
+    warning_label = "warning" if summary["warnings"] == 1 else "warnings"
+    console.print(
+        "[bold]Summary:[/bold] "
+        f"{summary['total']} scanned, "
+        f"{summary['processed']} processed, "
+        f"{summary['skipped']} skipped, "
+        f"{summary['failed']} failed, "
+        f"{summary['warnings']} {warning_label}"
+    )
+
+
+def _print_preview_plan(engine) -> None:
+    """Render planned preview actions for sort/update dry runs."""
+    preview_plan = getattr(engine, "last_preview_plan", [])
+    if not preview_plan:
+        return
+
+    table = Table(title="Preview Plan")
+    table.add_column("Source", style="cyan", overflow="fold")
+    table.add_column("ID", style="white")
+    table.add_column("Target", style="green", overflow="fold")
+
+    for item in preview_plan:
+        table.add_row(item["source"], item["id"], item["target"])
+
+    console.print(table)
 
 
 def version_callback(value: bool) -> None:
@@ -113,6 +162,11 @@ def sort(
     recurse: bool = typer.Option(False, "--recurse", "-r", help="Scan subdirectories."),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files."),
     preview: bool = typer.Option(False, "--preview", "-p", help="Dry run: show what would happen."),
+    cleanup_empty_source_dir: bool | None = typer.Option(
+        None,
+        "--cleanup-empty-source-dir/--no-cleanup-empty-source-dir",
+        help="Remove empty source directories after a successful sort.",
+    ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """📂 Scan, scrape, and sort video files into an organized library."""
@@ -120,12 +174,26 @@ def sort(
     from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
+    effective_cleanup_empty_source_dir = (
+        cleanup_empty_source_dir
+        if cleanup_empty_source_dir is not None
+        else cfg.sort.cleanup_empty_source_dir
+    )
     engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
         cfg, _resolve_config_path(config_path)
     ))
 
     with _status_context("[bold green]Sorting files..."):
-        results = asyncio.run(engine.sort_path(source, dest, recurse, force, preview))
+        results = asyncio.run(
+            engine.sort_path(
+                source,
+                dest,
+                recurse,
+                force,
+                preview,
+                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+            )
+        )
 
     if results:
         table = Table(title=f"✅ Sorted {len(results)} files")
@@ -140,6 +208,9 @@ def sort(
     else:
         console.print("[yellow]No files were processed.[/yellow]")
 
+    if preview:
+        _print_preview_plan(engine)
+    _print_run_summary(engine)
     _print_run_diagnostics(engine)
 
 
@@ -208,6 +279,9 @@ def update(
     else:
         console.print("[yellow]No files were updated.[/yellow]")
 
+    if preview:
+        _print_preview_plan(engine)
+    _print_run_summary(engine)
     _print_run_diagnostics(engine)
 
 
@@ -276,8 +350,10 @@ def config(
     path = _resolve_config_path(config_path)
 
     if action == "show":
+        from javs.config import redact_config_for_display
+
         cfg = load_config(path)
-        console.print(cfg.model_dump_json(indent=2))
+        console.print_json(data=redact_config_for_display(cfg))
 
     elif action == "create":
         create_default_config(path)
@@ -401,40 +477,142 @@ def scrapers() -> None:
 
 
 def _display_movie_data(data) -> None:
-    """Pretty-print movie data to console."""
-    from rich.panel import Panel
+    """Render movie data with a compact hero-and-details layout."""
 
-    lines = []
-    lines.append(f"[bold cyan]ID:[/bold cyan] {data.id}")
-    if data.title:
-        lines.append(f"[bold]Title:[/bold] {data.title}")
+    def shorten_url(url: str, limit: int = 72) -> str:
+        if len(url) <= limit:
+            return url
+        return f"{url[:limit - 3]}..."
+
+    field_sources = data.field_sources or {}
+
+    def with_source(value: str, field_name: str | None = None) -> Text:
+        text = Text(value)
+        if field_name:
+            source = field_sources.get(field_name)
+            if source:
+                text.append(f" [{source}]", style="dim")
+        return text
+
+    def add_pair_row(
+        table: Table,
+        left: tuple[str, str, str] | None,
+        right: tuple[str, str, str] | None = None,
+    ) -> None:
+        row: list[Text] = []
+        if left:
+            row.extend([Text(left[0], style="bold cyan"), with_source(left[1], left[2])])
+        else:
+            row.extend([Text(""), Text("")])
+        if right:
+            row.extend([Text(right[0], style="bold cyan"), with_source(right[1], right[2])])
+        else:
+            row.extend([Text(""), Text("")])
+        table.add_row(*row)
+
+    meta = Table.grid(expand=True, padding=(0, 1))
+    meta.add_column(style="bold cyan", no_wrap=True)
+    meta.add_column(ratio=1)
+    meta.add_column(style="bold cyan", no_wrap=True)
+    meta.add_column(justify="right", ratio=1)
+    meta.add_row(
+        Text("ID", style="bold cyan"),
+        with_source(data.id, "id"),
+        Text("Source", style="bold cyan"),
+        Text(data.source or "-", style="dim"),
+    )
+
+    hero = Table.grid(expand=True, padding=(0, 0))
+    hero.add_column(ratio=1)
+    title_text = with_source(data.title or data.id, "title")
+    title_text.stylize("bold")
+    hero.add_row(title_text)
     if data.alternate_title:
-        lines.append(f"[bold]Alt Title:[/bold] {data.alternate_title}")
-    if data.maker:
-        lines.append(f"[bold]Studio:[/bold] {data.maker}")
-    if data.label:
-        lines.append(f"[bold]Label:[/bold] {data.label}")
-    if data.series:
-        lines.append(f"[bold]Series:[/bold] {data.series}")
-    if data.director:
-        lines.append(f"[bold]Director:[/bold] {data.director}")
-    if data.release_date:
-        lines.append(f"[bold]Release:[/bold] {data.release_date}")
-    if data.runtime:
-        lines.append(f"[bold]Runtime:[/bold] {data.runtime} min")
-    if data.rating:
-        lines.append(f"[bold]Rating:[/bold] {data.rating.rating}/10 ({data.rating.votes} votes)")
-    if data.genres:
-        lines.append(f"[bold]Genres:[/bold] {', '.join(data.genres)}")
-    if data.actresses:
-        actress_names = [a.full_name for a in data.actresses]
-        lines.append(f"[bold]Actresses:[/bold] {', '.join(actress_names)}")
-    if data.description:
-        desc = data.description[:200] + "..." if len(data.description) > 200 else data.description
-        lines.append(f"\n[dim]{desc}[/dim]")
+        original_title = Text("Original: ", style="dim")
+        original_title.append_text(with_source(data.alternate_title, "alternate_title"))
+        original_title.stylize("dim", 0, len("Original: "))
+        hero.add_row(original_title)
 
-    content = "\n".join(lines)
-    console.print(Panel(content, title=f"🎬 {data.id}", border_style="cyan"))
+    details = Table.grid(expand=True, padding=(0, 2))
+    details.add_column(style="bold cyan", no_wrap=True)
+    details.add_column(ratio=1, overflow="fold")
+    details.add_column(style="bold cyan", no_wrap=True)
+    details.add_column(ratio=1, overflow="fold")
+
+    rating_text = None
+    if data.rating:
+        rating_text = (
+            f"{data.rating.rating}/10 ({data.rating.votes} votes)"
+            if data.rating.votes is not None
+            else f"{data.rating.rating}/10"
+        )
+
+    actress_names = None
+    if data.actresses:
+        actress_names = ", ".join(actress.full_name for actress in data.actresses)
+
+    pair_rows = [
+        (("Studio", data.maker, "maker") if data.maker else None,
+         ("Label", data.label, "label") if data.label else None),
+        (("Release Date", data.release_date.isoformat(), "release_date")
+         if data.release_date
+         else None,
+         None),
+        (("Runtime", f"{data.runtime} min", "runtime") if data.runtime else None,
+         ("Rating", rating_text, "rating") if rating_text else None),
+        (("Director", data.director, "director") if data.director else None,
+         ("Actresses", actress_names, "actresses") if actress_names else None),
+    ]
+    for left, right in pair_rows:
+        if left or right:
+            add_pair_row(details, left, right)
+
+    long_rows = Table.grid(expand=True, padding=(0, 2))
+    long_rows.add_column(style="bold cyan", no_wrap=True)
+    long_rows.add_column(ratio=1, overflow="fold")
+    if data.genres:
+        long_rows.add_row(
+            Text("Genres", style="bold cyan"),
+            with_source(", ".join(data.genres), "genres"),
+        )
+    if data.series:
+        long_rows.add_row(
+            Text("Series", style="bold cyan"),
+            with_source(data.series, "series"),
+        )
+    if data.cover_url:
+        long_rows.add_row(
+            Text("Cover", style="bold cyan"), with_source(shorten_url(data.cover_url), "cover_url")
+        )
+    if data.trailer_url:
+        long_rows.add_row(
+            Text("Trailer", style="bold cyan"),
+            with_source(shorten_url(data.trailer_url), "trailer_url"),
+        )
+    if data.screenshot_urls:
+        long_rows.add_row(
+            Text("Screenshots", style="bold cyan"),
+            with_source(str(len(data.screenshot_urls)), "screenshot_urls"),
+        )
+
+    renderables: list[object] = [meta, Text(""), hero]
+    if details.rows:
+        renderables.append(Text(""))
+        renderables.append(details)
+    if long_rows.rows:
+        renderables.append(Text(""))
+        renderables.append(long_rows)
+    if data.description:
+        description_label = Text("Description", style="bold cyan")
+        description_value = with_source(data.description, "description")
+        description = Table.grid(expand=True)
+        description.add_column(ratio=1, overflow="fold")
+        description.add_row(description_label)
+        description.add_row(description_value)
+        renderables.append(Text(""))
+        renderables.append(description)
+
+    console.print(Panel(Group(*renderables), title=f"Find Result · {data.id}", border_style="cyan"))
 
 
 if __name__ == "__main__":

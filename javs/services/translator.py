@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
+import os
 from dataclasses import dataclass
 
 from javs.config.models import TranslateConfig
@@ -24,6 +26,7 @@ _DEEPL_TARGET_LANGUAGES = frozenset(
         "DA",
         "DE",
         "EL",
+        "EN",
         "EN-GB",
         "EN-US",
         "ES",
@@ -42,6 +45,7 @@ _DEEPL_TARGET_LANGUAGES = frozenset(
         "NB",
         "NL",
         "PL",
+        "PT",
         "PT-BR",
         "PT-PT",
         "RO",
@@ -53,15 +57,11 @@ _DEEPL_TARGET_LANGUAGES = frozenset(
         "TR",
         "UK",
         "VI",
+        "ZH",
         "ZH-HANS",
         "ZH-HANT",
     }
 )
-_DEEPL_AMBIGUOUS_LANGUAGES = {
-    "EN": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
-    "PT": "DeepL language 'pt' is ambiguous; use 'pt-br' or 'pt-pt'.",
-    "ZH": "DeepL language 'zh' is ambiguous; use 'zh-hans' or 'zh-hant'.",
-}
 
 
 @dataclass(slots=True)
@@ -135,10 +135,15 @@ async def translate_movie_data(
         try:
             translated = await _translate_text(value, config)
             if translated:
+                final_value = translated
                 if config.keep_original_description and field_name == "description":
-                    setattr(data, field_name, f"{translated}\n\n---\n{value}")
-                else:
-                    setattr(data, field_name, translated)
+                    final_value = f"{translated}\n\n---\n{value}"
+
+                setattr(data, field_name, final_value)
+
+                if translated != value and data.field_sources.get(field_name) != config.module:
+                    data.field_sources = dict(data.field_sources)
+                    data.field_sources[field_name] = config.module
         except Exception as exc:
             logger.error(
                 "translation_error",
@@ -162,7 +167,7 @@ async def _translate_text(text: str, config: TranslateConfig) -> str | None:
     if config.module == "googletrans":
         return await _translate_googletrans(text, config.language)
     elif config.module == "deepl":
-        return await _translate_deepl(text, config.language, config.deepl_api_key)
+        return await _translate_deepl(text, config.language, _get_effective_deepl_api_key(config))
     else:
         logger.warning("unknown_translate_module", module=config.module)
         return None
@@ -173,14 +178,23 @@ async def _translate_googletrans(text: str, dest_lang: str) -> str | None:
     try:
         from googletrans import Translator
 
-        def _sync_translate() -> str:
+        async def _async_translate() -> str:
             translator = Translator()
+            if hasattr(translator, "__aenter__") and hasattr(translator, "__aexit__"):
+                async with translator as active_translator:
+                    result = active_translator.translate(text, dest=dest_lang)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result.text
+
             result = translator.translate(text, dest=dest_lang)
+            if inspect.isawaitable(result):
+                result = await result
             return result.text
 
-        return await asyncio.to_thread(_sync_translate)
+        return await _async_translate()
     except ImportError:
-        logger.error("googletrans_not_installed", msg="pip install googletrans==4.0.0-rc.1")
+        logger.error("googletrans_not_installed", msg="pip install googletrans>=4.0.2")
         return None
     except Exception as exc:
         logger.error("googletrans_error", error=str(exc))
@@ -219,13 +233,16 @@ def _normalize_deepl_target_language(target_lang: str) -> str:
     return target_lang.strip().replace("_", "-").upper()
 
 
+def _get_effective_deepl_api_key(config: TranslateConfig) -> str:
+    """Prefer runtime env override without persisting it into config files."""
+    return os.getenv("DEEPL_API_KEY") or config.deepl_api_key
+
+
 def _get_deepl_target_language_issue(target_lang: str) -> str | None:
     """Return a user-facing validation message for invalid DeepL target languages."""
     normalized = _normalize_deepl_target_language(target_lang)
     if not normalized:
         return "DeepL language cannot be empty."
-    if normalized in _DEEPL_AMBIGUOUS_LANGUAGES:
-        return _DEEPL_AMBIGUOUS_LANGUAGES[normalized]
     if normalized not in _DEEPL_TARGET_LANGUAGES:
         return (
             f"DeepL language '{target_lang}' is not a supported target language. "

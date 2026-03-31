@@ -140,6 +140,59 @@ class TestJavsEngineLifecycle:
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
 
+    def test_find_preserves_field_sources_through_aggregation_and_translation(
+        self, monkeypatch
+    ):
+        """find() should keep field provenance intact after merge and translation."""
+        config = JavsConfig()
+        config.sort.metadata.nfo.translate.enabled = True
+        engine = self._make_engine(monkeypatch, config=config)
+        raw = MovieData(
+            id="ABP-420",
+            title="Original Title",
+            description="Original Plot",
+            source="dmm",
+            field_sources={"title": "dmm", "description": "dmm"},
+        )
+        merged = raw.model_copy(deep=True)
+        merged.title = "Merged Title"
+        merged.field_sources["title"] = "dmm"
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [SimpleNamespace(name="dmm")],
+        )
+
+        async def fake_run_scrapers(scrapers, movie_id):
+            del scrapers, movie_id
+            return [raw]
+
+        monkeypatch.setattr(engine, "_run_scrapers", fake_run_scrapers)
+        monkeypatch.setattr(engine.aggregator, "merge", lambda valid: merged)
+        monkeypatch.setattr("javs.core.engine.get_translation_provider_issue", lambda _config: None)
+
+        async def fake_translate(data: MovieData, _config) -> MovieData:
+            assert data is not raw
+            assert data is not merged
+            assert data.title == "Merged Title"
+            assert data.field_sources == {"title": "dmm", "description": "dmm"}
+            data.title = "Translated Title"
+            data.field_sources["title"] = "deepl"
+            return data
+
+        monkeypatch.setattr("javs.core.engine.translate_movie_data", fake_translate)
+
+        result = asyncio.run(engine.find("ABP-420"))
+
+        assert result is not None
+        assert result.title == "Translated Title"
+        assert result.description == "Original Plot"
+        assert result.field_sources == {"title": "deepl", "description": "dmm"}
+        assert merged.title == "Merged Title"
+        assert merged.field_sources == {"title": "dmm", "description": "dmm"}
+        assert raw.title == "Original Title"
+        assert raw.field_sources == {"title": "dmm", "description": "dmm"}
+
     def test_sort_path_keeps_session_open_for_the_whole_batch(self, monkeypatch, tmp_path: Path):
         """sort_path() should open the shared session once for the whole batch."""
         config = JavsConfig(throttle_limit=2, sleep=0)
@@ -199,8 +252,9 @@ class TestJavsEngineLifecycle:
             force=False,
             preview=False,
             nfo_data=None,
+            cleanup_empty_source_dir=False,
         ):
-            del file, data, dest_root, force, preview, nfo_data
+            del file, data, dest_root, force, preview, nfo_data, cleanup_empty_source_dir
             assert engine.http.enter_count == 1
             assert engine.http.exit_count == 0
             return None
@@ -214,6 +268,127 @@ class TestJavsEngineLifecycle:
         assert max_in_flight >= 1
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
+
+    def test_sort_path_passes_cleanup_toggle_to_organizer(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """sort_path() should forward the effective cleanup toggle to organizer.sort_movie()."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_file = ScannedFile(
+            path=source / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=source,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        captured: dict[str, object] = {}
+
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del file, data, dest_root, force, preview, nfo_data
+            captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+            return None
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+
+        result = asyncio.run(
+            engine.sort_path(
+                source,
+                dest,
+                cleanup_empty_source_dir=True,
+            )
+        )
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert captured == {"cleanup_empty_source_dir": True}
+
+    def test_sort_path_uses_config_cleanup_toggle_when_kwarg_omitted(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """sort_path() should honor config.sort.cleanup_empty_source_dir when omitted."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        config.sort.cleanup_empty_source_dir = True
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_file = ScannedFile(
+            path=source / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=source,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        captured: dict[str, object] = {}
+
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del file, data, dest_root, force, preview, nfo_data
+            captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
+            return None
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert captured == {"cleanup_empty_source_dir": True}
 
     def test_find_returns_translated_metadata_for_display(self, monkeypatch):
         """find() should still return translated metadata when translation is enabled."""
@@ -374,8 +549,16 @@ class TestJavsEngineLifecycle:
 
         captured: dict[str, str | None] = {}
 
-        async def fake_sort_movie(file, data, dest_root, force=False, preview=False, nfo_data=None):
-            del file, dest_root, force, preview
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del file, dest_root, force, preview, cleanup_empty_source_dir
             captured["title"] = data.title
             captured["nfo_title"] = nfo_data.title if nfo_data else None
             return None
@@ -761,8 +944,9 @@ class TestJavsEngineLifecycle:
             force=False,
             preview=False,
             nfo_data=None,
+            cleanup_empty_source_dir=False,
         ):
-            del file, dest_root, force, preview, nfo_data
+            del file, dest_root, force, preview, nfo_data, cleanup_empty_source_dir
             if data.id == "ABP-420":
                 organizer_started.set()
                 await release_first_organizer.wait()
@@ -1023,5 +1207,133 @@ class TestJavsEngineLifecycle:
                 "kind": "translation_config_invalid",
                 "scraper": "translate",
                 "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+            }
+        ]
+
+    def test_sort_tracks_processed_skipped_failed_and_warning_counts(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """sort_path() should expose a compact batch summary for CLI output."""
+        config = JavsConfig(throttle_limit=2, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_files = [
+            ScannedFile(
+                path=source / "ABP-420.mp4",
+                filename="ABP-420.mp4",
+                basename="ABP-420",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="ABP-420",
+            ),
+            ScannedFile(
+                path=source / "SSIS-001.mp4",
+                filename="SSIS-001.mp4",
+                basename="SSIS-001",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="SSIS-001",
+            ),
+            ScannedFile(
+                path=source / "IPX-001.mp4",
+                filename="IPX-001.mp4",
+                basename="IPX-001",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="IPX-001",
+            ),
+        ]
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: scanned_files)
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            if movie_id == "SSIS-001":
+                return None
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del data, dest_root, force, preview, nfo_data, cleanup_empty_source_dir
+            if file.movie_id == "IPX-001":
+                raise RuntimeError("disk full")
+            return None
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+        engine.last_run_diagnostics = [{"kind": "proxy_unreachable", "scraper": "old"}]
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert engine.last_run_summary == {
+            "total": 3,
+            "processed": 1,
+            "skipped": 1,
+            "failed": 1,
+            "warnings": 0,
+        }
+
+    def test_sort_preview_collects_preview_plan(self, monkeypatch, tmp_path: Path) -> None:
+        """sort_path(preview=True) should expose computed destination paths for CLI preview."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_file = ScannedFile(
+            path=source / "ABP-420.mp4",
+            filename="ABP-420.mp4",
+            basename="ABP-420",
+            extension=".mp4",
+            directory=source,
+            size_bytes=1024,
+            movie_id="ABP-420",
+        )
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: [scanned_file])
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            return MovieData(
+                id=movie_id,
+                title="Preview Movie",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+
+        result = asyncio.run(engine.sort_path(source, dest, preview=True))
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert engine.last_preview_plan == [
+            {
+                "source": str(scanned_file.path),
+                "id": "ABP-420",
+                "target": str(dest / "ABP-420 [Studio] - Preview Movie (2024)" / "ABP-420.mp4"),
             }
         ]

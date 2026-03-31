@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from errno import EEXIST, ENOTEMPTY
 from pathlib import Path
 
 from javs.config.models import JavsConfig
@@ -169,6 +170,7 @@ class FileOrganizer:
         dest_root: Path,
         force: bool = False,
         preview: bool = False,
+        cleanup_empty_source_dir: bool = False,
         nfo_data: MovieData | None = None,
     ) -> SortPaths:
         """Execute the full sort pipeline for a single movie.
@@ -227,8 +229,13 @@ class FileOrganizer:
             self._move_subtitles(file, sort_paths)
 
         # 9. Move/rename the video file
+        video_move_succeeded = False
         if self.config.sort.rename_file or self.config.sort.move_to_folder:
             self._move_video(file, sort_paths, force)
+            video_move_succeeded = sort_paths.file_path.exists() and not file.path.exists()
+
+        if cleanup_empty_source_dir and video_move_succeeded:
+            self._remove_empty_source_dir(file.directory)
 
         logger.info(
             "sort_complete",
@@ -468,3 +475,18 @@ class FileOrganizer:
             logger.info("file_moved", src=str(file.path), dest=str(paths.file_path))
         except Exception as exc:
             logger.error("file_move_error", src=str(file.path), error=str(exc))
+
+    def _remove_empty_source_dir(self, source_dir: Path) -> None:
+        """Remove the source directory if it is empty."""
+        try:
+            source_dir.rmdir()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if exc.errno in {EEXIST, ENOTEMPTY}:
+                return
+            logger.debug(
+                "source_dir_cleanup_error",
+                path=str(source_dir),
+                error=str(exc),
+            )

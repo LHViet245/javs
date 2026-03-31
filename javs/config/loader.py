@@ -118,3 +118,19 @@ def create_default_config(path: Path | None = None) -> JavsConfig:
     config = JavsConfig()
     save_config(config, path)
     return config
+
+
+def redact_config_for_display(config: JavsConfig) -> dict:
+    """Return a JSON-safe config dict with sensitive values masked."""
+    data = config.model_dump(exclude_defaults=False)
+
+    if data["sort"]["metadata"]["nfo"]["translate"].get("deepl_api_key"):
+        data["sort"]["metadata"]["nfo"]["translate"]["deepl_api_key"] = "***"
+
+    if data["javlibrary"].get("cookie_cf_clearance"):
+        data["javlibrary"]["cookie_cf_clearance"] = "***"
+
+    if data["proxy"].get("url"):
+        data["proxy"]["url"] = config.proxy.masked_url
+
+    return data

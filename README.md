@@ -16,7 +16,7 @@
 - 🧩 **Plugin Architecture:** Easily extendable. Write a scraper class and it automatically integrates.
 - 🎯 **Smart Aggregation:** Fetches from multiple sites (DMM, R18Dev, JavLibrary, etc.) and seamlessly merges the best metadata based on your custom priority rules.
 - 🌐 **Translation Service:** Built-in async wrappers for `googletrans` and `deepl` to translate metadata automatically.
-- 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), and strictly organizes your media folders.
+- 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), strictly organizes your media folders, and can remove an empty source directory after a successful sort.
 - 🧠 **Flexible Detection Modes:** Supports built-in automatic matching, a stricter precision-oriented mode, custom regex matching, and multipart detection.
 - 🗃️ **CSV Metadata Overrides:** Supports local `genres.csv` and `thumbs.csv` templates for genre normalization and actress thumbnail caching.
 - ♻️ **In-Place Metadata Refresh:** Re-scan an already sorted library to refresh NFO and metadata sidecars without moving video files, with optional image and trailer re-downloads.
@@ -64,6 +64,10 @@ python3 -m venv venv
 ```bash
 ./venv/bin/javs sort /path/to/unsorted /path/to/vidstream --recurse
 ```
+
+Use `sort.cleanup_empty_source_dir` in config or the `--cleanup-empty-source-dir` / `--no-cleanup-empty-source-dir`
+flags to control source-folder cleanup. JavS only removes the direct source directory, and only
+when the sort succeeds and that directory is empty.
 
 4. **Refresh an Existing Sorted Library:**
 

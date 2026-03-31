@@ -30,6 +30,17 @@ from javs.utils.logging import get_logger, get_mask_processor, setup_logging
 logger = get_logger(__name__)
 
 
+def _empty_run_summary() -> dict[str, int]:
+    """Return zeroed counters for the latest public engine run."""
+    return {
+        "total": 0,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": 0,
+    }
+
+
 class JavsEngine:
     """Main engine that orchestrates the entire javs workflow.
 
@@ -60,6 +71,8 @@ class JavsEngine:
         self._cloudflare_recovery_lock = asyncio.Lock()
         self._cloudflare_recovery_used = False
         self.last_run_diagnostics: list[dict[str, str]] = []
+        self.last_run_summary: dict[str, int] = _empty_run_summary()
+        self.last_preview_plan: list[dict[str, str]] = []
 
         # Initialize components
         proxy_url = self.config.proxy.url if self.config.proxy.enabled else None
@@ -212,6 +225,7 @@ class JavsEngine:
         recurse: bool = False,
         force: bool = False,
         preview: bool = False,
+        cleanup_empty_source_dir: bool | None = None,
     ) -> list[MovieData]:
         """Scan a directory and sort all matching files.
 
@@ -226,6 +240,11 @@ class JavsEngine:
             List of successfully processed MovieData.
         """
         self._reset_run_diagnostics()
+        effective_cleanup_empty_source_dir = (
+            self.config.sort.cleanup_empty_source_dir
+            if cleanup_empty_source_dir is None
+            else cleanup_empty_source_dir
+        )
         files = self.scanner.scan(source, recurse=recurse)
         if not files:
             logger.warning("no_files_found", path=str(source))
@@ -234,14 +253,23 @@ class JavsEngine:
         logger.info("files_scanned", count=len(files))
 
         async def sort_one(file: ScannedFile, data: MovieData, nfo_data: MovieData | None) -> None:
-            await self.organizer.sort_movie(
+            paths = await self.organizer.sort_movie(
                 file,
                 data,
                 dest,
                 force=force,
                 preview=preview,
                 nfo_data=nfo_data,
+                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
             )
+            if preview:
+                self.last_preview_plan.append(
+                    {
+                        "source": str(file.path),
+                        "id": data.id,
+                        "target": str(paths.file_path),
+                    }
+                )
 
         results = await self._process_scanned_files(files, process_movie=sort_one)
         logger.info("sort_complete", processed=len(results), total=len(files))
@@ -271,7 +299,7 @@ class JavsEngine:
             data: MovieData,
             nfo_data: MovieData | None,
         ) -> None:
-            await self.organizer.update_movie(
+            paths = await self.organizer.update_movie(
                 file,
                 data,
                 force=force,
@@ -280,6 +308,14 @@ class JavsEngine:
                 refresh_trailer=refresh_trailer,
                 nfo_data=nfo_data,
             )
+            if preview:
+                self.last_preview_plan.append(
+                    {
+                        "source": str(file.path),
+                        "id": data.id,
+                        "target": str(paths.nfo_path),
+                    }
+                )
 
         results = await self._process_scanned_files(
             files,
@@ -307,6 +343,8 @@ class JavsEngine:
     ) -> list[MovieData]:
         """Process a batch of scanned files with shared scrape pacing and session lifecycle."""
         results: list[MovieData] = []
+        skipped = 0
+        failed = 0
         scrape_sem = asyncio.Semaphore(self.config.throttle_limit)
         cooldown_tasks: set[asyncio.Task[None]] = set()
         waiting_for_scrape_slot = 0
@@ -373,7 +411,18 @@ class JavsEngine:
             if isinstance(result, MovieData):
                 results.append(result)
             elif isinstance(result, Exception):
+                failed += 1
                 logger.error("process_error", error=str(result))
+            else:
+                skipped += 1
+
+        self.last_run_summary = {
+            "total": total_files,
+            "processed": len(results),
+            "skipped": skipped,
+            "failed": failed,
+            "warnings": len(self.last_run_diagnostics),
+        }
 
         return results
 
@@ -447,6 +496,8 @@ class JavsEngine:
     def _reset_run_diagnostics(self) -> None:
         """Clear user-facing run diagnostics before a new public operation."""
         self.last_run_diagnostics = []
+        self.last_run_summary = _empty_run_summary()
+        self.last_preview_plan = []
 
     def _record_run_diagnostic(self, scraper: str, error: Exception) -> None:
         """Record compact scraper diagnostics for CLI summaries."""

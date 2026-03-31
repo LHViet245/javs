@@ -180,3 +180,5 @@ test_impersonate.log
 .agent/
 # Linter & Formatter caches
 .ruff_cache/
+.gitnexus
+.worktrees/
