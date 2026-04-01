@@ -453,12 +453,14 @@ class FileOrganizer:
             for sub_file in file.directory.iterdir():
                 if sub_file.suffix.lower() not in subtitle_exts:
                     continue
+                sub_name = sub_file.name
                 sub_stem = sub_file.stem.lower()
                 # Match: sub stem starts with video stem
                 # Handles: ABC-123.srt, ABC-123.chi.srt, ABC-123.eng.ass
                 if not sub_stem.startswith(video_stem):
                     continue
-                dest = paths.folder_path / f"{paths.file_name}{sub_file.suffix}"
+                suffix = sub_name[len(file.path.stem) :]
+                dest = paths.folder_path / f"{paths.file_name}{suffix}"
                 if not dest.exists():
                     shutil.move(str(sub_file), str(dest))
                     logger.debug("subtitle_moved", src=str(sub_file), dest=str(dest))
