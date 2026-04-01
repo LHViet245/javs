@@ -306,13 +306,22 @@ class FileOrganizer:
     def _move_subtitles(self, file: ScannedFile, paths: SortPaths) -> None:
         """Find and move subtitle files to the destination folder."""
         subtitle_exts = {".ass", ".ssa", ".srt", ".smi", ".vtt"}
+        video_stem = file.path.stem.lower()
         try:
             for sub_file in file.directory.iterdir():
-                if sub_file.suffix.lower() in subtitle_exts:
-                    dest = paths.folder_path / f"{paths.file_name}{sub_file.suffix}"
-                    if not dest.exists():
-                        shutil.move(str(sub_file), str(dest))
-                        logger.debug("subtitle_moved", src=str(sub_file), dest=str(dest))
+                if sub_file.suffix.lower() not in subtitle_exts:
+                    continue
+                sub_name = sub_file.name
+                sub_stem = sub_file.stem.lower()
+                # Match: sub stem starts with video stem
+                # Handles: ABC-123.srt, ABC-123.chi.srt, ABC-123.eng.ass
+                if not sub_stem.startswith(video_stem):
+                    continue
+                suffix = sub_name[len(file.path.stem) :]
+                dest = paths.folder_path / f"{paths.file_name}{suffix}"
+                if not dest.exists():
+                    shutil.move(str(sub_file), str(dest))
+                    logger.debug("subtitle_moved", src=str(sub_file), dest=str(dest))
         except Exception as exc:
             logger.error("subtitle_move_error", error=str(exc))
 
