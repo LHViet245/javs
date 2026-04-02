@@ -984,3 +984,35 @@ class TestCliSortAndScrapers:
         assert "javlibrary: Cloudflare blocked" in result.stdout
         assert "Next: run `javs config proxy-test`." in result.stdout
         assert "Next: run `javs config javlibrary-cookie`." in result.stdout
+
+    def test_sort_deduplicates_repeated_diagnostic_hints(self, monkeypatch, tmp_path: Path) -> None:
+        class DummyEngine:
+            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
+                self.cfg = cfg
+                self.last_run_diagnostics = [
+                    {"kind": "proxy_auth_failed", "scraper": "dmm"},
+                    {"kind": "proxy_unreachable", "scraper": "mgstageja"},
+                ]
+                self.last_run_summary = {}
+                self.last_preview_plan = []
+
+            async def sort_path(
+                self,
+                source: Path,
+                dest: Path,
+                recurse: bool,
+                force: bool,
+                preview: bool,
+                cleanup_empty_source_dir: bool = False,
+            ):
+                return [_movie_data()]
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+
+        result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
+
+        assert result.exit_code == 0
+        assert "dmm: proxy auth failed" in result.stdout
+        assert "mgstageja: proxy unreachable" in result.stdout
+        assert result.stdout.count("Next: run `javs config proxy-test`.") == 1

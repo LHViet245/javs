@@ -88,6 +88,7 @@ def _print_run_diagnostics(engine) -> None:
         return
 
     console.print("[yellow]Warnings:[/yellow]")
+    printed_hints: set[str] = set()
     for item in diagnostics:
         scraper = item.get("scraper", "unknown")
         kind = item.get("kind", "")
@@ -97,8 +98,9 @@ def _print_run_diagnostics(engine) -> None:
         if detail:
             console.print(f"  {detail}")
         hint = _DIAGNOSTIC_HINTS.get(kind)
-        if hint:
+        if hint and hint not in printed_hints:
             console.print(f"  {escape(hint)}")
+            printed_hints.add(hint)
 
 
 def _print_run_summary(engine) -> None:
