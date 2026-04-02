@@ -93,6 +93,42 @@ class TestJavsEngineHttpClientConfig:
 
         assert created["timeout_seconds"] == 11
 
+    def test_engine_uses_injected_runtime_components(self, monkeypatch):
+        """Engine should accept an injected runtime bundle without rebuilding components."""
+        fake_http = object()
+        fake_scanner = object()
+        fake_aggregator = object()
+        fake_organizer = object()
+        runtime = SimpleNamespace(
+            http=fake_http,
+            scanner=fake_scanner,
+            aggregator=fake_aggregator,
+            organizer=fake_organizer,
+        )
+
+        monkeypatch.setattr("javs.core.engine.setup_logging", lambda **kwargs: None)
+        monkeypatch.setattr("javs.core.engine.ScraperRegistry.load_all", lambda: None)
+
+        engine = JavsEngine(JavsConfig(), runtime=runtime)
+
+        assert engine.http is fake_http
+        assert engine.scanner is fake_scanner
+        assert engine.aggregator is fake_aggregator
+        assert engine.organizer is fake_organizer
+
+    def test_engine_exposes_default_runtime_components(self, monkeypatch):
+        """Engine should expose the default runtime bundle it constructed."""
+        monkeypatch.setattr("javs.core.engine.setup_logging", lambda **kwargs: None)
+        monkeypatch.setattr("javs.core.engine.ScraperRegistry.load_all", lambda: None)
+        monkeypatch.setattr("javs.core.engine.HttpClient", _FakeHttpContext)
+
+        engine = JavsEngine(JavsConfig())
+
+        assert engine.runtime.http is engine.http
+        assert engine.runtime.scanner is engine.scanner
+        assert engine.runtime.aggregator is engine.aggregator
+        assert engine.runtime.organizer is engine.organizer
+
 
 class _FakeHttpContext:
     def __init__(self, **kwargs):

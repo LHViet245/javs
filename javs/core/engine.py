@@ -13,6 +13,7 @@ from pathlib import Path
 from javs.config import JavsConfig, load_config
 from javs.core.aggregator import DataAggregator
 from javs.core.organizer import FileOrganizer
+from javs.core.runtime import EngineRuntime, build_runtime
 from javs.core.scanner import FileScanner
 from javs.models.file import ScannedFile
 from javs.models.movie import MovieData
@@ -57,6 +58,7 @@ class JavsEngine:
     def __init__(
         self,
         config: JavsConfig | None = None,
+        runtime: EngineRuntime | None = None,
         cloudflare_recovery_handler: (
             Callable[[CloudflareBlockedError], Awaitable[JavlibraryCredentials | None]]
             | None
@@ -74,32 +76,18 @@ class JavsEngine:
         self.last_run_summary: dict[str, int] = _empty_run_summary()
         self.last_preview_plan: list[dict[str, str]] = []
 
-        # Initialize components
-        proxy_url = self.config.proxy.url if self.config.proxy.enabled else None
-
-        # Register proxy URL with credential masking
-        if proxy_url:
-            mask_proc = get_mask_processor()
-            mask_proc.set_proxy_url(proxy_url, self.config.proxy.masked_url)
-
-        timeout_seconds = (
-            self.config.proxy.timeout_seconds
-            if self.config.proxy.enabled
-            else self.config.sort.download.timeout_seconds
+        self.runtime = runtime or build_runtime(
+            self.config,
+            http_cls=HttpClient,
+            scanner_cls=FileScanner,
+            aggregator_cls=DataAggregator,
+            organizer_cls=FileOrganizer,
+            mask_processor=get_mask_processor(),
         )
-
-        self.http = HttpClient(
-            proxy_url=proxy_url,
-            timeout_seconds=timeout_seconds,
-            max_concurrent=self.config.throttle_limit * 3,
-            max_retries=self.config.proxy.max_retries if self.config.proxy.enabled else 3,
-            cf_clearance=self.config.javlibrary.cookie_cf_clearance,
-            cf_user_agent=self.config.javlibrary.browser_user_agent,
-            verify_ssl=False,  # Most scraping sites have SSL issues; explicit trade-off
-        )
-        self.scanner = FileScanner(self.config.match)
-        self.aggregator = DataAggregator(self.config)
-        self.organizer = FileOrganizer(self.config, self.http)
+        self.http = self.runtime.http
+        self.scanner = self.runtime.scanner
+        self.aggregator = self.runtime.aggregator
+        self.organizer = self.runtime.organizer
 
         # Load all scrapers
         ScraperRegistry.load_all()
