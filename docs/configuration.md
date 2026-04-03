@@ -68,9 +68,11 @@ Why these defaults are safe:
 - Leaving proxy and aggressive downloads off reduces the number of moving parts.
 - Keeping source directory cleanup off makes first-run review easier.
 
+The shorter version for first-run use is in [Getting Started](./getting-started.md). This section is the fuller reference.
+
 ## File Locations
 
-The `locations` block stores path overrides:
+The `locations` block mixes active path overrides with two schema fields that are not currently used by the built-in CLI/runtime:
 
 ```yaml
 locations:
@@ -83,23 +85,29 @@ locations:
 
 What it controls:
 
-- `input` and `output` are available config fields, but the current CLI still expects explicit `sort SOURCE DEST` arguments
 - `thumb_csv` and `genre_csv` point to your override CSV files
 - `log` sets a custom log file path
 
+Current runtime truth:
+
+- `locations.input` and `locations.output` exist in the schema, but the built-in `find`, `sort`, and `update` commands do not currently read them
+- `sort` still requires explicit `SOURCE DEST` arguments on the command line
+- `thumb_csv`, `genre_csv`, and `log` are the path keys in this block that have clear current runtime effect
+
 Recommended default:
 
-- leave these blank until you have a reason to pin them
+- leave `thumb_csv`, `genre_csv`, and `log` blank until you have a reason to pin them
+- treat `input` and `output` as reserved/schema-only fields unless you have your own external tooling that reads them
 
 When to change it:
 
 - you want CSV templates in a non-default location
 - you want logs written to a specific file
-- you have your own wrapper scripts that depend on fixed paths
+- you have your own wrapper scripts or notes that depend on fixed paths outside the built-in CLI behavior
 
 Common mistakes:
 
-- assuming `locations.input` or `locations.output` replaces the required `sort SOURCE DEST` CLI arguments
+- assuming `locations.input` or `locations.output` changes built-in CLI source or destination behavior
 - pointing `thumb_csv` or `genre_csv` at files that do not exist yet
 
 ## Matching Modes
@@ -289,7 +297,6 @@ sort:
   metadata:
     nfo:
       create: true
-      per_file: true
       display_name: "[{id}] {title}"
       add_aliases: false
       add_generic_role: true
@@ -306,6 +313,12 @@ What it controls:
 - how the display title appears in the NFO
 - whether aliases, tags, roles, original path, or media info are added
 
+Current path behavior:
+
+- during `sort`, the NFO filename is derived from `sort.format.nfo`
+- during `update`, JavS reuses an existing `<video basename>.nfo` when it finds one, otherwise a single existing NFO in the folder, otherwise it falls back to `sort.format.nfo`
+- the schema still includes `sort.metadata.nfo.per_file`, but the current runtime does not consult that setting when choosing NFO paths
+
 Recommended default:
 
 - keep `create: true` and leave the extra enrichment flags off until you need them
@@ -318,6 +331,7 @@ When to change it:
 
 Common mistakes:
 
+- expecting `per_file` to change current NFO path generation by itself
 - expecting NFO-only changes to rename folders or files
 - enabling lots of metadata extras before checking whether your media server actually uses them
 

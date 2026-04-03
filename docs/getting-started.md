@@ -84,11 +84,11 @@ Then inspect the effective values:
 Safe starter defaults for a first run:
 
 - keep `match.mode: auto`
-- keep `scrapers.enabled.r18dev: true`
-- keep `scrapers.enabled.dmm: true`
-- keep `scrapers.enabled.javlibrary: false` until you know you need it
+- leave Javlibrary off until you know you need it
 - keep `proxy.enabled: false` unless you already know a source requires your proxy
 - keep `sort.cleanup_empty_source_dir: false` for the first real sort
+
+For the fuller starter-default explanation, use [Configuration](./configuration.md).
 
 ## First `find`
 

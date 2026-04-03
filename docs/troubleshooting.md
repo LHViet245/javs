@@ -174,11 +174,10 @@ Read the exact message. JavS reports distinct failures such as:
 - use a full URL with a scheme such as `http://` or `socks5://`
 - verify username and password if the proxy requires auth
 - confirm the host and port work outside JavS
-- make sure the relevant scraper is set to use the proxy in `scrapers.use_proxy`
 
 ### When To Move On
 
-If `proxy-test` passes but a scraper still fails, the issue is no longer the basic proxy setup. Check whether the target scraper is actually routed through the proxy.
+If `proxy-test` passes but a scraper still fails, the basic proxy config/connectivity check has already passed. The next thing to check is scraper-specific routing such as `scrapers.use_proxy`.
 
 ## Translation Provider Unavailable
 
