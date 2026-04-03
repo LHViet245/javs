@@ -24,25 +24,25 @@
 - 🧩 **Javlibrary Recovery:** When Javlibrary hits Cloudflare, you can refresh `cf_clearance` from the CLI (`./venv/bin/javs config javlibrary-cookie`) instead of editing YAML by hand; `browser_user_agent` is reused from config once saved.
 - 🛡️ **Type Safety:** Built on `pydantic` ensuring strict data validation for all metadata and configurations.
 
-## ⚠️ Quy tắc bắt buộc: Virtual Environment
+## ⚠️ Required: Virtual Environment
 
-> **Mọi thao tác cài đặt package, chạy code, và test đều PHẢI thực hiện trong môi trường ảo `venv`.**
+> **All package installs, app commands, and tests must run inside the local `venv`.**
 >
-> Sử dụng `./venv/bin/python` thay vì `python` của hệ thống.
+> Use `./venv/bin/python` instead of the system `python`.
 
 ```bash
-# Cài đặt package
+# Install packages
 ./venv/bin/pip install -e ".[dev]"
 
-# Chạy code
+# Run the app
 ./venv/bin/python -m javs
 ./venv/bin/javs --help
 
-# Chạy tests
+# Run tests
 ./venv/bin/python -m pytest tests/ -v
 ```
 
-Lối verification chuẩn của repo:
+Standard local verification command:
 
 ```bash
 ./scripts/verify_local.sh

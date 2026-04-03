@@ -100,7 +100,7 @@ Example `thumbs.csv`:
 
 ```csv
 FullName,JapaneseName,ThumbUrl
-Kamiki Rei,神木麗,https://example.com/rei.jpg
+Example Actress,Example Actress Native,https://example.com/rei.jpg
 ```
 
 To enter Javlibrary Cloudflare credentials without editing YAML manually:

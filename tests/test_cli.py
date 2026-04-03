@@ -138,7 +138,7 @@ class TestCliConfigCommand:
         result = runner.invoke(app, ["config", "javlibrary-test"])
 
         assert result.exit_code == 1
-        assert "Javlibrary credential chưa đầy đủ" in result.stdout
+        assert "Javlibrary credentials are incomplete" in result.stdout
 
     def test_config_javlibrary_test_runs_validator(self, monkeypatch, tmp_path: Path) -> None:
         cfg = JavsConfig()
@@ -166,7 +166,7 @@ class TestCliConfigCommand:
             "cf_clearance": "cf-cookie",
             "user_agent": "browser-ua",
         }
-        assert "Javlibrary credential hợp lệ." in result.stdout
+        assert "Javlibrary credentials are valid." in result.stdout
 
     def test_config_csv_paths_shows_effective_paths(self, monkeypatch, tmp_path: Path) -> None:
         cfg = JavsConfig()

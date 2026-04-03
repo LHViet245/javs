@@ -60,7 +60,7 @@ def _build_javlibrary_recovery_handler(cfg, config_path: Path):
         if not is_interactive_terminal():
             return None
         console.print(
-            "[yellow]Javlibrary đang bị Cloudflare block hoặc cf_clearance đã hết hạn.[/yellow]"
+            "[yellow]Javlibrary is blocked by Cloudflare, or cf_clearance has expired.[/yellow]"
         )
         return await configure_javlibrary_credentials(
             cfg,
@@ -431,18 +431,18 @@ def config(
         )
         if not credentials.cf_clearance or not credentials.browser_user_agent:
             console.print(
-                "[red]Javlibrary credential chưa đầy đủ. "
-                "Cần cf_clearance và browser_user_agent.[/red]"
+                "[red]Javlibrary credentials are incomplete. "
+                "Both cf_clearance and browser_user_agent are required.[/red]"
             )
             raise typer.Exit(1)
         try:
             asyncio.run(validate_javlibrary_credentials(cfg, credentials))
         except Exception as exc:
-            console.print(f"[red]Javlibrary credential test thất bại:[/red] {exc}")
+            console.print(f"[red]Javlibrary credential test failed:[/red] {exc}")
             if isinstance(exc, CloudflareBlockedError) and exc.guidance:
                 print_cloudflare_guidance(exc)
             raise typer.Exit(1) from exc
-        console.print("[green]Javlibrary credential hợp lệ.[/green]")
+        console.print("[green]Javlibrary credentials are valid.[/green]")
 
     elif action == "proxy-test":
         cfg = load_config(path)

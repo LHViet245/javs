@@ -7,7 +7,7 @@ config_version: 1
 
 # Processing limits
 throttle_limit: 1   # Max concurrent scraping tasks
-sleep: 2            # Global scrape cooldown; giữ 2s vì benchmark thật cho thấy vẫn hợp lý hơn việc hạ tiếp
+sleep: 2            # Global scrape cooldown; keep 2s because recent benchmarks still favor it
 
 # ─── File Locations ──────────────────────────────────────────────
 locations:
@@ -19,7 +19,7 @@ locations:
 
 # ─── File Matching ───────────────────────────────────────────────
 match:
-  mode: auto         # auto = regex built-in linh hoat, strict = uu tien precision, custom = dung regex ben duoi
+  mode: auto         # auto = flexible built-in regex, strict = precision-first, custom = use the regex below
   minimum_file_size_mb: 0
   included_extensions:
     - .asf

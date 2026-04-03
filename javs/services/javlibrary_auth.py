@@ -35,8 +35,8 @@ def is_interactive_terminal() -> bool:
 
 def notify_javlibrary_cookie_required() -> None:
     """Best-effort desktop notification for interactive Cloudflare recovery."""
-    title = "Javlibrary cần nhập cookie"
-    message = "Quay lại terminal để nhập cf_clearance và User-Agent."
+    title = "Javlibrary credentials required"
+    message = "Return to the terminal to enter cf_clearance and the browser User-Agent."
 
     try:
         if sys.platform == "darwin":
@@ -106,7 +106,7 @@ def prompt_for_javlibrary_credentials(
 
     if current_ua:
         browser_user_agent = current_ua.strip()
-        console.print("[cyan]Đang dùng browser User-Agent đã lưu trong config.[/cyan]")
+        console.print("[cyan]Reusing the browser User-Agent already saved in config.[/cyan]")
     else:
         browser_user_agent = typer.prompt(
             "Javlibrary browser User-Agent",
@@ -178,20 +178,20 @@ async def configure_javlibrary_credentials(
     )
 
     if prompt_on_missing and not typer.confirm(
-        "Javlibrary cần cf_clearance mới. Nhập ngay bây giờ?",
+        "Javlibrary needs a fresh cf_clearance value. Enter it now?",
         default=True,
     ):
         return None
 
     credentials = prompt_for_javlibrary_credentials(existing=existing)
     if credentials is None:
-        console.print("[red]Thiếu cf_clearance hoặc User-Agent. Không lưu cấu hình.[/red]")
+        console.print("[red]Missing cf_clearance or User-Agent. Config was not saved.[/red]")
         return None
 
     try:
         await validate_javlibrary_credentials(config, credentials)
     except Exception as exc:
-        console.print(f"[red]Javlibrary credential test thất bại.[/red] Lý do: {exc}")
+        console.print(f"[red]Javlibrary credential test failed.[/red] Reason: {exc}")
         if isinstance(exc, CloudflareBlockedError) and exc.guidance:
             print_cloudflare_guidance(exc)
         return None
@@ -199,5 +199,5 @@ async def configure_javlibrary_credentials(
     apply_javlibrary_credentials(config, credentials)
     if save_on_success:
         await asyncio.to_thread(save_config, config, config_path)
-    console.print("[green]Đã lưu Javlibrary cf_clearance và User-Agent.[/green]")
+    console.print("[green]Saved Javlibrary cf_clearance and browser User-Agent.[/green]")
     return credentials
