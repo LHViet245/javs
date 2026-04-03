@@ -1,114 +1,106 @@
-# JavS 🎬
+# JavS
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+JavS is a fast, async-native Python CLI for finding JAV metadata by ID, sorting files into a structured media library, generating sidecar files, and refreshing an existing library in place. Choose it when you want a local, scriptable workflow that stays filename-driven, makes scraper behavior explicit, and scales from one lookup to batch maintenance without turning the CLI into a one-off scraper script.
 
-> A fast, async-native Python CLI for scraping, organizing, and managing JAV media libraries.
+## Project Summary
 
-**JavS** is a complete, modern rewrite of [Javinizer](https://github.com/javinizer/Javinizer) in Python. It features a scalable architecture, high concurrency with `asyncio`, type safety with `pydantic`, and a robust plugin system for scrapers.
+JavS is built for repeatable library management. It searches enabled scrapers in parallel, normalizes metadata into typed models, writes `.nfo` and artwork alongside video files, and keeps sort and update behavior predictable through config-driven rules.
 
----
+## Who JavS Is For
 
-## ✨ Features
+- End users who want to test one movie ID, then sort a small folder safely before scaling up.
+- Power users who want explicit config, proxy control, Cloudflare helpers, and repeatable batch behavior.
+- Contributors who need a clear CLI entrypoint, local verification commands, and a path to deeper project context.
 
-- ⚡ **High Performance:** Fully asynchronous scraping (`aiohttp`) fetches from multiple sources simultaneously.
-- 🧩 **Plugin Architecture:** Easily extendable. Write a scraper class and it automatically integrates.
-- 🎯 **Smart Aggregation:** Fetches from multiple sites (DMM, R18Dev, JavLibrary, etc.) and seamlessly merges the best metadata based on your custom priority rules.
-- 🌐 **Translation Service:** Built-in async wrappers for `googletrans` and `deepl` to translate metadata automatically.
-- 🗂️ **Automated Organization:** Identifies IDs and Multi-parts (cd, pt, A/B) in filenames, downloads covers/posters, generates NFOs (Kodi/Emby/Jellyfin compatible), strictly organizes your media folders, and can remove an empty source directory after a successful sort.
-- 🧠 **Flexible Detection Modes:** Supports built-in automatic matching, a stricter precision-oriented mode, custom regex matching, and multipart detection.
-- 🗃️ **CSV Metadata Overrides:** Supports local `genres.csv` and `thumbs.csv` templates for genre normalization and actress thumbnail caching.
-- ♻️ **In-Place Metadata Refresh:** Re-scan an already sorted library to refresh NFO and metadata sidecars without moving video files, with optional image and trailer re-downloads.
-- ⚙️ **Config Sync:** Merge the latest default template into your local config while preserving supported overrides and YAML comments using `ruamel.yaml` (`./venv/bin/javs config sync`).
-- 🧩 **Javlibrary Recovery:** When Javlibrary hits Cloudflare, you can refresh `cf_clearance` from the CLI (`./venv/bin/javs config javlibrary-cookie`) instead of editing YAML by hand; `browser_user_agent` is reused from config once saved.
-- 🛡️ **Type Safety:** Built on `pydantic` ensuring strict data validation for all metadata and configurations.
+## What JavS Does Well
 
-## ⚠️ Required: Virtual Environment
+- Finds metadata for a single ID with `find`.
+- Sorts filename-driven libraries with `sort`.
+- Refreshes already organized libraries in place with `update`.
+- Merges results from multiple enabled scrapers instead of relying on one source.
+- Supports config sync, CSV template setup, proxy testing, and Javlibrary credential helpers.
+- Keeps the pipeline async-first and typed, which helps with speed and predictable behavior.
 
-> **All package installs, app commands, and tests must run inside the local `venv`.**
->
-> Use `./venv/bin/python` instead of the system `python`.
+## What JavS Does Not Do
 
-```bash
-# Install packages
-./venv/bin/pip install -e ".[dev]"
+- It does not infer IDs from folder names alone; the ID needs to be present in the filename.
+- It does not guarantee perfect metadata when source sites disagree or return incomplete data.
+- It is not a general-purpose media manager for arbitrary video collections without recognizable IDs.
+- It does not remove the need to review config choices before sorting a real library.
 
-# Run the app
-./venv/bin/python -m javs
-./venv/bin/javs --help
+## 5-Minute Quick Start
 
-# Run tests
-./venv/bin/python -m pytest tests/ -v
-```
-
-Standard local verification command:
+Set up the local environment and confirm the CLI works before touching a real library:
 
 ```bash
-./scripts/verify_local.sh
-```
-
-## 🚀 Quick Start
-
-1. **Clone & Setup:**
-
-```bash
-git clone https://github.com/LHViet245/javs.git
-cd javs
 python3 -m venv venv
 ./venv/bin/pip install -e ".[dev]"
-```
-
-2. **Run a Test Search:**
-
-```bash
+./venv/bin/javs --help
 ./venv/bin/javs find "ABP-420"
 ```
 
-3. **Organize a Directory:**
+If `find` returns metadata, JavS is installed correctly and at least one enabled scraper is responding.
+
+## First Safe Workflow
+
+1. Test one known ID with `find`:
+
+   ```bash
+   ./venv/bin/javs find "ABP-420"
+   ```
+
+2. Preview a sort before moving anything:
+
+   ```bash
+   ./venv/bin/javs sort /path/to/test-input /path/to/library --recurse --preview
+   ```
+
+3. Run a real sort on a small folder only after the preview looks right:
+
+   ```bash
+   ./venv/bin/javs sort /path/to/test-input /path/to/library --recurse
+   ```
+
+4. Inspect the results in the destination folder and confirm the renamed video, `.nfo`, and artwork look correct.
+
+5. Use `update` later when you want to refresh metadata in place without moving the video again:
+
+   ```bash
+   ./venv/bin/javs update /path/to/library --recurse
+   ```
+
+## Documentation Map by Role
+
+These are the role-based docs that this landing page points to:
+
+| Role | Start here |
+| --- | --- |
+| New user | [Getting Started](docs/getting-started.md) |
+| Configuring behavior | [Configuration](docs/configuration.md) |
+| Looking up commands | [Commands](docs/commands.md) |
+| Troubleshooting problems | [Troubleshooting](docs/troubleshooting.md) |
+| Contributing | [Contributor Guide](docs/contributor-guide.md) |
+
+Until those pages are fully split out, the current detailed references live in `docs/USAGE.md` and `docs/PLAYBOOK.md`.
+
+## Feature Overview
+
+- Async scraping across the enabled sources in your config.
+- File-name-driven ID detection, including multipart naming patterns.
+- `find`, `sort`, and `update` for lookup, organization, and in-place refreshes.
+- `config` subcommands for showing, editing, syncing, and initializing local settings.
+- `scrapers` for listing available scraper plugins.
+- Proxy and Javlibrary support helpers for environments that need them.
+- Optional translation support for metadata fields.
+- Typed configuration and model handling with `pydantic`.
+
+## Contributor and Verification Note
+
+Use the repository virtual environment for installs, app commands, and tests. Before opening a PR or handing work off, run the relevant checks from the repo root:
 
 ```bash
-./venv/bin/javs sort /path/to/unsorted /path/to/vidstream --recurse
+./venv/bin/python -m pytest tests -q
+./venv/bin/ruff check javs tests
 ```
 
-Use `sort.cleanup_empty_source_dir` in config or the `--cleanup-empty-source-dir` / `--no-cleanup-empty-source-dir`
-flags to control source-folder cleanup. JavS only removes the direct source directory, and only
-when the sort succeeds and that directory is empty.
-
-4. **Refresh an Existing Sorted Library:**
-
-```bash
-./venv/bin/javs update /path/to/vidstream --recurse
-./venv/bin/javs update /path/to/vidstream --recurse --refresh-images --refresh-trailer
-```
-
-5. **Initialize Local CSV Templates:**
-
-```bash
-./venv/bin/javs config init-csv
-./venv/bin/javs config csv-paths
-```
-
-## 📖 Documentation
-
-For detailed guides, please see the [**Usage Guide**](docs/USAGE.md).
-If you are new to JavS and want a practical, step-by-step workflow, start with the
-[**Everyday User Playbook**](docs/PLAYBOOK.md).
-
-- [Everyday User Playbook](docs/PLAYBOOK.md)
-- [Configuration Guide](docs/USAGE.md#%EF%B8%8F-configuration)
-- [Available Commands](docs/USAGE.md#-key-commands)
-- [Scraper Plugins](docs/USAGE.md#-available-scrapers)
-- [Development & Testing](docs/USAGE.md#%E2%9A%99%EF%B8%8F-development--testing)
-
-## 🏗️ Architecture
-
-- **Core Framework:** Python 3.11+, `asyncio`, `aiohttp`
-- **CLI Interface:** `Typer` / `Rich` for beautiful terminal output
-- **Data Models:** `Pydantic` validation
-- **Testing:** `pytest` + `pytest-asyncio` with local fixtures and mocked HTTP responses
-- **Logging:** Structured JSON logs via `structlog`
-
-## 🤝 Contributing
-
-Contributions are welcome! Please run `./scripts/verify_local.sh` before submitting a PR.
+For a full local verification pass, you can also run `./scripts/verify_local.sh`.
