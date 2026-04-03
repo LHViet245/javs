@@ -81,7 +81,7 @@ These are the role-based docs that this landing page points to:
 | Troubleshooting problems | [Troubleshooting](docs/troubleshooting.md) |
 | Contributing | [Contributor Guide](docs/contributor-guide.md) |
 
-Until those pages are fully split out, the current detailed references live in `docs/USAGE.md` and `docs/PLAYBOOK.md`.
+Legacy paths remain for continuity: `docs/USAGE.md` is the documentation index, and `docs/PLAYBOOK.md` is a slim compatibility page for older links and bookmarks.
 
 ## Feature Overview
 
@@ -100,7 +100,7 @@ Use the repository virtual environment for installs, app commands, and tests. Be
 
 ```bash
 ./venv/bin/python -m pytest tests -q
-./venv/bin/ruff check javs tests
+./venv/bin/python -m ruff check javs tests
 ```
 
 For a full local verification pass, you can also run `./scripts/verify_local.sh`.

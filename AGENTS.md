@@ -69,7 +69,13 @@ Repository-level instructions for Codex. Keep this file focused on durable repo 
 ## Doc Routing
 
 - `README.md`: public summary and quick start
-- `docs/USAGE.md`: user-facing CLI and config guide
+- `docs/getting-started.md`: end-user onboarding and safe first workflow
+- `docs/configuration.md`: practical configuration guide
+- `docs/commands.md`: CLI reference
+- `docs/troubleshooting.md`: symptom-based support guide
+- `docs/contributor-guide.md`: contributor entry point
+- `docs/USAGE.md`: documentation index kept for continuity
+- `docs/PLAYBOOK.md`: compatibility page kept for older links
 - `CONTEXT.md`: stable onboarding and architecture context
 - `report.md`: latest audit snapshot and verification evidence
 - `plan.md`: current follow-up priorities and roadmap

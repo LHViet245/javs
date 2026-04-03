@@ -58,7 +58,9 @@ The following risk-heavy modules improved recently and should now shift from
 
 ### P4. Documentation Hygiene
 
-- keep `README.md` and `docs/USAGE.md` aligned with actual CLI behavior
+- keep `README.md` as the public landing page and quick-start overview
+- keep the canonical user docs split across `docs/getting-started.md`, `docs/configuration.md`, `docs/commands.md`, `docs/troubleshooting.md`, and `docs/contributor-guide.md`
+- keep `docs/USAGE.md` as the continuity index and `docs/PLAYBOOK.md` as the compatibility page
 - keep `./scripts/verify_local.sh` as the single maintained local verification entrypoint
 - keep `CONTEXT.md` architectural and stable
 - keep `report.md` as the latest evidence snapshot

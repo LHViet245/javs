@@ -1,6 +1,6 @@
 # JavS Documentation Index
 
-This page stays in place for continuity, but it is no longer the full mixed manual. Use it as a navigation hub to the current canonical docs.
+This path stays in place for continuity and now serves as the navigation hub for the canonical docs below.
 
 ## Start Here By Role
 
@@ -32,11 +32,7 @@ This page stays in place for continuity, but it is no longer the full mixed manu
 - [Troubleshooting](./troubleshooting.md): symptom-based support guide
 - [Contributor Guide](./contributor-guide.md): contributor setup, verification, and repo rules
 
-Contributor verification still uses the maintained local entry point:
-
-```bash
-./scripts/verify_local.sh
-```
+Contributor verification still uses the maintained local entry point `./scripts/verify_local.sh`.
 
 ## Legacy Note
 
