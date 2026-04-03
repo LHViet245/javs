@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+CURRENT_CONFIG_VERSION = 1
+
 
 class RegexConfig(BaseModel):
     """Custom regex pattern for filename matching."""
@@ -281,6 +283,8 @@ class LogConfig(BaseModel):
 
 class JavsConfig(BaseModel):
     """Root configuration model for javs."""
+
+    config_version: int = CURRENT_CONFIG_VERSION
 
     # Processing
     throttle_limit: int = 1

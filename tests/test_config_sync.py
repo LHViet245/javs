@@ -20,6 +20,8 @@ class TestDefaultConfigTemplate:
             raw = yaml.safe_load(f)
 
         cfg = JavsConfig(**raw)
+        assert raw["config_version"] == 1
+        assert cfg.config_version == 1
         assert cfg.throttle_limit == 1
         assert cfg.sleep == 2
 
@@ -112,6 +114,8 @@ class TestSyncUserConfig:
         with open(target) as f:
             raw = yaml.safe_load(f)
         cfg = JavsConfig(**raw)
+        assert raw["config_version"] == 1
+        assert cfg.config_version == 1
         assert cfg.throttle_limit == 1
 
     def test_sync_preserves_user_overrides(self, tmp_path: Path) -> None:
@@ -132,6 +136,7 @@ class TestSyncUserConfig:
         with open(target) as f:
             merged = yaml.safe_load(f)
 
+        assert merged["config_version"] == 1
         assert merged["throttle_limit"] == 5
         assert merged["sleep"] == 10
 

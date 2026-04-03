@@ -3,6 +3,8 @@
 # Auto-aligned with JavsConfig Pydantic schema
 # ─────────────────────────────────────────────────────────────────
 
+config_version: 1
+
 # Processing limits
 throttle_limit: 1   # Max concurrent scraping tasks
 sleep: 2            # Global scrape cooldown; giữ 2s vì benchmark thật cho thấy vẫn hợp lý hơn việc hạ tiếp

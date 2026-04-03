@@ -6,6 +6,7 @@ from pathlib import Path
 
 from javs.config.deprecated import prune_deprecated_config_paths
 from javs.config.loader import get_default_config_path
+from javs.config.migrations import migrate_config_data
 from javs.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -80,7 +81,7 @@ def sync_user_config(config_path: Path | None = None) -> bool:
 
         # Merge user config into base config
         if user_config:
-            deep_update_dict(base_config, user_config)
+            deep_update_dict(base_config, migrate_config_data(user_config))
 
         # Save merged config back to user path
         with open(user_config_path, "w", encoding="utf-8") as f:

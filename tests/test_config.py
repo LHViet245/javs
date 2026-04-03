@@ -19,6 +19,7 @@ class TestJavsConfig:
     def test_default_config(self):
         """Default config should be valid."""
         config = JavsConfig()
+        assert config.config_version == 1
         assert config.throttle_limit == 1
         assert config.sleep == 2
         assert config.scrapers.enabled["r18dev"] is True
@@ -55,8 +56,18 @@ class TestJavsConfig:
 
         config = load_config(path)
 
+        assert config.config_version == 1
         assert config.match.mode == "custom"
         assert config.match.regex_enabled is True
+
+    def test_load_config_injects_current_config_version(self, tmp_path: Path) -> None:
+        path = tmp_path / "partial.yaml"
+        path.write_text(yaml.dump({"throttle_limit": 10}))
+
+        config = load_config(path)
+
+        assert config.config_version == 1
+        assert config.throttle_limit == 10
 
     def test_sort_format_defaults(self):
         """Sort format templates should match Javinizer defaults."""
@@ -111,6 +122,10 @@ class TestJavsConfig:
         save_config(config, path)
 
         loaded = load_config(path)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+        assert raw["config_version"] == 1
+        assert loaded.config_version == 1
         assert loaded.throttle_limit == 5
         assert loaded.sleep == 10
 

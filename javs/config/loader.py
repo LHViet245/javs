@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from javs.config.deprecated import find_deprecated_config_paths
+from javs.config.migrations import migrate_config_data
 from javs.config.models import JavsConfig
 from javs.utils.logging import get_logger
 
@@ -71,7 +72,7 @@ def load_config(path: Path | None = None) -> JavsConfig:
     for deprecated_path in deprecated_paths:
         logger.warning("deprecated_config_key_ignored", path=deprecated_path)
 
-    return JavsConfig(**raw)
+    return JavsConfig(**migrate_config_data(raw))
 
 
 def save_config(config: JavsConfig, path: Path | None = None) -> None:
@@ -86,7 +87,7 @@ def save_config(config: JavsConfig, path: Path | None = None) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    data = config.model_dump(exclude_defaults=False)
+    data = migrate_config_data(config.model_dump(exclude_defaults=False))
     yaml_rt = _load_ruamel_yaml()
 
     if path.exists():
