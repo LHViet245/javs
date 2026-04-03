@@ -2,17 +2,16 @@
 
 ## Scope
 
-- Snapshot date: 2026-03-24
-- Scope: current repository state after proxy hardening and translate pipeline follow-up
-- Focus: code health, verification status, remaining risk, and practical maturity
+- Snapshot date: 2026-04-03
+- Scope: current repository state after runtime seam, config migration, and verification workflow follow-up
+- Focus: code health, verification status, deferred-scope discipline, and practical maturity
 
 ## Verification Snapshot
 
 Commands used for the latest local snapshot:
 
 ```bash
-./venv/bin/python -m pytest tests -q
-./venv/bin/python -m ruff check javs tests
+./scripts/verify_local.sh
 ./venv/bin/javs --help
 ```
 
@@ -20,8 +19,8 @@ Latest observed results:
 
 | Item | Result | Notes |
 | --- | --- | --- |
-| Test suite | `295 passed` | Fast and stable local regression suite after proxy hardening follow-up |
-| Coverage | `82%` total | Last measured on 2026-03-23; not re-run in this verification pass |
+| Test suite | `363 passed` | Fast and stable local regression suite after runtime/config hardening follow-up |
+| Coverage | `82%` total | Last measured earlier; not re-run in this verification pass |
 | Ruff | `All checks passed!` | Lint baseline is currently clean |
 | CLI help | Main commands visible | `sort`, `update`, `find`, `config`, `scrapers` |
 
@@ -31,6 +30,9 @@ Latest observed results:
 - Async session lifecycle and proxy routing have been hardened with regression tests.
 - Proxy config now matches runtime behavior for retries, timeouts, diagnostics, and asset downloads.
 - Translation flow now supports NFO-only translation by default while keeping sort naming stable unless explicitly opted in.
+- `JavsEngine` now has a lightweight runtime seam that keeps orchestration behavior intact while making dependency injection easier in tests.
+- Config loading and sync now stamp a top-level `config_version` and route legacy shapes through an explicit migration helper.
+- Local verification now has one maintained entrypoint in `./scripts/verify_local.sh`.
 - Config sync, CSV helpers, Javlibrary credential management, and update-in-place flow are implemented.
 - Scraper registry and fixture-backed scraper tests make the codebase extensible.
 - The local test suite is strong enough to support refactors with reasonable confidence.
@@ -66,9 +68,26 @@ Recent repo state includes:
   - missing translation providers now surface a compact warning with install guidance
   - integration tests cover `find`, `sort`, `update`, and generated NFO output
 - schema-aligned config sync and default config cleanup
+- lightweight runtime/dependency seam for `JavsEngine`
+- explicit config version migration pipeline
+- maintained local verification script and doc alignment
 - Javlibrary helper commands and interactive recovery path
 - MGStage implementation plus fixture-backed tests
 - workspace cleanup: canonical `AGENTS.md`, removed duplicate `.agent` rule, removed stale `scripts/real_scrape_test.py`
+
+## Deferred Scope
+
+The following ideas borrowed from `javinizer-go` remain intentionally deferred:
+
+- database-backed history or metadata cache
+- TUI, API server, or web UI expansion
+- worker queue or job-runner architecture
+- broader product-surface expansion beyond the async CLI
+
+They are still valid ideas, but right now they do not beat runtime hardening,
+config resilience, and regression coverage for return on effort. JavS gets more
+value from staying sharp as a tested async CLI than from expanding into a wider
+platform surface early.
 
 ## Practical Assessment
 

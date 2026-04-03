@@ -64,6 +64,16 @@ The following risk-heavy modules improved recently and should now shift from
 - keep `report.md` as the latest evidence snapshot
 - keep `plan.md` short and action-oriented
 
+## Not Now
+
+The following ideas remain intentionally deferred because they do not currently
+beat runtime hardening, config resilience, and regression coverage for ROI:
+
+- database-backed history or metadata cache
+- TUI, API server, or web UI expansion
+- worker queue or job-runner architecture
+- broad product-surface growth beyond the async CLI
+
 ## Guardrails
 
 - do not refactor broad subsystems without regression coverage first
