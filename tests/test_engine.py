@@ -229,6 +229,37 @@ class TestJavsEngineLifecycle:
         assert raw.title == "Original Title"
         assert raw.field_sources == {"title": "dmm", "description": "dmm"}
 
+    def test_find_does_not_open_or_close_injected_http_runtime(self, monkeypatch):
+        """find() should assume an already-managed HTTP runtime and not own its lifecycle."""
+        monkeypatch.setattr("javs.core.engine.setup_logging", lambda **kwargs: None)
+        monkeypatch.setattr("javs.core.engine.ScraperRegistry.load_all", lambda: None)
+        http = _FakeHttpContext()
+        runtime = SimpleNamespace(
+            http=http,
+            scanner=object(),
+            aggregator=object(),
+            organizer=object(),
+        )
+        engine = JavsEngine(JavsConfig(), runtime=runtime)
+
+        monkeypatch.setattr(
+            "javs.core.engine.ScraperRegistry.get_enabled",
+            lambda *_args, **_kwargs: [SimpleNamespace(name="dmm")],
+        )
+
+        async def fake_run_scrapers(scrapers, movie_id):
+            del scrapers, movie_id
+            return [MovieData(id="ABP-420", title="Found", source="dmm")]
+
+        monkeypatch.setattr(engine, "_run_scrapers", fake_run_scrapers)
+
+        result = asyncio.run(engine.find("ABP-420", aggregate=False))
+
+        assert result is not None
+        assert result.id == "ABP-420"
+        assert http.enter_count == 0
+        assert http.exit_count == 0
+
     def test_sort_path_keeps_session_open_for_the_whole_batch(self, monkeypatch, tmp_path: Path):
         """sort_path() should open the shared session once for the whole batch."""
         config = JavsConfig(throttle_limit=2, sleep=0)
@@ -1371,5 +1402,71 @@ class TestJavsEngineLifecycle:
                 "source": str(scanned_file.path),
                 "id": "ABP-420",
                 "target": str(dest / "ABP-420 [Studio] - Preview Movie (2024)" / "ABP-420.mp4"),
+            }
+        ]
+
+    def test_sort_preview_resets_previous_preview_plan_between_runs(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Each preview run should replace stale preview rows instead of appending forever."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_files = [
+            ScannedFile(
+                path=source / "ABP-420.mp4",
+                filename="ABP-420.mp4",
+                basename="ABP-420",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="ABP-420",
+            ),
+            ScannedFile(
+                path=source / "SSIS-001.mp4",
+                filename="SSIS-001.mp4",
+                basename="SSIS-001",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="SSIS-001",
+            ),
+        ]
+        calls = {"count": 0}
+
+        def fake_scan(*_args, **_kwargs):
+            idx = calls["count"]
+            calls["count"] += 1
+            return [scanned_files[idx]]
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        monkeypatch.setattr(engine.scanner, "scan", fake_scan)
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+
+        first = asyncio.run(engine.sort_path(source, dest, preview=True))
+        second = asyncio.run(engine.sort_path(source, dest, preview=True))
+
+        assert [movie.id for movie in first] == ["ABP-420"]
+        assert [movie.id for movie in second] == ["SSIS-001"]
+        assert engine.last_preview_plan == [
+            {
+                "source": str(scanned_files[1].path),
+                "id": "SSIS-001",
+                "target": str(dest / "SSIS-001 [Studio] - SSIS-001 title (2024)" / "SSIS-001.mp4"),
             }
         ]

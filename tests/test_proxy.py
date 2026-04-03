@@ -326,6 +326,31 @@ class TestHttpClientRetryConfig:
 
         assert attempts["count"] == 4
 
+    @pytest.mark.asyncio
+    async def test_get_proxy_failure_never_leaks_raw_proxy_credentials(self, monkeypatch):
+        """Raised proxy failures should expose only sanitized proxy text."""
+        raw_proxy = "http://user:secret@1.2.3.4:8080"
+        client = HttpClient(proxy_url=raw_proxy, max_retries=1)
+
+        class BoomSession:
+            def get(self, *args, **kwargs):
+                del args, kwargs
+                raise RuntimeError(f"proxy unreachable via {raw_proxy}")
+
+        async def fake_get_session(use_proxy: bool = False):
+            del use_proxy
+            return BoomSession()
+
+        monkeypatch.setattr(client, "_get_session", fake_get_session)
+
+        with pytest.raises(ProxyConnectionFailedError) as excinfo:
+            await client.get("https://example.com", use_proxy=True)
+
+        message = str(excinfo.value)
+        assert "secret" not in message
+        assert "user" not in message
+        assert "***" in message
+
 
 class TestProxyDiagnostics:
     """Test proxy diagnostics helper behavior."""
@@ -439,6 +464,22 @@ class TestHttpClientSessionRouting:
         assert proxy.connector == "proxy-http-connector"
         assert direct is not proxy
         assert len(created_sessions) == 2
+
+    @pytest.mark.asyncio
+    async def test_close_closes_both_direct_and_proxy_sessions_and_resets_state(self):
+        """close() should shut down both sessions and clear cached handles."""
+        client = HttpClient(proxy_url="http://1.2.3.4:8080")
+        direct = _DummySession("direct")
+        proxy = _DummySession("proxy")
+        client._session_direct = direct
+        client._session_proxy = proxy
+
+        await client.close()
+
+        assert direct.closed is True
+        assert proxy.closed is True
+        assert client._session_direct is None
+        assert client._session_proxy is None
 
 
 class _FakeContent:
