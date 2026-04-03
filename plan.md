@@ -59,6 +59,7 @@ The following risk-heavy modules improved recently and should now shift from
 ### P4. Documentation Hygiene
 
 - keep `README.md` and `docs/USAGE.md` aligned with actual CLI behavior
+- keep `./scripts/verify_local.sh` as the single maintained local verification entrypoint
 - keep `CONTEXT.md` architectural and stable
 - keep `report.md` as the latest evidence snapshot
 - keep `plan.md` short and action-oriented
@@ -68,6 +69,7 @@ The following risk-heavy modules improved recently and should now shift from
 - do not refactor broad subsystems without regression coverage first
 - prefer fixing contracts and behavior over adding speculative features
 - treat runtime code and fresh verification as the source of truth
+- use `./scripts/verify_local.sh` for the standard local test-plus-lint pass
 - update the relevant doc when user-facing behavior or config contracts change
 
 ## Definition Of Progress

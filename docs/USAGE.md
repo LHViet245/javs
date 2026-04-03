@@ -282,6 +282,14 @@ The largest community database.
 
 JavS has a fast local test suite focused on mocked HTTP flows, parser fixtures, and core pipeline contracts.
 
+Use the maintained local verification entrypoint for the common pre-handoff check:
+
+```bash
+./scripts/verify_local.sh
+```
+
+It uses the repo-local virtualenv binaries and runs the standard test-plus-lint workflow.
+
 ```bash
 # Run full suite
 ./venv/bin/python -m pytest tests -q

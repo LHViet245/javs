@@ -42,6 +42,12 @@
 ./venv/bin/python -m pytest tests/ -v
 ```
 
+Lối verification chuẩn của repo:
+
+```bash
+./scripts/verify_local.sh
+```
+
 ## 🚀 Quick Start
 
 1. **Clone & Setup:**
@@ -105,4 +111,4 @@ If you are new to JavS and want a practical, step-by-step workflow, start with t
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please ensure all tests pass (`./venv/bin/python -m pytest tests -q`) and lint is clean (`./venv/bin/python -m ruff check javs tests`) before submitting a PR.
+Contributions are welcome! Please run `./scripts/verify_local.sh` before submitting a PR.
