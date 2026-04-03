@@ -28,6 +28,15 @@ DEFAULT_PATTERNS = [
     r"(T28)-(\d{3})",
 ]
 
+STRICT_PATTERNS = [
+    # Numeric prefix with explicit boundary: 259LUXU-1234
+    r"(?:^|[\s._\-\[(])(\d{3}[a-zA-Z]{3,5})-(\d{3,5})(?=$|[\s._\-\])]|[a-c](?=$|[\s._\-\])]))",
+    # Standard dashed IDs: ABC-123, SSIS-001
+    r"(?:^|[\s._\-\[(])([a-zA-Z]{2,10})-(\d{3,5})(?=$|[\s._\-\])]|[a-c](?=$|[\s._\-\])]))",
+    # Uncensored/FC2: 123456-789
+    r"(?:^|[\s._\-\[(])(\d{6,})-(\d{3,4})(?=$|[\s._\-\])]|[a-c](?=$|[\s._\-\])]))",
+]
+
 # Pattern for part/disc number detection
 PART_PATTERNS = [
     r"[-_. ](?:pt|part|cd|disc|disk)[-_. ]?(\d{1,2})",
@@ -171,11 +180,12 @@ class FileScanner:
         Returns:
             Tuple of (movie_id, part_number) or (None, None).
         """
-        # Use custom regex if enabled
-        if self.config.regex_enabled and self.config.regex:
+        if self.config.mode == "custom" and self.config.regex:
             return self._extract_with_custom_regex(filename)
+        if self.config.mode == "strict":
+            return self._extract_with_patterns(filename, STRICT_PATTERNS)
 
-        return self._extract_with_defaults(filename)
+        return self._extract_with_patterns(filename, DEFAULT_PATTERNS)
 
     def _extract_with_custom_regex(self, filename: str) -> tuple[str | None, int | None]:
         """Extract using user-configured regex pattern."""
@@ -199,12 +209,16 @@ class FileScanner:
 
         return movie_id, part
 
-    def _extract_with_defaults(self, filename: str) -> tuple[str | None, int | None]:
-        """Extract using built-in JAV ID patterns."""
+    def _extract_with_patterns(
+        self,
+        filename: str,
+        patterns: list[str],
+    ) -> tuple[str | None, int | None]:
+        """Extract using a provided ordered list of JAV ID patterns."""
         clean = filename.strip()
 
         # Try each pattern
-        for pattern in DEFAULT_PATTERNS:
+        for pattern in patterns:
             match = re.search(pattern, clean, re.IGNORECASE)
             if match:
                 prefix = match.group(1).upper()
@@ -213,20 +227,45 @@ class FileScanner:
                 movie_id = f"{prefix}-{number}"
 
                 # Check for part number
-                part = self._extract_part_number(clean)
+                part = self._extract_part_number(clean, movie_id)
                 return movie_id, part
 
         return None, None
 
     @staticmethod
-    def _extract_part_number(filename: str) -> int | None:
+    def _extract_part_number(filename: str, movie_id: str | None = None) -> int | None:
         """Extract part/disc number from filename."""
+        # 1. Standard explicit parts (cd1, pt2, etc)
         for pattern in PART_PATTERNS:
             match = re.search(pattern, filename, re.IGNORECASE)
             if match:
                 val = match.group(1)
                 if val.isdigit():
                     return int(val)
-                # Letter-based: a=1, b=2, c=3
-                return ord(val.lower()) - ord("a") + 1
+
+        # 2. Letter-based parts attached directly to movie_id (e.g., DVMM-377A, DVMM-377B)
+        # Exclude 'C' as standalone suffix because it's widely used for Chinese subtitles (-C, _C)
+        if movie_id:
+            # Reconstruct ID pattern to find immediate suffix
+            escaped_id = re.escape(movie_id)
+            # Match ID optionally without dash, followed immediately by A-C
+            # (we allow C if attached directly)
+            id_no_dash = re.escape(movie_id.replace("-", ""))
+
+            # e.g. DVMM-377A, DVMM-377B, DVMM377A
+            match = re.search(
+                rf"(?:{escaped_id}|{id_no_dash})[-_. ]?([a-c])\b",
+                filename,
+                re.IGNORECASE
+            )
+            if match:
+                val = match.group(1).lower()
+                # If there's a space or dash and it's 'c', it might be Chinese sub flag.
+                # Be conservative: only treat it as a part if A, B, or attached without space.
+                prefix_char = filename[match.start(1)-1] if match.start(1) > 0 else ''
+                if val == 'c' and prefix_char in ("-", "_", " "):
+                     pass # Likely subtitle flag, skip
+                else:
+                    return ord(val) - ord("a") + 1
+
         return None

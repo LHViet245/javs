@@ -1,9 +1,14 @@
 """Tests for Javlibrary scraper with mock HTML fixtures."""
 
+from __future__ import annotations
+
 from datetime import date
 
+import pytest
+
 from javs.models.movie import MovieData
-from javs.scrapers.javlibrary import JavlibraryScraper
+from javs.scrapers.javlibrary import JavlibraryJaScraper, JavlibraryScraper, JavlibraryZhScraper
+from javs.services.http import CloudflareBlockedError
 from javs.utils.html import parse_html
 
 # ─── Mock HTML detail page ──────────────────────────────────
@@ -111,6 +116,46 @@ SAMPLE_JAPANESE_ACTRESS_HTML = """
 </div>
 </body></html>
 """
+
+SAMPLE_DIRECT_MATCH_WITH_CANONICAL = """
+<html>
+<head>
+  <title>ABP-420 Detail - JAVLibrary</title>
+  <link rel="canonical" href="/en/?v=javme12345">
+</head>
+<body>
+<div id="video_id" class="item">
+  <table><tr><td class="header">ID:</td><td class="text">ABP-420</td></tr></table>
+</div>
+</body>
+</html>
+"""
+
+SAMPLE_DIRECT_MATCH_WITHOUT_CANONICAL = """
+<html>
+<head><title>ABP-420 Detail - JAVLibrary</title></head>
+<body>
+<div id="video_id" class="item">
+  <table><tr><td class="header">ID:</td><td class="text">ABP-420</td></tr></table>
+</div>
+</body>
+</html>
+"""
+
+
+class _FakeHttpClient:
+    def __init__(self, html: str) -> None:
+        self.html = html
+        self.calls: list[dict[str, object]] = []
+
+    async def get_cf(self, url: str, use_proxy: bool = False) -> str:
+        self.calls.append({"url": url, "use_proxy": use_proxy})
+        return self.html
+
+
+class _BlockedHttpClient:
+    async def get_cf(self, url: str, use_proxy: bool = False) -> str:
+        raise CloudflareBlockedError("blocked")
 
 
 class TestJavlibraryScraper:
@@ -232,6 +277,20 @@ class TestJavlibraryScraper:
         assert result.actresses[0].first_name is None
         assert result.actresses[0].last_name is None
 
+    @pytest.mark.asyncio
+    async def test_search_reraises_cloudflare_block(self):
+        scraper = JavlibraryScraper(http=_BlockedHttpClient())
+
+        with pytest.raises(CloudflareBlockedError):
+            await scraper.search("ABP-420")
+
+    @pytest.mark.asyncio
+    async def test_scrape_reraises_cloudflare_block(self):
+        scraper = JavlibraryScraper(http=_BlockedHttpClient())
+
+        with pytest.raises(CloudflareBlockedError):
+            await scraper.scrape("https://www.javlibrary.com/en/?v=javme12345")
+
     # ─── Cover URL ──────────────────────────────────────────
 
     def test_parse_cover_url(self):
@@ -257,6 +316,56 @@ class TestJavlibraryScraper:
         result = self._scrape_html(SAMPLE_DETAIL_HTML)
         for url in result.screenshot_urls:
             assert "jp-" in url  # '-' replaced with 'jp-'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scraper_cls", "html", "expected_url"),
+    [
+        (
+            JavlibraryScraper,
+            SAMPLE_DIRECT_MATCH_WITH_CANONICAL,
+            "https://www.javlibrary.com/en/?v=javme12345",
+        ),
+        (
+            JavlibraryScraper,
+            SAMPLE_DIRECT_MATCH_WITHOUT_CANONICAL,
+            "https://www.javlibrary.com/en/vl_searchbyid.php?keyword=ABP-420",
+        ),
+        (
+            JavlibraryJaScraper,
+            SAMPLE_DIRECT_MATCH_WITH_CANONICAL,
+            "https://www.javlibrary.com/ja/?v=javme12345",
+        ),
+        (
+            JavlibraryJaScraper,
+            SAMPLE_DIRECT_MATCH_WITHOUT_CANONICAL,
+            "https://www.javlibrary.com/ja/vl_searchbyid.php?keyword=ABP-420",
+        ),
+        (
+            JavlibraryZhScraper,
+            SAMPLE_DIRECT_MATCH_WITH_CANONICAL,
+            "https://www.javlibrary.com/cn/?v=javme12345",
+        ),
+        (
+            JavlibraryZhScraper,
+            SAMPLE_DIRECT_MATCH_WITHOUT_CANONICAL,
+            "https://www.javlibrary.com/cn/vl_searchbyid.php?keyword=ABP-420",
+        ),
+    ],
+)
+async def test_search_direct_match_returns_real_or_reusable_url(
+    scraper_cls,
+    html: str,
+    expected_url: str,
+):
+    """Direct-match search should never fall back to the fake _detail_ URL."""
+    scraper = scraper_cls(http=_FakeHttpClient(html))
+
+    result = await scraper.search("ABP-420")
+
+    assert result == expected_url
+    assert "_detail_" not in result
 
     # ─── Search Results Parsing ─────────────────────────────
 

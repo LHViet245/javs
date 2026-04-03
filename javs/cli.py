@@ -6,11 +6,15 @@ Replaces Javinizer's complex single-function CmdletBinding with clean subcommand
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from pathlib import Path
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group
+from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from javs import __version__
 
@@ -20,6 +24,117 @@ app = typer.Typer(
     add_completion=True,
 )
 console = Console()
+
+_DIAGNOSTIC_MESSAGES = {
+    "proxy_auth_failed": "proxy auth failed",
+    "proxy_unreachable": "proxy unreachable",
+    "cloudflare_blocked": "Cloudflare blocked",
+    "translation_provider_unavailable": "translation provider unavailable",
+    "translation_config_invalid": "translation config invalid",
+}
+
+_DIAGNOSTIC_HINTS = {
+    "proxy_auth_failed": "Next: run `javs config proxy-test`.",
+    "proxy_unreachable": "Next: run `javs config proxy-test`.",
+    "cloudflare_blocked": "Next: run `javs config javlibrary-cookie`.",
+    "translation_provider_unavailable": (
+        "Next: install translation extras with `./venv/bin/pip install -e \".[translate]\"`."
+    ),
+    "translation_config_invalid": "Next: update `sort.metadata.nfo.translate` in your config.",
+}
+
+
+def _resolve_config_path(config_path: Path | None) -> Path:
+    from javs.config.loader import get_default_config_path
+
+    return config_path or get_default_config_path()
+
+
+def _build_javlibrary_recovery_handler(cfg, config_path: Path):
+    from javs.services.javlibrary_auth import (
+        configure_javlibrary_credentials,
+        is_interactive_terminal,
+    )
+
+    async def recover(_error) -> object | None:
+        if not is_interactive_terminal():
+            return None
+        console.print(
+            "[yellow]Javlibrary đang bị Cloudflare block hoặc cf_clearance đã hết hạn.[/yellow]"
+        )
+        return await configure_javlibrary_credentials(
+            cfg,
+            config_path,
+            prompt_on_missing=True,
+            send_notification=True,
+            save_on_success=True,
+        )
+
+    return recover
+
+
+def _status_context(message: str):
+    from javs.services.javlibrary_auth import is_interactive_terminal
+
+    if is_interactive_terminal():
+        return nullcontext()
+    return console.status(message, spinner="dots")
+
+
+def _print_run_diagnostics(engine) -> None:
+    """Render compact warnings collected during the last engine run."""
+    diagnostics = getattr(engine, "last_run_diagnostics", [])
+    if not diagnostics:
+        return
+
+    console.print("[yellow]Warnings:[/yellow]")
+    printed_hints: set[str] = set()
+    for item in diagnostics:
+        scraper = item.get("scraper", "unknown")
+        kind = item.get("kind", "")
+        message = _DIAGNOSTIC_MESSAGES.get(kind, kind.replace("_", " "))
+        console.print(f"- {scraper}: {message}")
+        detail = item.get("detail")
+        if detail:
+            console.print(f"  {detail}")
+        hint = _DIAGNOSTIC_HINTS.get(kind)
+        if hint and hint not in printed_hints:
+            console.print(f"  {escape(hint)}")
+            printed_hints.add(hint)
+
+
+def _print_run_summary(engine) -> None:
+    """Render a compact batch summary for sort/update commands."""
+    summary = getattr(engine, "last_run_summary", None)
+    if not summary:
+        return
+
+    warning_label = "warning" if summary["warnings"] == 1 else "warnings"
+    console.print(
+        "[bold]Summary:[/bold] "
+        f"{summary['total']} scanned, "
+        f"{summary['processed']} processed, "
+        f"{summary['skipped']} skipped, "
+        f"{summary['failed']} failed, "
+        f"{summary['warnings']} {warning_label}"
+    )
+
+
+def _print_preview_plan(engine) -> None:
+    """Render planned preview actions for sort/update dry runs."""
+    preview_plan = getattr(engine, "last_preview_plan", [])
+    if not preview_plan:
+        return
+
+    table = Table(title="Preview Plan")
+    table.add_column("Source", style="cyan", overflow="fold")
+    table.add_column("ID", style="white")
+    table.add_column("Target", style="green", overflow="fold")
+
+    for item in preview_plan:
+        table.add_row(item["source"], item["id"], item["target"])
+
+    console.print(table)
 
 
 def version_callback(value: bool) -> None:
@@ -49,6 +164,11 @@ def sort(
     recurse: bool = typer.Option(False, "--recurse", "-r", help="Scan subdirectories."),
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files."),
     preview: bool = typer.Option(False, "--preview", "-p", help="Dry run: show what would happen."),
+    cleanup_empty_source_dir: bool | None = typer.Option(
+        None,
+        "--cleanup-empty-source-dir/--no-cleanup-empty-source-dir",
+        help="Remove empty source directories after a successful sort.",
+    ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """📂 Scan, scrape, and sort video files into an organized library."""
@@ -56,10 +176,26 @@ def sort(
     from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(cfg)
+    effective_cleanup_empty_source_dir = (
+        cleanup_empty_source_dir
+        if cleanup_empty_source_dir is not None
+        else cfg.sort.cleanup_empty_source_dir
+    )
+    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
+        cfg, _resolve_config_path(config_path)
+    ))
 
-    with console.status("[bold green]Sorting files...", spinner="dots"):
-        results = asyncio.run(engine.sort_path(source, dest, recurse, force, preview))
+    with _status_context("[bold green]Sorting files..."):
+        results = asyncio.run(
+            engine.sort_path(
+                source,
+                dest,
+                recurse,
+                force,
+                preview,
+                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+            )
+        )
 
     if results:
         table = Table(title=f"✅ Sorted {len(results)} files")
@@ -73,6 +209,82 @@ def sort(
         console.print(table)
     else:
         console.print("[yellow]No files were processed.[/yellow]")
+
+    if preview:
+        _print_preview_plan(engine)
+    _print_run_summary(engine)
+    _print_run_diagnostics(engine)
+
+
+@app.command("update")
+def update(
+    source: Path = typer.Argument(..., help="Sorted library root or a single video file."),
+    recurse: bool = typer.Option(False, "--recurse", "-r", help="Scan subdirectories."),
+    scrapers: str | None = typer.Option(
+        None, "--scrapers", "-s", help="Comma-separated scraper names to use."
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Overwrite existing sidecars and downloads during update.",
+    ),
+    refresh_images: bool = typer.Option(
+        False,
+        "--refresh-images",
+        help="Re-download existing cover, poster, actress, and screenshot images.",
+    ),
+    refresh_trailer: bool = typer.Option(
+        False,
+        "--refresh-trailer",
+        help="Re-download existing trailer files when metadata has a trailer URL.",
+    ),
+    preview: bool = typer.Option(False, "--preview", "-p", help="Dry run: show what would happen."),
+    config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
+) -> None:
+    """♻️ Refresh metadata sidecars for an already-sorted library without moving files."""
+    from javs.config import load_config
+    from javs.core.engine import JavsEngine
+
+    cfg = load_config(config_path)
+    engine = JavsEngine(
+        cfg,
+        cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
+            cfg, _resolve_config_path(config_path)
+        ),
+    )
+    scraper_list = scrapers.split(",") if scrapers else None
+
+    with _status_context("[bold green]Updating sorted library..."):
+        results = asyncio.run(
+            engine.update_path(
+                source,
+                recurse=recurse,
+                force=force,
+                preview=preview,
+                scraper_names=scraper_list,
+                refresh_images=refresh_images,
+                refresh_trailer=refresh_trailer,
+            )
+        )
+
+    if results:
+        table = Table(title=f"♻️ Updated {len(results)} files")
+        table.add_column("ID", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Studio", style="green")
+
+        for data in results:
+            table.add_row(data.id, data.title or "—", data.maker or "—")
+
+        console.print(table)
+    else:
+        console.print("[yellow]No files were updated.[/yellow]")
+
+    if preview:
+        _print_preview_plan(engine)
+    _print_run_summary(engine)
+    _print_run_diagnostics(engine)
 
 
 @app.command()
@@ -90,12 +302,14 @@ def find(
     from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(cfg)
+    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
+        cfg, _resolve_config_path(config_path)
+    ))
 
     scraper_list = scrapers.split(",") if scrapers else None
 
-    with console.status("[bold cyan]Searching...", spinner="dots"):
-        data = asyncio.run(engine.find(movie_id, scraper_names=scraper_list))
+    with _status_context("[bold cyan]Searching..."):
+        data = asyncio.run(engine.find_one(movie_id, scraper_names=scraper_list))
 
     if not data:
         console.print(f"[red]No results found for {movie_id}[/red]")
@@ -111,21 +325,37 @@ def find(
     else:
         _display_movie_data(data)
 
+    _print_run_diagnostics(engine)
+
 
 @app.command()
 def config(
-    action: str = typer.Argument("show", help="Action: show, edit, create, path."),
+    action: str = typer.Argument(
+        "show",
+        help=(
+            "Action: show, edit, create, path, sync, csv-paths, "
+            "init-csv, javlibrary-cookie, javlibrary-test, proxy-test."
+        ),
+    ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """⚙️ Manage configuration."""
     from javs.config import create_default_config, load_config
-    from javs.config.loader import get_default_config_path
+    from javs.services.http import CloudflareBlockedError
+    from javs.services.javlibrary_auth import (
+        configure_javlibrary_credentials,
+        print_cloudflare_guidance,
+        validate_javlibrary_credentials,
+    )
+    from javs.services.proxy_diagnostics import run_proxy_diagnostics
 
-    path = config_path or get_default_config_path()
+    path = _resolve_config_path(config_path)
 
     if action == "show":
+        from javs.config import redact_config_for_display
+
         cfg = load_config(path)
-        console.print(cfg.model_dump_json(indent=2))
+        console.print_json(data=redact_config_for_display(cfg))
 
     elif action == "create":
         create_default_config(path)
@@ -135,12 +365,96 @@ def config(
         console.print(str(path))
 
     elif action == "edit":
+        import os
         import subprocess
 
-        editor = "nano"
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "nano"))
         if not path.exists():
             create_default_config(path)
         subprocess.run([editor, str(path)])
+
+    elif action == "sync":
+        from javs.config.updater import sync_user_config
+        console.print("[yellow]Syncing configuration setup with default template...[/yellow]")
+        success = sync_user_config(config_path=path)
+        if success:
+            console.print(
+                f"[green]Successfully synced and upgraded local config file at {path}[/green]"
+            )
+        else:
+            console.print("[red]Failed to sync configuration. Check logs for details.[/red]")
+            raise typer.Exit(1)
+
+    elif action == "csv-paths":
+        from javs.config.csv_templates import get_effective_csv_paths
+
+        cfg = load_config(path)
+        csv_paths = get_effective_csv_paths(cfg, path)
+        console.print("[bold]CSV Paths[/bold]")
+        for filename, csv_path in csv_paths.items():
+            exists = "yes" if csv_path.exists() else "no"
+            console.print(f"{filename}: {csv_path} (exists: {exists})", soft_wrap=True)
+
+    elif action == "init-csv":
+        from javs.config.csv_templates import init_csv_templates
+
+        cfg = load_config(path)
+        result = init_csv_templates(cfg, path)
+        for created in result.created:
+            console.print(f"[green]Created CSV template:[/green] {created}", soft_wrap=True)
+        for existing in result.existing:
+            console.print(f"[yellow]CSV already exists:[/yellow] {existing}", soft_wrap=True)
+        console.print(f"[cyan]genres.csv:[/cyan] {result.genre_csv_path}", soft_wrap=True)
+        console.print(f"[cyan]thumbs.csv:[/cyan] {result.thumb_csv_path}", soft_wrap=True)
+
+    elif action == "javlibrary-cookie":
+        cfg = load_config(path)
+        credentials = asyncio.run(
+            configure_javlibrary_credentials(
+                cfg,
+                path,
+                prompt_on_missing=False,
+                send_notification=False,
+                save_on_success=True,
+            )
+        )
+        if credentials is None:
+            raise typer.Exit(1)
+
+    elif action == "javlibrary-test":
+        from javs.services.javlibrary_auth import JavlibraryCredentials
+
+        cfg = load_config(path)
+        credentials = JavlibraryCredentials(
+            cf_clearance=cfg.javlibrary.cookie_cf_clearance.strip(),
+            browser_user_agent=cfg.javlibrary.browser_user_agent.strip(),
+        )
+        if not credentials.cf_clearance or not credentials.browser_user_agent:
+            console.print(
+                "[red]Javlibrary credential chưa đầy đủ. "
+                "Cần cf_clearance và browser_user_agent.[/red]"
+            )
+            raise typer.Exit(1)
+        try:
+            asyncio.run(validate_javlibrary_credentials(cfg, credentials))
+        except Exception as exc:
+            console.print(f"[red]Javlibrary credential test thất bại:[/red] {exc}")
+            if isinstance(exc, CloudflareBlockedError) and exc.guidance:
+                print_cloudflare_guidance(exc)
+            raise typer.Exit(1) from exc
+        console.print("[green]Javlibrary credential hợp lệ.[/green]")
+
+    elif action == "proxy-test":
+        cfg = load_config(path)
+        result = asyncio.run(run_proxy_diagnostics(cfg))
+        if result.ok:
+            console.print(f"[green]{result.message}[/green]")
+            return
+
+        console.print(f"[red]{result.message}[/red]")
+        if result.detail:
+            console.print(result.detail)
+        raise typer.Exit(1)
 
     else:
         console.print(f"[red]Unknown action: {action}[/red]")
@@ -165,40 +479,142 @@ def scrapers() -> None:
 
 
 def _display_movie_data(data) -> None:
-    """Pretty-print movie data to console."""
-    from rich.panel import Panel
+    """Render movie data with a compact hero-and-details layout."""
 
-    lines = []
-    lines.append(f"[bold cyan]ID:[/bold cyan] {data.id}")
-    if data.title:
-        lines.append(f"[bold]Title:[/bold] {data.title}")
+    def shorten_url(url: str, limit: int = 72) -> str:
+        if len(url) <= limit:
+            return url
+        return f"{url[:limit - 3]}..."
+
+    field_sources = data.field_sources or {}
+
+    def with_source(value: str, field_name: str | None = None) -> Text:
+        text = Text(value)
+        if field_name:
+            source = field_sources.get(field_name)
+            if source:
+                text.append(f" [{source}]", style="dim")
+        return text
+
+    def add_pair_row(
+        table: Table,
+        left: tuple[str, str, str] | None,
+        right: tuple[str, str, str] | None = None,
+    ) -> None:
+        row: list[Text] = []
+        if left:
+            row.extend([Text(left[0], style="bold cyan"), with_source(left[1], left[2])])
+        else:
+            row.extend([Text(""), Text("")])
+        if right:
+            row.extend([Text(right[0], style="bold cyan"), with_source(right[1], right[2])])
+        else:
+            row.extend([Text(""), Text("")])
+        table.add_row(*row)
+
+    meta = Table.grid(expand=True, padding=(0, 1))
+    meta.add_column(style="bold cyan", no_wrap=True)
+    meta.add_column(ratio=1)
+    meta.add_column(style="bold cyan", no_wrap=True)
+    meta.add_column(justify="right", ratio=1)
+    meta.add_row(
+        Text("ID", style="bold cyan"),
+        with_source(data.id, "id"),
+        Text("Source", style="bold cyan"),
+        Text(data.source or "-", style="dim"),
+    )
+
+    hero = Table.grid(expand=True, padding=(0, 0))
+    hero.add_column(ratio=1)
+    title_text = with_source(data.title or data.id, "title")
+    title_text.stylize("bold")
+    hero.add_row(title_text)
     if data.alternate_title:
-        lines.append(f"[bold]Alt Title:[/bold] {data.alternate_title}")
-    if data.maker:
-        lines.append(f"[bold]Studio:[/bold] {data.maker}")
-    if data.label:
-        lines.append(f"[bold]Label:[/bold] {data.label}")
-    if data.series:
-        lines.append(f"[bold]Series:[/bold] {data.series}")
-    if data.director:
-        lines.append(f"[bold]Director:[/bold] {data.director}")
-    if data.release_date:
-        lines.append(f"[bold]Release:[/bold] {data.release_date}")
-    if data.runtime:
-        lines.append(f"[bold]Runtime:[/bold] {data.runtime} min")
-    if data.rating:
-        lines.append(f"[bold]Rating:[/bold] {data.rating.rating}/10 ({data.rating.votes} votes)")
-    if data.genres:
-        lines.append(f"[bold]Genres:[/bold] {', '.join(data.genres)}")
-    if data.actresses:
-        actress_names = [a.full_name for a in data.actresses]
-        lines.append(f"[bold]Actresses:[/bold] {', '.join(actress_names)}")
-    if data.description:
-        desc = data.description[:200] + "..." if len(data.description) > 200 else data.description
-        lines.append(f"\n[dim]{desc}[/dim]")
+        original_title = Text("Original: ", style="dim")
+        original_title.append_text(with_source(data.alternate_title, "alternate_title"))
+        original_title.stylize("dim", 0, len("Original: "))
+        hero.add_row(original_title)
 
-    content = "\n".join(lines)
-    console.print(Panel(content, title=f"🎬 {data.id}", border_style="cyan"))
+    details = Table.grid(expand=True, padding=(0, 2))
+    details.add_column(style="bold cyan", no_wrap=True)
+    details.add_column(ratio=1, overflow="fold")
+    details.add_column(style="bold cyan", no_wrap=True)
+    details.add_column(ratio=1, overflow="fold")
+
+    rating_text = None
+    if data.rating:
+        rating_text = (
+            f"{data.rating.rating}/10 ({data.rating.votes} votes)"
+            if data.rating.votes is not None
+            else f"{data.rating.rating}/10"
+        )
+
+    actress_names = None
+    if data.actresses:
+        actress_names = ", ".join(actress.full_name for actress in data.actresses)
+
+    pair_rows = [
+        (("Studio", data.maker, "maker") if data.maker else None,
+         ("Label", data.label, "label") if data.label else None),
+        (("Release Date", data.release_date.isoformat(), "release_date")
+         if data.release_date
+         else None,
+         None),
+        (("Runtime", f"{data.runtime} min", "runtime") if data.runtime else None,
+         ("Rating", rating_text, "rating") if rating_text else None),
+        (("Director", data.director, "director") if data.director else None,
+         ("Actresses", actress_names, "actresses") if actress_names else None),
+    ]
+    for left, right in pair_rows:
+        if left or right:
+            add_pair_row(details, left, right)
+
+    long_rows = Table.grid(expand=True, padding=(0, 2))
+    long_rows.add_column(style="bold cyan", no_wrap=True)
+    long_rows.add_column(ratio=1, overflow="fold")
+    if data.genres:
+        long_rows.add_row(
+            Text("Genres", style="bold cyan"),
+            with_source(", ".join(data.genres), "genres"),
+        )
+    if data.series:
+        long_rows.add_row(
+            Text("Series", style="bold cyan"),
+            with_source(data.series, "series"),
+        )
+    if data.cover_url:
+        long_rows.add_row(
+            Text("Cover", style="bold cyan"), with_source(shorten_url(data.cover_url), "cover_url")
+        )
+    if data.trailer_url:
+        long_rows.add_row(
+            Text("Trailer", style="bold cyan"),
+            with_source(shorten_url(data.trailer_url), "trailer_url"),
+        )
+    if data.screenshot_urls:
+        long_rows.add_row(
+            Text("Screenshots", style="bold cyan"),
+            with_source(str(len(data.screenshot_urls)), "screenshot_urls"),
+        )
+
+    renderables: list[object] = [meta, Text(""), hero]
+    if details.rows:
+        renderables.append(Text(""))
+        renderables.append(details)
+    if long_rows.rows:
+        renderables.append(Text(""))
+        renderables.append(long_rows)
+    if data.description:
+        description_label = Text("Description", style="bold cyan")
+        description_value = with_source(data.description, "description")
+        description = Table.grid(expand=True)
+        description.add_column(ratio=1, overflow="fold")
+        description.add_row(description_label)
+        description.add_row(description_value)
+        renderables.append(Text(""))
+        renderables.append(description)
+
+    console.print(Panel(Group(*renderables), title=f"Find Result · {data.id}", border_style="cyan"))
 
 
 if __name__ == "__main__":

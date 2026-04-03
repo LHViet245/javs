@@ -176,3 +176,9 @@ Thumbs.db
 # Project Specific
 javs/data/default_config.yaml  # Important: Ignore user's credentials!
 test_real.py
+test_impersonate.log
+.agent/
+# Linter & Formatter caches
+.ruff_cache/
+.gitnexus
+.worktrees/

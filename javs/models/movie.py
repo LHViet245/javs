@@ -70,8 +70,12 @@ class MovieData(BaseModel):
     genres: list[str] = Field(default_factory=list)
     actresses: list[Actress] = Field(default_factory=list)
     cover_url: str | None = None
+    cover_source: str | None = None
+    field_sources: dict[str, str] = Field(default_factory=dict)
     screenshot_urls: list[str] = Field(default_factory=list)
+    screenshot_source: str | None = None
     trailer_url: str | None = None
+    trailer_source: str | None = None
     tags: list[str] = Field(default_factory=list)
     tagline: str | None = None
     credits: list[str] = Field(default_factory=list)
@@ -103,21 +107,8 @@ class ScraperSourceEnum(StrEnum):
     """Enumeration of all supported scraper sources."""
 
     DMM = "dmm"
-    DMM_JA = "dmmja"
     R18DEV = "r18dev"
     JAVLIBRARY = "javlibrary"
     JAVLIBRARY_JA = "javlibraryja"
     JAVLIBRARY_ZH = "javlibraryzh"
-    JAVBUS = "javbus"
-    JAVBUS_JA = "javbusja"
-    JAVBUS_ZH = "javbuszh"
-    JAVDB = "javdb"
-    JAVDB_ZH = "javdbzh"
-    JAV321_JA = "jav321ja"
     MGSTAGE_JA = "mgstageja"
-    AVENTERTAINMENT = "aventertainment"
-    AVENTERTAINMENT_JA = "aventertainmentja"
-    TOKYOHOT = "tokyohot"
-    TOKYOHOT_JA = "tokyohotja"
-    TOKYOHOT_ZH = "tokyohotzh"
-    DLGETCHU_JA = "dlgetchuja"

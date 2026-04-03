@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from javs.config.models import JavsConfig
-from javs.models.movie import MovieData
+from javs.models.movie import Actress, ActressAlias, MovieData
 from javs.utils.logging import get_logger
 from javs.utils.string import clean_title, format_template
 
@@ -29,6 +29,9 @@ class DataAggregator:
         self._genre_map: dict[str, str] | None = None
         self._genre_ignore: list[re.Pattern] | None = None
         self._thumb_cache: dict[str, str] | None = None
+        self._thumb_known_names: set[str] | None = None
+        self._auto_added_genres: set[str] = set()
+        self._auto_added_thumb_names: set[str] = set()
 
     def merge(self, results: list[MovieData]) -> MovieData:
         """Merge multiple MovieData objects into one based on priority.
@@ -44,6 +47,19 @@ class DataAggregator:
 
         if len(results) == 1:
             merged = results[0].model_copy(deep=True)
+            self._backfill_field_sources_from_source(merged)
+            if merged.cover_url and not merged.cover_source and merged.source:
+                merged.cover_source = merged.source
+            if merged.screenshot_urls and not merged.screenshot_source and merged.source:
+                merged.screenshot_source = merged.source
+            if merged.trailer_url and not merged.trailer_source and merged.source:
+                merged.trailer_source = merged.source
+            if merged.cover_url and merged.cover_source:
+                merged.field_sources["cover_url"] = merged.cover_source
+            if merged.screenshot_urls and merged.screenshot_source:
+                merged.field_sources["screenshot_urls"] = merged.screenshot_source
+            if merged.trailer_url and merged.trailer_source:
+                merged.field_sources["trailer_url"] = merged.trailer_source
             self._post_process(merged)
             return merged
 
@@ -56,37 +72,73 @@ class DataAggregator:
         merged = MovieData()
 
         # Merge each field by priority
-        merged.id = self._pick_field(source_map, priority.id, "id")
-        merged.content_id = self._pick_field(source_map, priority.content_id, "content_id")
-        merged.title = self._pick_field(source_map, priority.title, "title")
-        merged.alternate_title = self._pick_field(
+        merged.id, source = self._pick_field_with_source(source_map, priority.id, "id")
+        self._set_field_source(merged, "id", source)
+        merged.content_id, source = self._pick_field_with_source(
+            source_map, priority.content_id, "content_id"
+        )
+        self._set_field_source(merged, "content_id", source)
+        merged.title, source = self._pick_field_with_source(source_map, priority.title, "title")
+        self._set_field_source(merged, "title", source)
+        merged.alternate_title, source = self._pick_field_with_source(
             source_map, priority.alternate_title, "alternate_title"
         )
-        merged.description = self._pick_field(source_map, priority.description, "description")
-        merged.director = self._pick_field(source_map, priority.director, "director")
-        merged.maker = self._pick_field(source_map, priority.maker, "maker")
-        merged.label = self._pick_field(source_map, priority.label, "label")
-        merged.series = self._pick_field(source_map, priority.series, "series")
-        merged.runtime = self._pick_field(source_map, priority.runtime, "runtime")
-        merged.trailer_url = self._pick_field(source_map, priority.trailer_url, "trailer_url")
+        self._set_field_source(merged, "alternate_title", source)
+        merged.description, source = self._pick_field_with_source(
+            source_map, priority.description, "description"
+        )
+        self._set_field_source(merged, "description", source)
+        merged.director, source = self._pick_field_with_source(
+            source_map, priority.director, "director"
+        )
+        self._set_field_source(merged, "director", source)
+        merged.maker, source = self._pick_field_with_source(source_map, priority.maker, "maker")
+        self._set_field_source(merged, "maker", source)
+        merged.label, source = self._pick_field_with_source(source_map, priority.label, "label")
+        self._set_field_source(merged, "label", source)
+        merged.series, source = self._pick_field_with_source(source_map, priority.series, "series")
+        self._set_field_source(merged, "series", source)
+        merged.runtime, source = self._pick_field_with_source(
+            source_map, priority.runtime, "runtime"
+        )
+        self._set_field_source(merged, "runtime", source)
+        merged.trailer_url, merged.trailer_source = self._pick_field_with_source(
+            source_map, priority.trailer_url, "trailer_url"
+        )
+        self._set_field_source(merged, "trailer_url", merged.trailer_source)
 
         # Date
-        merged.release_date = self._pick_field(source_map, priority.release_date, "release_date")
+        merged.release_date, source = self._pick_field_with_source(
+            source_map, priority.release_date, "release_date"
+        )
+        self._set_field_source(merged, "release_date", source)
 
         # Rating (object, not scalar)
-        merged.rating = self._pick_field(source_map, priority.rating, "rating")
+        merged.rating, source = self._pick_field_with_source(source_map, priority.rating, "rating")
+        self._set_field_source(merged, "rating", source)
 
         # Cover URL
-        merged.cover_url = self._pick_field(source_map, priority.cover_url, "cover_url")
+        merged.cover_url, merged.cover_source = self._pick_field_with_source(
+            source_map, priority.cover_url, "cover_url"
+        )
+        self._set_field_source(merged, "cover_url", merged.cover_source)
 
         # Screenshot URLs (merge all unique)
-        merged.screenshot_urls = self._pick_field(
+        merged.screenshot_urls, merged.screenshot_source = self._pick_field_with_source(
             source_map, priority.screenshot_url, "screenshot_urls"
         )
+        merged.screenshot_urls = merged.screenshot_urls or []
+        self._set_field_source(merged, "screenshot_urls", merged.screenshot_source)
 
         # Lists: genres, actresses
-        merged.genres = self._pick_list_field(source_map, priority.genre, "genres")
-        merged.actresses = self._pick_list_field(source_map, priority.actress, "actresses")
+        merged.genres, source = self._pick_field_with_source(source_map, priority.genre, "genres")
+        merged.genres = merged.genres or []
+        self._set_field_source(merged, "genres", source)
+        merged.actresses, source = self._pick_field_with_source(
+            source_map, priority.actress, "actresses"
+        )
+        merged.actresses = merged.actresses or []
+        self._set_field_source(merged, "actresses", source)
 
         # Post-process
         self._post_process(merged)
@@ -107,6 +159,21 @@ class DataAggregator:
                 return value
         return None
 
+    def _pick_field_with_source(
+        self, source_map: dict[str, MovieData], priority: list[str], field: str
+    ) -> tuple[object | None, str | None]:
+        """Pick the first non-empty field value together with its source name."""
+        for source_name in priority:
+            if source_name in source_map:
+                value = getattr(source_map[source_name], field, None)
+                if value is not None and value != "" and value != []:
+                    return value, source_name
+        for source_name, data in source_map.items():
+            value = getattr(data, field, None)
+            if value is not None and value != "" and value != []:
+                return value, source_name
+        return None, None
+
     def _pick_list_field(
         self, source_map: dict[str, MovieData], priority: list[str], field: str
     ) -> list:
@@ -121,6 +188,39 @@ class DataAggregator:
             if value:
                 return value
         return []
+
+    def _set_field_source(self, data: MovieData, field: str, source: str | None) -> None:
+        """Record provenance for a merged field when the winning source is known."""
+        if source:
+            data.field_sources[field] = source
+
+    def _backfill_field_sources_from_source(self, data: MovieData) -> None:
+        """Populate provenance from a single source for any traceable populated field."""
+        if not data.source:
+            return
+
+        for field in (
+            "id",
+            "content_id",
+            "title",
+            "alternate_title",
+            "description",
+            "director",
+            "maker",
+            "label",
+            "series",
+            "runtime",
+            "release_date",
+            "rating",
+            "genres",
+            "actresses",
+            "cover_url",
+            "trailer_url",
+            "screenshot_urls",
+        ):
+            value = getattr(data, field, None)
+            if value is not None and value != "" and value != []:
+                data.field_sources.setdefault(field, data.source)
 
     def _post_process(self, data: MovieData) -> None:
         """Apply post-processing: genre replacement, display name, etc."""
@@ -144,6 +244,7 @@ class DataAggregator:
 
         # Apply genre replacements from CSV
         if self.config.sort.metadata.genre_csv.enabled:
+            self._auto_add_genres(data.genres)
             data.genres = self._replace_genres(data.genres)
 
         # Filter ignored genre patterns
@@ -197,6 +298,29 @@ class DataAggregator:
                 result.append(genre)
         return result
 
+    def _auto_add_genres(self, genres: list[str]) -> None:
+        """Append unseen genres to the configured CSV as identity mappings."""
+        if not self.config.sort.metadata.genre_csv.auto_add:
+            return
+        if self._genre_map is None:
+            self._load_genre_csv()
+
+        rows_to_append: list[dict[str, str]] = []
+        for genre in genres:
+            key = genre.strip().lower()
+            if not key or key in self._auto_added_genres:
+                continue
+            if self._genre_map is not None and key in self._genre_map:
+                continue
+            rows_to_append.append({"Original": genre, "Replacement": genre})
+            self._auto_added_genres.add(key)
+            if self._genre_map is not None:
+                self._genre_map[key] = genre
+
+        if rows_to_append:
+            self._append_csv_rows("genres.csv", ["Original", "Replacement"], rows_to_append)
+            logger.info("genre_csv_appended", count=len(rows_to_append))
+
     def _filter_genres(self, genres: list[str]) -> list[str]:
         """Remove genres matching ignored patterns."""
         if self._genre_ignore is None:
@@ -210,18 +334,14 @@ class DataAggregator:
         if self._thumb_cache is None:
             self._load_thumb_csv()
 
-        if not self._thumb_cache:
-            return
-
         for actress in data.actresses:
-            if actress.thumb_url:
-                continue
-            # Try matching by name
-            key = actress.full_name.lower()
-            if key in self._thumb_cache:
-                actress.thumb_url = self._thumb_cache[key]
-            elif actress.japanese_name and actress.japanese_name.lower() in self._thumb_cache:
-                actress.thumb_url = self._thumb_cache[actress.japanese_name.lower()]
+            if not actress.thumb_url:
+                for candidate in self._actress_lookup_names(actress):
+                    if candidate in self._thumb_cache:
+                        actress.thumb_url = self._thumb_cache[candidate]
+                        break
+
+        self._auto_add_actress_thumbs(data)
 
     def _load_genre_csv(self) -> None:
         """Load genre replacement CSV into memory."""
@@ -244,6 +364,7 @@ class DataAggregator:
     def _load_thumb_csv(self) -> None:
         """Load actress thumbnail CSV into memory."""
         self._thumb_cache = {}
+        self._thumb_known_names = set()
         csv_path = self._resolve_data_path("thumbs.csv")
         if not csv_path or not csv_path.exists():
             return
@@ -252,21 +373,137 @@ class DataAggregator:
             with open(csv_path, encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    name = (row.get("FullName", "") or row.get("Name", "")).strip().lower()
+                    full_name = (row.get("FullName", "") or row.get("Name", "")).strip()
+                    japanese_name = row.get("JapaneseName", "").strip()
                     thumb = row.get("ThumbUrl", "").strip()
-                    if name and thumb:
-                        self._thumb_cache[name] = thumb
+                    for name in (full_name, japanese_name):
+                        if not name:
+                            continue
+                        normalized = name.lower()
+                        self._thumb_known_names.add(normalized)
+                        if thumb:
+                            self._thumb_cache[normalized] = thumb
         except Exception as exc:
             logger.error("thumb_csv_load_error", error=str(exc))
 
-    def _resolve_data_path(self, filename: str) -> Path | None:
+    def _auto_add_actress_thumbs(self, data: MovieData) -> None:
+        """Append unseen actresses to the thumbs CSV cache."""
+        if not self.config.sort.metadata.thumb_csv.auto_add:
+            return
+        if self._thumb_known_names is None:
+            self._load_thumb_csv()
+
+        rows_to_append: list[dict[str, str]] = []
+        for actress in data.actresses:
+            names = self._actress_lookup_names(actress)
+            if not names:
+                continue
+            if self._thumb_known_names is not None and any(
+                name in self._thumb_known_names for name in names
+            ):
+                continue
+            signature = "|".join(sorted(names))
+            if signature in self._auto_added_thumb_names:
+                continue
+
+            row = {
+                "FullName": actress.full_name if actress.full_name != "Unknown" else "",
+                "JapaneseName": actress.japanese_name or "",
+                "ThumbUrl": actress.thumb_url or "",
+            }
+            if not row["FullName"] and not row["JapaneseName"]:
+                continue
+
+            rows_to_append.append(row)
+            self._auto_added_thumb_names.add(signature)
+            if self._thumb_known_names is not None:
+                self._thumb_known_names.update(names)
+            if actress.thumb_url:
+                for name in names:
+                    self._thumb_cache[name] = actress.thumb_url
+
+        if rows_to_append:
+            self._append_csv_rows(
+                "thumbs.csv",
+                ["FullName", "JapaneseName", "ThumbUrl"],
+                rows_to_append,
+            )
+            logger.info("thumb_csv_appended", count=len(rows_to_append))
+
+    def _append_csv_rows(
+        self,
+        filename: str,
+        fieldnames: list[str],
+        rows: list[dict[str, str]],
+    ) -> None:
+        """Append rows to a CSV file, creating it with a header when needed."""
+        path = self._resolve_data_path(filename, allow_missing=True)
+        if path is None:
+            return
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            file_exists = path.exists() and path.stat().st_size > 0
+            with open(path, "a", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerows(rows)
+        except Exception as exc:
+            logger.error("csv_append_error", file=filename, error=str(exc))
+
+    def _actress_lookup_names(self, actress: Actress) -> set[str]:
+        """Return normalized actress names used for CSV lookup and duplicate detection."""
+        names: set[str] = set()
+        for value in (
+            actress.full_name,
+            actress.full_name_reversed,
+            actress.japanese_name,
+        ):
+            normalized = self._normalize_lookup_value(value)
+            if normalized:
+                names.add(normalized)
+
+        if not self.config.sort.metadata.thumb_csv.convert_alias:
+            return names
+
+        for alias in actress.english_aliases:
+            for value in self._english_alias_names(alias):
+                normalized = self._normalize_lookup_value(value)
+                if normalized:
+                    names.add(normalized)
+
+        for alias in actress.japanese_aliases:
+            normalized = self._normalize_lookup_value(alias.japanese_name)
+            if normalized:
+                names.add(normalized)
+
+        return names
+
+    @staticmethod
+    def _english_alias_names(alias: ActressAlias) -> tuple[str, str]:
+        """Return both common English alias orders for lookup."""
+        direct = " ".join(part for part in [alias.last_name, alias.first_name] if part)
+        reversed_name = " ".join(part for part in [alias.first_name, alias.last_name] if part)
+        return direct, reversed_name
+
+    @staticmethod
+    def _normalize_lookup_value(value: str | None) -> str:
+        """Normalize a lookup value for CSV matching."""
+        if not value:
+            return ""
+        normalized = value.strip().lower()
+        if normalized == "unknown":
+            return ""
+        return normalized
+
+    def _resolve_data_path(self, filename: str, *, allow_missing: bool = False) -> Path | None:
         """Resolve a data file path from config or default location."""
         # Check config override
         locations = self.config.locations
         overrides = {
             "genres.csv": locations.genre_csv,
             "thumbs.csv": locations.thumb_csv,
-            "tags.csv": locations.tag_csv,
         }
         override = overrides.get(filename, "")
         if override:
@@ -275,7 +512,7 @@ class DataAggregator:
         # Default: look in package data directory
         data_dir = Path(__file__).parent.parent / "data"
         candidate = data_dir / filename
-        if candidate.exists():
+        if allow_missing or candidate.exists():
             return candidate
 
         return None

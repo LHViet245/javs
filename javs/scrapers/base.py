@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from javs.models.movie import MovieData
-from javs.services.http import HttpClient
+from javs.services.http import CloudflareBlockedError, HttpClient
 from javs.utils.logging import get_logger
 
 
@@ -23,8 +23,9 @@ class BaseScraper(ABC):
     languages: ClassVar[list[str]] = []
     base_url: ClassVar[str] = ""
 
-    def __init__(self, http: HttpClient | None = None) -> None:
+    def __init__(self, http: HttpClient | None = None, use_proxy: bool = False) -> None:
         self.http = http or HttpClient()
+        self.use_proxy = use_proxy
         self.logger = get_logger(f"scraper.{self.name}")
 
     @abstractmethod
@@ -68,6 +69,8 @@ class BaseScraper(ABC):
             if data:
                 data.source = self.name
             return data
+        except CloudflareBlockedError:
+            raise
         except Exception as exc:
             self.logger.error(
                 "scraper_error",

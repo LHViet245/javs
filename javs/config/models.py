@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+CURRENT_CONFIG_VERSION = 1
 
 
 class RegexConfig(BaseModel):
@@ -16,6 +20,7 @@ class RegexConfig(BaseModel):
 class MatchConfig(BaseModel):
     """File matching/detection settings."""
 
+    mode: Literal["auto", "strict", "custom"] = "auto"
     minimum_file_size_mb: int = 0
     included_extensions: list[str] = Field(
         default_factory=lambda: [
@@ -34,13 +39,21 @@ class MatchConfig(BaseModel):
     regex_enabled: bool = False
     regex: RegexConfig = Field(default_factory=RegexConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_legacy_custom_regex_mode(cls, data: object) -> object:
+        """Map legacy regex_enabled=true configs to custom mode when mode is absent."""
+        if isinstance(data, dict) and "mode" not in data and data.get("regex_enabled") is True:
+            data = dict(data)
+            data["mode"] = "custom"
+        return data
+
 
 class FormatConfig(BaseModel):
     """File/folder naming format templates."""
 
     file: str = "{id}"
     folder: str = "{id} [{studio}] - {title} ({year})"
-    output_folder: str = ""
     poster_img: list[str] = Field(default_factory=lambda: ["folder"])
     thumb_img: str = "fanart"
     trailer_vid: str = "{id}-trailer"
@@ -50,7 +63,6 @@ class FormatConfig(BaseModel):
     screenshot_folder: str = "extrafanart"
     actress_img_folder: str = ".actors"
     delimiter: str = ", "
-    group_actress: bool = True
     max_title_length: int = 100
 
 
@@ -71,9 +83,10 @@ class TranslateConfig(BaseModel):
     enabled: bool = False
     module: str = "googletrans"  # "googletrans" or "deepl"
     fields: list[str] = Field(default_factory=lambda: ["description"])
-    language: str = "en"
+    language: str = "en-us"
     deepl_api_key: str = ""
     keep_original_description: bool = False
+    affect_sort_names: bool = False
 
 
 class NfoConfig(BaseModel):
@@ -101,25 +114,23 @@ class NfoConfig(BaseModel):
 class MetadataPriorityConfig(BaseModel):
     """Priority order for each metadata field across scrapers."""
 
-    actress: list[str] = Field(default_factory=lambda: ["r18dev", "dmmja", "javlibrary", "javbus"])
-    alternate_title: list[str] = Field(default_factory=lambda: ["javlibraryja", "dmmja"])
-    cover_url: list[str] = Field(
-        default_factory=lambda: ["r18dev", "javlibrary", "dmmja", "javbus"]
-    )
-    description: list[str] = Field(default_factory=lambda: ["dmmja", "r18dev", "mgstageja"])
+    actress: list[str] = Field(default_factory=lambda: ["r18dev", "dmm", "javlibrary"])
+    alternate_title: list[str] = Field(default_factory=lambda: ["javlibraryja", "dmm"])
+    cover_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
+    description: list[str] = Field(default_factory=lambda: ["dmm", "r18dev", "mgstageja"])
     director: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "mgstageja"])
-    genre: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    id: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    content_id: list[str] = Field(default_factory=lambda: ["r18dev", "dmmja"])
+    genre: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
+    id: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
+    content_id: list[str] = Field(default_factory=lambda: ["r18dev", "dmm"])
     label: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "mgstageja"])
-    maker: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    release_date: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmmja"])
-    rating: list[str] = Field(default_factory=lambda: ["dmmja", "javlibrary", "mgstageja"])
-    runtime: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmmja"])
+    maker: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
+    release_date: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
+    rating: list[str] = Field(default_factory=lambda: ["dmm", "javlibrary", "mgstageja"])
+    runtime: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
     series: list[str] = Field(default_factory=lambda: ["r18dev", "mgstageja"])
-    screenshot_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmmja"])
-    title: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "javbus"])
-    trailer_url: list[str] = Field(default_factory=lambda: ["r18dev", "dmmja"])
+    screenshot_url: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary", "dmm"])
+    title: list[str] = Field(default_factory=lambda: ["r18dev", "javlibrary"])
+    trailer_url: list[str] = Field(default_factory=lambda: ["r18dev", "dmm"])
 
 
 class ThumbCsvConfig(BaseModel):
@@ -140,13 +151,6 @@ class GenreCsvConfig(BaseModel):
     )
 
 
-class TagCsvConfig(BaseModel):
-    """Tag CSV settings."""
-
-    enabled: bool = False
-    auto_add: bool = False
-
-
 class MetadataConfig(BaseModel):
     """Metadata processing settings."""
 
@@ -154,7 +158,6 @@ class MetadataConfig(BaseModel):
     priority: MetadataPriorityConfig = Field(default_factory=MetadataPriorityConfig)
     thumb_csv: ThumbCsvConfig = Field(default_factory=ThumbCsvConfig)
     genre_csv: GenreCsvConfig = Field(default_factory=GenreCsvConfig)
-    tag_csv: TagCsvConfig = Field(default_factory=TagCsvConfig)
     required_fields: list[str] = Field(
         default_factory=lambda: ["id", "cover_url", "genres", "maker", "release_date", "title"]
     )
@@ -165,56 +168,85 @@ class SortConfig(BaseModel):
 
     move_to_folder: bool = True
     rename_file: bool = True
-    rename_folder_in_place: bool = False
-    move_subtitles: bool = False
+    move_subtitles: bool = True
+    cleanup_empty_source_dir: bool = False
     format: FormatConfig = Field(default_factory=FormatConfig)
     download: DownloadConfig = Field(default_factory=DownloadConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
 
 
-class ScraperOptions(BaseModel):
-    """Global scraper options."""
-
-    id_preference: str = "id"  # "id" or "contentid"
-    add_male_actors: bool = False
-    dmm_scrape_actress: bool = False
-
-
 class ScraperConfig(BaseModel):
-    """Which scrapers are enabled."""
+    """Which scrapers are enabled and proxy routing."""
 
     enabled: dict[str, bool] = Field(
         default_factory=lambda: {
             "r18dev": True,
-            "dmm": False,
-            "dmmja": True,
+            "dmm": True,
             "javlibrary": False,
             "javlibraryja": False,
             "javlibraryzh": False,
-            "javbus": False,
-            "javbusja": False,
-            "javbuszh": False,
-            "javdb": False,
-            "javdbzh": False,
-            "jav321ja": False,
             "mgstageja": False,
-            "aventertainment": False,
-            "aventertainmentja": False,
-            "tokyohot": False,
-            "tokyohotja": False,
-            "tokyohotzh": False,
         }
     )
-    options: ScraperOptions = Field(default_factory=ScraperOptions)
+    use_proxy: dict[str, bool] = Field(
+        default_factory=lambda: {
+            "r18dev": False,
+            "dmm": True,  # Japan region block
+            "javlibrary": False,
+            "javlibraryja": False,
+            "javlibraryzh": False,
+            "mgstageja": True,  # Japan region block
+        }
+    )
 
 
 class ProxyConfig(BaseModel):
-    """Proxy settings."""
+    """Proxy settings.
+
+    Supports HTTP, HTTPS, SOCKS5, and SOCKS5h protocols.
+    URL format: protocol://[user:pass@]host:port
+    Examples:
+        - http://1.2.3.4:8080
+        - http://myuser:mypass@1.2.3.4:8080
+        - socks5://1.2.3.4:1080
+        - socks5h://1.2.3.4:1080  (proxy-side DNS resolution)
+    """
 
     enabled: bool = False
-    host: str = ""
-    username: str = ""
-    password: str = ""
+    url: str = ""
+    timeout_seconds: int = 15
+    max_retries: int = 3
+
+    @model_validator(mode="after")
+    def validate_proxy(self) -> ProxyConfig:
+        """Validate proxy config: require URL when enabled, require protocol."""
+        if self.enabled and not self.url:
+            raise ValueError("proxy.url is required when proxy.enabled is True")
+        if self.url and "://" not in self.url:
+            raise ValueError(
+                "proxy.url must include protocol (http://, https://, socks5://, socks5h://)"
+            )
+        return self
+
+    @property
+    def masked_url(self) -> str:
+        """Return URL with credentials replaced by *** for safe logging."""
+        if not self.url:
+            return ""
+        try:
+            from yarl import URL
+
+            parsed = URL(self.url)
+            if parsed.password:
+                return str(parsed.with_password("***").with_user("***"))
+        except Exception:
+            pass
+        return self.url
+
+    @property
+    def is_socks(self) -> bool:
+        """Check if proxy uses SOCKS protocol."""
+        return self.url.startswith(("socks4", "socks5"))
 
 
 class EmbyConfig(BaseModel):
@@ -225,20 +257,11 @@ class EmbyConfig(BaseModel):
 
 
 class JavlibraryConfig(BaseModel):
-    """Javlibrary-specific settings."""
+    """Javlibrary-specific settings used by the runtime."""
 
     base_url: str = "https://www.javlibrary.com"
     browser_user_agent: str = ""
-    cookie_cf_bm: str = ""
     cookie_cf_clearance: str = ""
-    cookie_session: str = ""
-    cookie_userid: str = ""
-
-
-class JavdbCookieConfig(BaseModel):
-    """Javdb-specific settings."""
-
-    session: str = ""
 
 
 class LocationConfig(BaseModel):
@@ -248,9 +271,6 @@ class LocationConfig(BaseModel):
     output: str = ""
     thumb_csv: str = ""
     genre_csv: str = ""
-    uncensor_csv: str = ""
-    history_csv: str = ""
-    tag_csv: str = ""
     log: str = ""
 
 
@@ -264,9 +284,11 @@ class LogConfig(BaseModel):
 class JavsConfig(BaseModel):
     """Root configuration model for javs."""
 
+    config_version: int = CURRENT_CONFIG_VERSION
+
     # Processing
     throttle_limit: int = 1
-    sleep: int = 3
+    sleep: int = 2
 
     # Locations
     locations: LocationConfig = Field(default_factory=LocationConfig)
@@ -282,8 +304,5 @@ class JavsConfig(BaseModel):
 
     # Source-specific
     javlibrary: JavlibraryConfig = Field(default_factory=JavlibraryConfig)
-    javdb: JavdbCookieConfig = Field(default_factory=JavdbCookieConfig)
 
-    # Admin
     log: LogConfig = Field(default_factory=LogConfig)
-    check_updates: bool = True

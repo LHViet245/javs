@@ -19,10 +19,12 @@ from __future__ import annotations
 import re
 from datetime import date
 from typing import ClassVar
+from urllib.parse import urljoin
 
 from javs.models.movie import Actress, MovieData, Rating
 from javs.scrapers.base import BaseScraper
 from javs.scrapers.registry import ScraperRegistry
+from javs.services.http import CloudflareBlockedError
 from javs.utils.html import extract_attr, extract_text, parse_html
 from javs.utils.string import clean_title
 
@@ -60,12 +62,16 @@ class JavlibraryScraper(BaseScraper):
         search_url = f"{self.base_url}{self._lang_path}vl_searchbyid.php?keyword={normalized}"
 
         try:
-            html = await self.http.get_cf(search_url)
+            html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
+        except CloudflareBlockedError:
+            raise
         except Exception as exc:
             self.logger.debug("javlib_search_error", movie_id=normalized, error=str(exc))
             # Retry once (Javlibrary has intermittent 500 errors)
             try:
-                html = await self.http.get_cf(search_url)
+                html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
+            except CloudflareBlockedError:
+                raise
             except Exception:
                 return None
 
@@ -76,12 +82,7 @@ class JavlibraryScraper(BaseScraper):
         if video_id_div:
             page_id = self._extract_item_value(video_id_div)
             if page_id and page_id.upper() == normalized.upper():
-                # Extract the real canonical URL from the page
-                canonical_link = soup.select_one("link[rel='canonical']")
-                if canonical_link and canonical_link.get("href"):
-                    href = canonical_link["href"]
-                    return href if href.startswith("http") else f"https:{href}"
-                return f"{self.base_url}{self._lang_path}?v=_detail_"
+                return self._resolve_direct_match_url(search_url, soup)
 
         # Case 2: Search results list — parse result entries
         results = self._parse_search_results(html)
@@ -102,10 +103,24 @@ class JavlibraryScraper(BaseScraper):
 
         return matches[0].get("url")
 
+    def _resolve_direct_match_url(self, search_url: str, soup) -> str:
+        """Resolve a usable detail URL for a direct-match search result.
+
+        Prefer the canonical URL when present. If the page omits it, reuse the
+        search URL because Javlibrary redirects that URL back to the same detail page.
+        """
+        canonical_link = soup.select_one("link[rel='canonical']")
+        if canonical_link and canonical_link.get("href"):
+            canonical_url = urljoin(self.base_url, canonical_link["href"])
+            return re.sub(r"/(en|ja|cn)/", self._lang_path, canonical_url)
+        return search_url
+
     async def scrape(self, url: str) -> MovieData | None:
         """Scrape movie metadata from Javlibrary detail page."""
         try:
-            html = await self.http.get_cf(url)
+            html = await self.http.get_cf(url, use_proxy=self.use_proxy)
+        except CloudflareBlockedError:
+            raise
         except Exception as exc:
             self.logger.error("javlib_scrape_error", url=url, error=str(exc))
             return None
@@ -441,21 +456,25 @@ class JavlibraryJaScraper(JavlibraryScraper):
         search_url = f"{self.base_url}{self._lang_path}vl_searchbyid.php?keyword={normalized}"
 
         try:
-            html = await self.http.get_cf(search_url)
+            html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
+        except CloudflareBlockedError:
+            raise
         except Exception:
             try:
-                html = await self.http.get_cf(search_url)
+                html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
+            except CloudflareBlockedError:
+                raise
             except Exception:
                 return None
 
         soup = parse_html(html)
 
-        # Direct match check
+        # Direct match check — extract canonical URL like EN class
         video_id_div = soup.select_one("div#video_id")
         if video_id_div:
             page_id = self._extract_item_value(video_id_div)
             if page_id and page_id.upper() == normalized.upper():
-                return f"{self.base_url}{self._lang_path}?v=_detail_"
+                return self._resolve_direct_match_url(search_url, soup)
 
         # Search results
         results = self._parse_search_results(html)
@@ -492,20 +511,25 @@ class JavlibraryZhScraper(JavlibraryScraper):
         search_url = f"{self.base_url}{self._lang_path}vl_searchbyid.php?keyword={normalized}"
 
         try:
-            html = await self.http.get_cf(search_url)
+            html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
+        except CloudflareBlockedError:
+            raise
         except Exception:
             try:
-                html = await self.http.get_cf(search_url)
+                html = await self.http.get_cf(search_url, use_proxy=self.use_proxy)
+            except CloudflareBlockedError:
+                raise
             except Exception:
                 return None
 
         soup = parse_html(html)
 
+        # Direct match check — extract canonical URL like EN class
         video_id_div = soup.select_one("div#video_id")
         if video_id_div:
             page_id = self._extract_item_value(video_id_div)
             if page_id and page_id.upper() == normalized.upper():
-                return f"{self.base_url}{self._lang_path}?v=_detail_"
+                return self._resolve_direct_match_url(search_url, soup)
 
         results = self._parse_search_results(html)
         if not results:

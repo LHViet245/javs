@@ -1,105 +1,70 @@
 # JavS Project Context
 
-## 1. Project Overview
+## Overview
 
-**JavS** (JAV Scraper) is a modern, fast, and robust Python CLI application intended as a rewrite and successor to the original PowerShell-based Javinizer. It is designed to scrape, organize, and manage metadata and files for JAV media libraries.
+JavS is an async Python CLI for scraping, aggregating, and organizing JAV media libraries.
+It is designed as a maintainable replacement for Javinizer, with a typed config model,
+plugin-style scrapers, and a scan -> scrape -> aggregate -> organize pipeline.
 
-### Key Technologies
+## Product Capabilities
 
-- **Python 3.11+**
-- **Asyncio / Aiohttp**: High-performance concurrent scraping and networking.
-- **Pydantic**: Strict data modeling and configuration validation.
-- **BeautifulSoup4 / lxml**: HTML/XML parsing for metadata extraction and NFO generation.
-- **cloudscraper / curl_cffi**: Advanced handling for Cloudflare IUAM/Turnstile challenges.
-- **Typer & Rich**: CLI interface and beautiful terminal output.
-- **structlog**: Structured JSON logging.
-- **pytest**: Comprehensive testing framework (currently 96/96 tests pass).
+Current runtime supports:
 
----
+- scanning files and extracting movie IDs from filenames
+- multipart detection (`cd1`, `pt2`, `A/B`) with subtitle-suffix safeguards
+- concurrent scraping from enabled sources
+- priority-based metadata aggregation across scrapers
+- optional metadata translation
+- NFO generation for Kodi, Emby, and Jellyfin workflows
+- image, poster, actress, screenshot, and trailer sidecar handling
+- sorting unsorted media into a destination library
+- in-place metadata refresh for already sorted libraries via `javs update`
+- config sync, CSV template bootstrap, and Javlibrary credential helpers
 
-## 2. Project Structure
+## Architecture Map
 
-`/home/starfall-fedora/MyApp/MyBuild/JavS/javs/`
+- `javs/cli.py`: Typer CLI entrypoint and subcommands
+- `javs/core/engine.py`: orchestration and shared session lifecycle
+- `javs/core/scanner.py`: filename parsing and ID extraction
+- `javs/core/aggregator.py`: metadata merge rules and CSV-driven enrichment
+- `javs/core/organizer.py`: sidecars, downloads, moves, and update flow
+- `javs/core/nfo.py`: XML generation
+- `javs/config/`: pydantic models, loader, updater, deprecation helpers
+- `javs/scrapers/`: source-specific search and parse implementations
+- `javs/services/http.py`: shared HTTP, retry, proxy, and Cloudflare handling
+- `javs/services/`: translation, image, Emby, and Javlibrary auth helpers
+- `tests/`: regression suite with fixtures and sorted-output expectations
 
-```text
-├── docs/                   # Documentation
-│   └── USAGE.md            # Detailed user manual and configuration guide
-├── javs/                   # Main source code
-│   ├── core/               # Core engine orchestration and file operations
-│   │   ├── aggregator.py   # Merges metadata from multiple scrapers based on config priorities
-│   │   ├── engine.py       # Main orchestration pipeline (find, sort)
-│   │   ├── organizer.py    # Pipeline for renaming, moving, and organizing files
-│   │   └── scanner.py      # Regex-based scanning to extract JAV IDs from messy filenames
-│   ├── data/               # Static assets and default configs
-│   │   └── default_config.yaml # Base configuration file
-│   ├── models/             # Pydantic data models
-│   │   ├── config.py       # 15+ hierarchical configuration models
-│   │   └── movie.py        # MovieData, Actress, Rating, and core data structures
-│   ├── scrapers/           # Metadata scraper plugins
-│   │   ├── base.py         # Abstract BaseScraper containing common logic
-│   │   ├── registry.py     # Decorator-based ScraperRegistry to auto-discover scrapers
-│   │   ├── dmm.py          # DMM store scraper (EN, JA)
-│   │   ├── javlibrary.py   # JavLibrary scraper (EN, JA, ZH) - 12 metadata fields mapped
-│   │   └── r18dev.py       # r18.dev JSON API scraper
-│   ├── services/           # External service clients
-│   │   ├── http.py         # Async HTTP client with retry and rate-limiting wrappers (aiohttp)
-│   │   ├── image.py        # Native Poster cropping & Thumbnail generation (Pillow)
-│   │   └── translation.py  # Google/DeepL translator tools
-│   ├── utils/              # Helper utilities
-│   │   ├── html.py         # Parsers using BeautifulSoup/lxml
-│   │   ├── logging.py      # Structlog integration
-│   │   └── string.py       # ID formatting, deduplication, string cleaning algorithms
-│   ├── cli.py              # CLI entrypoint with Typer commands (find, sort, config, scrapers)
-│   └── __main__.py         # Package execution entry point
-├── tests/                  # Pytest test suite (100% Core coverage)
-│   ├── scrapers/           # Specific scraper unit tests with mocked HTML fixtures
-│   ├── test_aggregator.py  # Priority merging tests
-│   ├── test_config.py      # YAML load/save/default fallback tests
-│   ├── test_nfo.py         # lxml NFO generation tests
-│   ├── test_organizer.py   # File system operation tests
-│   └── test_scanner.py     # Complex regex filename scenario testing
-├── README.md               # Main landing page covering features and quickstart
-├── pyproject.toml          # Build config and dependency management
-└── venv/                   # Local virtual environment (Mandatory execution space)
-```
+## Runtime Contracts
 
----
+- Keep the app async-first. Do not introduce blocking networking where `HttpClient` already applies.
+- `JavsEngine.find()` assumes an open shared `HttpClient` session.
+- `JavsEngine.find_one()` manages its own session for standalone lookup.
+- `JavsEngine.sort_path()` and `update_path()` share one session across the batch.
+- Scrapers should focus on search and parse logic only. Shared networking belongs in `javs/services/http.py`.
+- Sorting is filename-driven, not parent-directory-driven.
+- Config and movie models are contracts. Normalize scraped data into typed models before passing it through the pipeline.
 
-## 3. Implementation Progress
+## Current State
 
-### ✅ Completed (Foundation & Modules)
+The project is past the prototype stage and is usable as a real CLI.
+The core pipeline, test suite, proxy routing, Cloudflare recovery flow, config sync, and update mode are in place.
 
-- Scaffolding, dependency definitions (`pyproject.toml`), and local `venv` architecture.
-- Modular Pydantic models for unified `MovieData` output.
-- Custom `FileScanner` covering standard, multi-part, and obfuscated JAV ID rules.
-- Decorator plugin system (`@ScraperRegistry.register`).
-- Custom robust Async `http` client (`aiohttp` + `tenacity`).
-- **Layered Cloudflare Bypass:** Implemented an intelligent `get_cf()` method supporting manual cookie injection (Turnstile bypass) and `cloudscraper` fallbacks, without blocking the async event loop (`asyncio.to_thread()`).
-- Comprehensive config YAML parser that gracefully falls back to defaults.
-- Smart Aggregator to merge responses from any number of scrapers dynamically.
-- Integration tests simulating End-to-End operations.
+Main remaining maturity work is around:
 
-### ✅ Completed (Scrapers)
+- live scraper reliability under rate limiting and Cloudflare pressure
+- deeper verification of live benchmark behavior per scraper
+- raising confidence in the weaker-coverage modules
+- keeping docs aligned with runtime as the scraper surface evolves
 
-- **DMM (`dmm`, `dmmja`)**: Fully functional scraper handling cover crops and tag mapping.
-- **r18.dev (`r18dev`)**: Lightweight API fallback.
-- **JAVLibrary (`javlibrary`, `javlibraryja`, `javlibraryzh`)**: Fully functional. Features robust URL redirect extraction (using canonical links), Blu-ray deduplication, cross-lingual actress mapping, custom string-based rating extraction, and leverages the layered Cloudflare bypass.
+## Document Roles
 
-### 🔄 In Progress / Next Steps
+Use the docs in this repo by role:
 
-1. **Additional Scrapers**: Stubs exist for `javbus`, `javdb`, `jav321`, `mgstage`. Full parsing logic is next for these priority sites.
-2. **Translation Service Integration**: Implement the deep translator for descriptions where sources lack native English text.
-3. **End-to-End (E2E) Filesystem testing**: Run the `sort` engine loop on actual mocked temporary directory structures with generated mock video files.
+- `README.md`: public project summary and quick start
+- `docs/USAGE.md`: user-facing CLI and configuration guide
+- `CONTEXT.md`: stable onboarding and architecture context
+- `report.md`: latest audit snapshot and verification evidence
+- `plan.md`: current follow-up priorities and roadmap
 
----
-
-## 4. Coding & Architecture Rules (MANDATORY)
-
-1. **Virtual Environment First**: ALL commands, tests, and module installations MUST be executed using the local `./venv/bin/python` instance to prevent system contamination.
-2. **Type Safety Rules Supreme**: Every piece of scraped data MUST be validated against `/models/movie.py`. `None` values are preferred over empty strings `""` for missing optional data.
-3. **Regex Containment**: Avoid complex Regex when simple string manipulation works (especially against parsed HTML like `str(soup)`) to prevent backslash escaping bugs.
-4. **Resilient Network Parsing**: Scrapers should use `BeautifulSoup` wrapped with `try/except` properties. A missing field should NEVER crash the entire metadata extraction process; safely return `None`.
-5. **No System Dependencies**: Rely solely on pure Python dependencies or native bindings. (e.g. usage of `lxml` vs shell operations, `Pillow` vs `ImageMagick`).
-6. **Aggregator Agnostic**: New scrapers MUST output uniform `MovieData`. It is the `aggregator`'s job to decide which scraper's `title` or `genres` win, based on the user's YAML config. Scrapers do not know about each other.
-7. **Write Tests Concurrently**: Before closing a feature module (like a new scraper), you must provide accompanying fixtures in `/tests/` and verify that ALL previous code continues to pass.
-8. **Cloudflare & Anti-Bot Awareness**: Automated solutions (like `cloudscraper` or `curl_cffi`) often fail against newer interactive JS challenges (e.g. Turnstile). Always architect bypass methods with a **Manual Fallback Layer** allowing users to supply valid `cf_clearance` cookies and user-agents from their legitimate browser sessions.
+When docs conflict with runtime behavior, trust the code and fresh verification.
