@@ -619,7 +619,7 @@ What it controls:
 
 Recommended default:
 
-- leave it blank unless you actively use that integration path
+- leave the packaged placeholder values alone unless you actively use that integration path
 
 When to change it:
 
