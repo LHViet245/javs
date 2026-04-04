@@ -14,25 +14,16 @@ This path stays in place for continuity and now serves as the navigation hub for
 
 ## Start Here By Purpose
 
-| Purpose | Canonical doc |
-| --- | --- |
-| Install JavS and run a safe first workflow | [Getting Started](./getting-started.md) |
-| Understand config keys and safe defaults | [Configuration](./configuration.md) |
-| Look up CLI syntax and examples | [Commands](./commands.md) |
-| Diagnose skipped files, proxy issues, or Cloudflare problems | [Troubleshooting](./troubleshooting.md) |
-| Understand contributor workflow and repo expectations | [Contributor Guide](./contributor-guide.md) |
-| Read the public project summary and quick start | [README](../README.md) |
+If you already know what you need:
 
-## Canonical Documentation Map
+- use [README](../README.md) for the public overview and quick start
+- use [Getting Started](./getting-started.md) for the beginner-safe workflow
+- use [Configuration](./configuration.md) for config decisions and trade-offs
+- use [Commands](./commands.md) for CLI syntax and examples
+- use [Troubleshooting](./troubleshooting.md) for symptom-based help
+- use [Contributor Guide](./contributor-guide.md) for setup, verification, and repo expectations
 
-- [README](../README.md): public landing page and quick start
-- [Getting Started](./getting-started.md): guided first-run path for end users
-- [Configuration](./configuration.md): practical config decisions and trade-offs
-- [Commands](./commands.md): day-to-day command reference
-- [Troubleshooting](./troubleshooting.md): symptom-based support guide
-- [Contributor Guide](./contributor-guide.md): contributor setup, verification, and repo rules
-
-Contributor verification still uses the maintained local entry point `./scripts/verify_local.sh`.
+Contributor verification still uses the maintained local entry point `./scripts/verify_local.sh`; the details live in [Contributor Guide](./contributor-guide.md).
 
 ## Legacy Note
 

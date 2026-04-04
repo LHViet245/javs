@@ -1,6 +1,6 @@
 # JavS Configuration Guide
 
-This guide explains the config keys you are most likely to change in real use. It stays focused on practical choices: what a setting controls, a safe default, when to change it, and the mistakes that cause the most confusion.
+This guide is the canonical guide to the shipped JavS config surface. It starts with the settings you are most likely to change in real use, then covers the smaller or less commonly adjusted sections so you do not have to fall back to raw YAML comments just to understand what the packaged config contains.
 
 If you are brand new, start with [Getting Started](./getting-started.md). If you only need command syntax, use [Commands](./commands.md).
 
@@ -553,3 +553,98 @@ After sync, run:
 ```
 
 That gives you a quick masked view of the final effective config.
+
+## Remaining Shipped Settings
+
+The packaged config still includes a few smaller sections that are not part of the main day-to-day workflow, but they are still part of the supported config surface:
+
+```yaml
+config_version: 1
+throttle_limit: 1
+sleep: 2
+
+emby:
+  url: "http://192.168.0.1:8096"
+  api_key: ""
+
+log:
+  enabled: true
+  level: info
+```
+
+### `config_version`
+
+What it controls:
+
+- the schema version marker used by JavS during config loading and sync
+
+Recommended default:
+
+- leave it alone and let JavS manage it
+
+When to change it:
+
+- almost never by hand
+
+Common mistakes:
+
+- editing it manually and assuming that alone migrates your config
+
+### `throttle_limit` And `sleep`
+
+What they control:
+
+- `throttle_limit` limits how many scraping tasks JavS runs concurrently
+- `sleep` adds a global cooldown between scrape requests
+
+Recommended default:
+
+- keep the packaged defaults unless you have measured evidence that your environment benefits from different pacing
+
+When to change them:
+
+- you are tuning batch behavior carefully for your network or the target sites
+- you are troubleshooting aggressive rate limiting and want to reduce pressure deliberately
+
+Common mistakes:
+
+- raising concurrency before validating that your upstream sources tolerate it
+- lowering `sleep` just to go faster without checking live stability
+
+### `emby`
+
+What it controls:
+
+- connection details for the Emby integration service code in the repo
+
+Recommended default:
+
+- leave it blank unless you actively use that integration path
+
+When to change it:
+
+- you are wiring JavS into an Emby workflow and know the server URL and API key you want to use
+
+Common mistakes:
+
+- assuming these settings affect normal `find`, `sort`, or `update` runs on their own
+
+### `log`
+
+What it controls:
+
+- whether structured logging is enabled
+- the log level JavS uses
+
+Recommended default:
+
+- keep logging enabled and keep `level: info` unless you need deeper troubleshooting output
+
+When to change it:
+
+- you want quieter or more verbose logs
+- you are debugging and need `debug` output temporarily
+
+Common mistakes:
+
+- leaving `debug` on permanently and then treating the extra noise like a runtime problem

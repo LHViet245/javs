@@ -11,8 +11,8 @@ sleep: 2            # Global scrape cooldown; keep 2s because recent benchmarks 
 
 # ─── File Locations ──────────────────────────────────────────────
 locations:
-  input: ""         # Default source directory (overridden by CLI)
-  output: ""        # Default destination directory (overridden by CLI)
+  input: ""         # Reserved path field; built-in CLI still expects explicit sort SOURCE arguments
+  output: ""        # Reserved path field; built-in CLI still expects explicit sort DEST arguments
   thumb_csv: ""     # Custom path to actress thumbnail CSV
   genre_csv: ""     # Custom path to genre replacement CSV
   log: ""           # Custom log file path
