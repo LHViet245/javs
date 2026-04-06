@@ -415,7 +415,9 @@ class DataAggregator:
         if self._thumb_rows is None or self._thumb_known_names is None:
             self._load_thumb_csv()
 
-        rows_changed = False
+        original_row_count = len(self._thumb_rows or [])
+        rewrite_needed = False
+        appended_row_indexes: list[int] = []
         for actress in data.actresses:
             identity = self._build_actress_identity(actress)
             if not identity.match_keys:
@@ -425,7 +427,7 @@ class DataAggregator:
                 merged_row = self._merge_thumb_row(self._thumb_rows[row_index], identity)
                 if merged_row != self._thumb_rows[row_index]:
                     self._thumb_rows[row_index] = merged_row
-                    rows_changed = True
+                    rewrite_needed = row_index < original_row_count
                 continue
 
             signature = identity.canonical_key or "|".join(
@@ -441,13 +443,21 @@ class DataAggregator:
             if self._thumb_rows is None:
                 self._thumb_rows = []
             self._thumb_rows.append(row)
+            appended_row_indexes.append(len(self._thumb_rows) - 1)
             self._auto_added_thumb_names.add(signature)
-            rows_changed = True
 
-        if rows_changed and self._thumb_rows is not None:
-            self._write_thumb_rows(self._thumb_rows)
+        if rewrite_needed and self._thumb_rows is not None:
+            self._write_thumb_rows(self._thumb_rows[:original_row_count])
+            logger.info("thumb_csv_rewritten", count=original_row_count)
+        if appended_row_indexes and self._thumb_rows is not None:
+            self._append_csv_rows(
+                "thumbs.csv",
+                THUMB_CSV_FIELDNAMES,
+                [self._thumb_rows[index] for index in appended_row_indexes],
+            )
+            logger.info("thumb_csv_appended", count=len(appended_row_indexes))
+        if (rewrite_needed or appended_row_indexes) and self._thumb_rows is not None:
             self._refresh_thumb_row_cache()
-            logger.info("thumb_csv_rewritten", count=len(self._thumb_rows))
 
     def _find_matching_thumb_row(self, identity: ActressIdentity) -> int | None:
         """Return the best matching thumbs.csv row index for an actress identity."""
@@ -462,9 +472,11 @@ class DataAggregator:
             if match_rank is None:
                 continue
 
+            overlap_count = len(identity.match_keys & row_identity.match_keys)
             choice = (
                 match_rank,
                 self._canonical_strength(row_identity.canonical_key),
+                -overlap_count,
                 row_index,
             )
             if best_choice is None or choice < best_choice:
@@ -484,9 +496,23 @@ class DataAggregator:
         ):
             canonical_key = identity.canonical_key
 
-        full_name = row.get("FullName", "") or identity.display_full_name or ""
-        japanese_name = row.get("JapaneseName", "") or identity.display_japanese_name or ""
-        thumb_url = row.get("ThumbUrl", "") or identity.thumb_url or ""
+        full_name = self._merge_thumb_row_field(
+            field_name="FullName",
+            stored_value=row.get("FullName", ""),
+            incoming_value=identity.display_full_name or "",
+            canonical_key=canonical_key,
+        )
+        japanese_name = self._merge_thumb_row_field(
+            field_name="JapaneseName",
+            stored_value=row.get("JapaneseName", ""),
+            incoming_value=identity.display_japanese_name or "",
+            canonical_key=canonical_key,
+        )
+        thumb_url = self._merge_thumb_thumb_url(
+            stored_value=row.get("ThumbUrl", ""),
+            incoming_value=identity.thumb_url or "",
+            canonical_key=canonical_key,
+        )
 
         alias_keys = (existing_identity.match_keys | identity.match_keys) - {
             canonical_key or "",
@@ -499,6 +525,44 @@ class DataAggregator:
             "ThumbUrl": thumb_url,
             "Aliases": self._serialize_alias_keys(alias_keys),
         }
+
+    def _merge_thumb_row_field(
+        self,
+        *,
+        field_name: str,
+        stored_value: str,
+        incoming_value: str,
+        canonical_key: str | None,
+    ) -> str:
+        """Merge one non-thumb thumb-row field while warning on preserved conflicts."""
+        if stored_value and incoming_value and stored_value != incoming_value:
+            logger.warning(
+                "thumb_csv_name_conflict_preserved",
+                field=field_name,
+                existing_value=stored_value,
+                incoming_value=incoming_value,
+                canonical_key=canonical_key or "",
+            )
+            return stored_value
+        return stored_value or incoming_value
+
+    def _merge_thumb_thumb_url(
+        self,
+        *,
+        stored_value: str,
+        incoming_value: str,
+        canonical_key: str | None,
+    ) -> str:
+        """Merge thumb URLs while preserving existing values on conflict."""
+        if stored_value and incoming_value and stored_value != incoming_value:
+            logger.warning(
+                "thumb_csv_thumb_conflict_preserved",
+                existing_thumb_url=stored_value,
+                incoming_thumb_url=incoming_value,
+                canonical_key=canonical_key or "",
+            )
+            return stored_value
+        return stored_value or incoming_value
 
     def _canonical_thumb_row_from_identity(self, identity: ActressIdentity) -> dict[str, str]:
         """Build a canonical thumbs.csv row from actress identity data."""
