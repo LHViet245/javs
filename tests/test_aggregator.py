@@ -367,8 +367,10 @@ class TestDataAggregator:
         assert rows == [
             {
                 "CanonicalKey": "jp:神木麗",
-                "Aliases": "en:kamiki_rei|en:rei_kamiki",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "神木麗",
                 "ThumbUrl": "https://example.com/legacy.jpg",
+                "Aliases": "en:kamiki_rei|en:rei_kamiki",
             }
         ]
 
@@ -376,8 +378,8 @@ class TestDataAggregator:
     def test_thumb_csv_alias_based_merge_instead_of_append(self, tmp_path):
         path = tmp_path / "thumbs.csv"
         path.write_text(
-            "CanonicalKey,Aliases,ThumbUrl\n"
-            "en:alias_performer,en:performer_alias,\n",
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "jp:演員a,,演員A,,en:alias_performer\n",
             encoding="utf-8",
         )
         self.config.sort.metadata.thumb_csv.enabled = True
@@ -392,9 +394,11 @@ class TestDataAggregator:
                     id="ABP-420",
                     actresses=[
                         Actress(
-                            last_name="Alias",
-                            first_name="Performer",
-                            japanese_name="神木麗",
+                            japanese_name="演員A",
+                            english_aliases=[
+                                ActressAlias(last_name="Alias", first_name="Performer")
+                            ],
+                            thumb_url="https://example.com/alias.jpg",
                         )
                     ],
                     source="test",
@@ -405,9 +409,11 @@ class TestDataAggregator:
         rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
         assert rows == [
             {
-                "CanonicalKey": "jp:神木麗",
+                "CanonicalKey": "jp:演員a",
+                "FullName": "",
+                "JapaneseName": "演員A",
+                "ThumbUrl": "https://example.com/alias.jpg",
                 "Aliases": "en:alias_performer|en:performer_alias",
-                "ThumbUrl": "",
             }
         ]
 
@@ -415,8 +421,8 @@ class TestDataAggregator:
     def test_thumb_csv_conflicting_thumb_url_preserved(self, tmp_path):
         path = tmp_path / "thumbs.csv"
         path.write_text(
-            "CanonicalKey,Aliases,ThumbUrl\n"
-            "jp:神木麗,,https://example.com/cached.jpg\n",
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "jp:神木麗,Kamiki Rei,神木麗,https://example.com/cached.jpg,en:kamiki_rei|en:rei_kamiki\n",
             encoding="utf-8",
         )
         self.config.sort.metadata.thumb_csv.enabled = True
@@ -445,8 +451,10 @@ class TestDataAggregator:
         assert rows == [
             {
                 "CanonicalKey": "jp:神木麗",
-                "Aliases": "en:kamiki_rei|en:rei_kamiki",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "神木麗",
                 "ThumbUrl": "https://example.com/cached.jpg",
+                "Aliases": "en:kamiki_rei|en:rei_kamiki",
             }
         ]
 
