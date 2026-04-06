@@ -373,16 +373,15 @@ class DataAggregator:
             with open(csv_path, encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    full_name = (row.get("FullName", "") or row.get("Name", "")).strip()
-                    japanese_name = row.get("JapaneseName", "").strip()
-                    thumb = row.get("ThumbUrl", "").strip()
-                    for name in (full_name, japanese_name):
-                        if not name:
-                            continue
-                        normalized = name.lower()
-                        self._thumb_known_names.add(normalized)
+                    identities = self._thumb_row_identity_keys(row)
+                    if not identities:
+                        continue
+
+                    thumb = (row.get("ThumbUrl", "") or "").strip()
+                    for identity in identities:
+                        self._thumb_known_names.add(identity)
                         if thumb:
-                            self._thumb_cache[normalized] = thumb
+                            self._thumb_cache[identity] = thumb
         except Exception as exc:
             logger.error("thumb_csv_load_error", error=str(exc))
 
@@ -395,14 +394,14 @@ class DataAggregator:
 
         rows_to_append: list[dict[str, str]] = []
         for actress in data.actresses:
-            names = self._actress_lookup_names(actress)
-            if not names:
+            identities = self._actress_identity_keys(actress)
+            if not identities:
                 continue
             if self._thumb_known_names is not None and any(
-                name in self._thumb_known_names for name in names
+                identity in self._thumb_known_names for identity in identities
             ):
                 continue
-            signature = "|".join(sorted(names))
+            signature = "|".join(sorted(identities))
             if signature in self._auto_added_thumb_names:
                 continue
 
@@ -417,10 +416,10 @@ class DataAggregator:
             rows_to_append.append(row)
             self._auto_added_thumb_names.add(signature)
             if self._thumb_known_names is not None:
-                self._thumb_known_names.update(names)
+                self._thumb_known_names.update(identities)
             if actress.thumb_url:
-                for name in names:
-                    self._thumb_cache[name] = actress.thumb_url
+                for identity in identities:
+                    self._thumb_cache[identity] = actress.thumb_url
 
         if rows_to_append:
             self._append_csv_rows(
@@ -452,33 +451,89 @@ class DataAggregator:
         except Exception as exc:
             logger.error("csv_append_error", file=filename, error=str(exc))
 
-    def _actress_lookup_names(self, actress: Actress) -> set[str]:
-        """Return normalized actress names used for CSV lookup and duplicate detection."""
-        names: set[str] = set()
-        for value in (
-            actress.full_name,
-            actress.full_name_reversed,
-            actress.japanese_name,
-        ):
-            normalized = self._normalize_lookup_value(value)
-            if normalized:
-                names.add(normalized)
+    def _actress_identity_keys(self, actress: Actress) -> set[str]:
+        """Return normalized actress identities used for thumb lookup."""
+        identities: set[str] = set()
+
+        canonical_key = actress.japanese_name or actress.full_name
+        if canonical_key and canonical_key != "Unknown":
+            if actress.japanese_name:
+                identities.add(self._identity_key("jp", actress.japanese_name))
+            else:
+                identities.add(self._identity_key("en", canonical_key))
+
+        english_name = self._identity_key(
+            "en", " ".join(part for part in [actress.last_name, actress.first_name] if part)
+        )
+        if english_name:
+            identities.add(english_name)
+
+        reversed_english_name = self._identity_key(
+            "en", " ".join(part for part in [actress.first_name, actress.last_name] if part)
+        )
+        if reversed_english_name:
+            identities.add(reversed_english_name)
+
+        if actress.japanese_name:
+            japanese_identity = self._identity_key("jp", actress.japanese_name)
+            if japanese_identity:
+                identities.add(japanese_identity)
 
         if not self.config.sort.metadata.thumb_csv.convert_alias:
-            return names
+            return identities
 
         for alias in actress.english_aliases:
             for value in self._english_alias_names(alias):
-                normalized = self._normalize_lookup_value(value)
-                if normalized:
-                    names.add(normalized)
+                alias_identity = self._identity_key("en", value)
+                if alias_identity:
+                    identities.add(alias_identity)
 
         for alias in actress.japanese_aliases:
-            normalized = self._normalize_lookup_value(alias.japanese_name)
-            if normalized:
-                names.add(normalized)
+            alias_identity = self._identity_key("jp", alias.japanese_name)
+            if alias_identity:
+                identities.add(alias_identity)
 
-        return names
+        return identities
+
+    def _thumb_row_identity_keys(self, row: dict[str, str]) -> set[str]:
+        """Return normalized identities loaded from a thumbs.csv row."""
+        identities: set[str] = set()
+
+        canonical_key = self._normalize_lookup_value(row.get("CanonicalKey"))
+        if canonical_key:
+            if ":" not in canonical_key:
+                if row.get("JapaneseName"):
+                    canonical_key = "jp:" + canonical_key
+                else:
+                    canonical_key = "en:" + canonical_key
+            identities.add(canonical_key)
+
+        for value in (row.get("FullName"), row.get("Name")):
+            identity = self._identity_key("en", value)
+            if identity:
+                identities.add(identity)
+
+        japanese_identity = self._identity_key("jp", row.get("JapaneseName"))
+        if japanese_identity:
+            identities.add(japanese_identity)
+
+        if self.config.sort.metadata.thumb_csv.convert_alias:
+            aliases_raw = self._normalize_lookup_value(row.get("Aliases"))
+            if aliases_raw:
+                for alias in re.split(r"[|;]", aliases_raw):
+                    alias = alias.strip()
+                    if not alias:
+                        continue
+                    identity = self._normalize_lookup_value(alias)
+                    if ":" not in identity:
+                        identity = "en:" + identity
+                    identities.add(identity)
+
+        return identities
+
+    def _actress_lookup_names(self, actress: Actress) -> set[str]:
+        """Backward-compatible wrapper for actress thumb identities."""
+        return self._actress_identity_keys(actress)
 
     @staticmethod
     def _english_alias_names(alias: ActressAlias) -> tuple[str, str]:
@@ -496,6 +551,16 @@ class DataAggregator:
         if normalized == "unknown":
             return ""
         return normalized
+
+    @staticmethod
+    def _identity_key(prefix: str, value: str | None) -> str:
+        """Build a normalized identity key with a stable prefix."""
+        normalized = DataAggregator._normalize_lookup_value(value)
+        if not normalized:
+            return ""
+        if ":" in normalized:
+            return normalized
+        return f"{prefix}:{normalized}"
 
     def _resolve_data_path(self, filename: str, *, allow_missing: bool = False) -> Path | None:
         """Resolve a data file path from config or default location."""
