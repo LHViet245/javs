@@ -417,7 +417,6 @@ class TestDataAggregator:
             }
         ]
 
-    @pytest.mark.xfail(reason="Task 3-4 pending")
     def test_thumb_csv_conflicting_thumb_url_preserved(self, tmp_path):
         path = tmp_path / "thumbs.csv"
         path.write_text(
