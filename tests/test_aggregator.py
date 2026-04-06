@@ -2,6 +2,8 @@
 
 import csv
 
+import pytest
+
 from javs.config import JavsConfig
 from javs.core.aggregator import DataAggregator
 from javs.models.movie import Actress, ActressAlias, JapaneseAlias, MovieData, Rating
@@ -287,6 +289,199 @@ class TestDataAggregator:
         )
 
         assert result.actresses[0].thumb_url == "https://example.com/rei.jpg"
+
+    @pytest.mark.xfail(reason="Task 1-2 pending")
+    def test_thumb_identity_keys_prefer_japanese_canonical_key(self):
+        actress = Actress(
+            last_name="Kamiki",
+            first_name="Rei",
+            japanese_name="神木麗",
+            english_aliases=[ActressAlias(last_name="Rei", first_name="Kamiki")],
+            japanese_aliases=[JapaneseAlias(japanese_name="別名")],
+        )
+
+        identities = self.aggregator._actress_identity_keys(actress)
+
+        assert identities == {
+            "jp:神木麗",
+            "en:kamiki rei",
+            "en:rei kamiki",
+            "jp:別名",
+        }
+
+    @pytest.mark.xfail(reason="Task 1-2 pending")
+    def test_thumb_csv_resolves_future_canonical_key_rows(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,Aliases,ThumbUrl\n"
+            "jp:神木麗,en:kamiki rei|en:rei kamiki,https://example.com/rei.jpg\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        result = aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[Actress(japanese_name="神木麗")],
+                    source="test",
+                )
+            ]
+        )
+
+        assert result.actresses[0].thumb_url == "https://example.com/rei.jpg"
+
+    @pytest.mark.xfail(reason="Task 1-2 pending")
+    def test_thumb_csv_resolves_future_alias_rows(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,Aliases,ThumbUrl\n"
+            "jp:別名,en:Alias Performer|en:Performer Alias,https://example.com/alias.jpg\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        result = aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[Actress(last_name="Alias", first_name="Performer")],
+                    source="test",
+                )
+            ]
+        )
+
+        assert result.actresses[0].thumb_url == "https://example.com/alias.jpg"
+
+    @pytest.mark.xfail(reason="Task 3-4 pending")
+    def test_thumb_csv_legacy_english_only_row_upgrades_to_japanese_canonical(
+        self, tmp_path
+    ):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "FullName,JapaneseName,ThumbUrl\n"
+            "Kamiki Rei,,https://example.com/cached.jpg\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                            thumb_url="https://example.com/scraper.jpg",
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
+        assert rows == [
+            {
+                "CanonicalKey": "jp:神木麗",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "神木麗",
+                "ThumbUrl": "https://example.com/cached.jpg",
+                "Aliases": "en:kamiki rei|en:rei kamiki",
+            }
+        ]
+
+    @pytest.mark.xfail(reason="Task 3-4 pending")
+    def test_thumb_csv_alias_based_merge_instead_of_append(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "FullName,JapaneseName,ThumbUrl\nAlias Performer,,https://example.com/alias.jpg\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.convert_alias = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Primary",
+                            first_name="Name",
+                            japanese_name="演員A",
+                            english_aliases=[
+                                ActressAlias(last_name="Alias", first_name="Performer")
+                            ],
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
+        assert rows == [
+            {
+                "CanonicalKey": "jp:演員A",
+                "FullName": "Primary Name",
+                "JapaneseName": "演員A",
+                "ThumbUrl": "https://example.com/alias.jpg",
+                "Aliases": "en:alias performer|en:performer alias",
+            }
+        ]
+
+    def test_thumb_csv_conflicting_thumb_url_preserved(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "jp:神木麗,Kamiki Rei,神木麗,https://example.com/cached.jpg,"
+            "en:kamiki rei|en:rei kamiki\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                            thumb_url="https://example.com/scraper.jpg",
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
+        assert rows == [
+            {
+                "CanonicalKey": "jp:神木麗",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "神木麗",
+                "ThumbUrl": "https://example.com/cached.jpg",
+                "Aliases": "en:kamiki rei|en:rei kamiki",
+            }
+        ]
 
     def test_thumb_csv_does_not_override_existing_scraper_thumb(self, tmp_path):
         path = tmp_path / "thumbs.csv"
