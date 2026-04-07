@@ -735,6 +735,9 @@ class DataAggregator:
         english_display = self._display_identity_text(
             " ".join(part for part in [actress.last_name, actress.first_name] if part)
         )
+        reversed_english_display = None
+        if actress.last_name and actress.first_name:
+            reversed_english_display = self._display_identity_text(actress.full_name_reversed)
         japanese_display = self._display_identity_text(actress.japanese_name)
 
         canonical_key = self._japanese_identity_key(actress.japanese_name)
@@ -743,6 +746,9 @@ class DataAggregator:
         self._add_identity_key(match_keys, canonical_key)
         self._append_lookup_key(lookup_keys, canonical_key)
         for key in self._english_identity_variants(english_display):
+            self._add_identity_key(match_keys, key)
+            self._append_lookup_key(lookup_keys, key)
+        for key in self._english_identity_variants(reversed_english_display):
             self._add_identity_key(match_keys, key)
             self._append_lookup_key(lookup_keys, key)
         japanese_key = self._japanese_identity_key(japanese_display)
@@ -780,7 +786,7 @@ class DataAggregator:
         japanese_name = self._display_identity_text(japanese_raw)
         canonical_key = self._normalize_stored_identity_key(
             row.get("CanonicalKey", ""),
-            default_prefix="jp" if japanese_name else "en",
+            default_prefix="infer",
         )
 
         if not canonical_key:
@@ -801,7 +807,7 @@ class DataAggregator:
         for alias in re.split(r"[|;]", aliases_raw):
             alias_key = self._normalize_stored_identity_key(
                 alias,
-                default_prefix="jp" if japanese_name else "en",
+                default_prefix="infer",
             )
             self._add_identity_key(match_keys, alias_key)
 
@@ -903,6 +909,8 @@ class DataAggregator:
             return None
 
         if ":" not in normalized:
+            if default_prefix == "infer":
+                default_prefix = DataAggregator._infer_identity_prefix(normalized)
             if default_prefix == "jp":
                 return DataAggregator._japanese_identity_key(normalized)
             return DataAggregator._english_identity_key(normalized)
@@ -916,6 +924,13 @@ class DataAggregator:
         if prefix == "jp":
             return DataAggregator._japanese_identity_key(body)
         return f"{prefix}:{body}"
+
+    @staticmethod
+    def _infer_identity_prefix(value: str) -> str:
+        """Infer whether an unprefixed stored identity looks Japanese or English."""
+        if re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", value):
+            return "jp"
+        return "en"
 
     def _resolve_data_path(self, filename: str, *, allow_missing: bool = False) -> Path | None:
         """Resolve a data file path from config or default location."""
