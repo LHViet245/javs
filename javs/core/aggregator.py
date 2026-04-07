@@ -52,6 +52,7 @@ class DataAggregator:
         self._genre_map: dict[str, str] | None = None
         self._genre_ignore: list[re.Pattern] | None = None
         self._thumb_rows: list[dict[str, str]] | None = None
+        self._thumb_rows_are_canonical: bool = True
         self._thumb_known_names: set[str] | None = None
         self._auto_added_genres: set[str] = set()
         self._auto_added_thumb_names: set[str] = set()
@@ -373,6 +374,7 @@ class DataAggregator:
     def _load_thumb_csv(self) -> None:
         """Load actress thumbnail CSV into memory."""
         self._thumb_rows = []
+        self._thumb_rows_are_canonical = True
         self._thumb_known_names = set()
         csv_path = self._resolve_data_path("thumbs.csv")
         if not csv_path or not csv_path.exists():
@@ -381,6 +383,9 @@ class DataAggregator:
         try:
             with open(csv_path, encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
+                self._thumb_rows_are_canonical = (
+                    list(reader.fieldnames or []) == THUMB_CSV_FIELDNAMES
+                )
                 for row in reader:
                     normalized_row = self._normalize_thumb_row(row)
                     identity = self._build_row_identity(normalized_row)
@@ -418,6 +423,7 @@ class DataAggregator:
         original_row_count = len(self._thumb_rows or [])
         rewrite_needed = False
         appended_row_indexes: list[int] = []
+        added_signatures: list[str] = []
         for actress in data.actresses:
             identity = self._build_actress_identity(actress)
             if not identity.match_keys:
@@ -427,7 +433,7 @@ class DataAggregator:
                 merged_row = self._merge_thumb_row(self._thumb_rows[row_index], identity)
                 if merged_row != self._thumb_rows[row_index]:
                     self._thumb_rows[row_index] = merged_row
-                    rewrite_needed = row_index < original_row_count
+                    rewrite_needed = rewrite_needed or row_index < original_row_count
                 continue
 
             signature = identity.canonical_key or "|".join(
@@ -445,40 +451,81 @@ class DataAggregator:
             self._thumb_rows.append(row)
             appended_row_indexes.append(len(self._thumb_rows) - 1)
             self._auto_added_thumb_names.add(signature)
+            added_signatures.append(signature)
 
+        persisted = False
         if rewrite_needed and self._thumb_rows is not None:
-            self._write_thumb_rows(self._thumb_rows[:original_row_count])
-            logger.info("thumb_csv_rewritten", count=original_row_count)
-        if appended_row_indexes and self._thumb_rows is not None:
-            self._append_csv_rows(
+            persisted = self._write_thumb_rows(self._thumb_rows)
+            if persisted:
+                logger.info("thumb_csv_rewritten", count=len(self._thumb_rows))
+        elif (
+            appended_row_indexes
+            and self._thumb_rows is not None
+            and not self._thumb_rows_are_canonical
+        ):
+            persisted = self._write_thumb_rows(self._thumb_rows)
+            if persisted:
+                logger.info("thumb_csv_rewritten", count=len(self._thumb_rows))
+        elif appended_row_indexes and self._thumb_rows is not None:
+            persisted = self._append_csv_rows(
                 "thumbs.csv",
                 THUMB_CSV_FIELDNAMES,
                 [self._thumb_rows[index] for index in appended_row_indexes],
             )
-            logger.info("thumb_csv_appended", count=len(appended_row_indexes))
-        if (rewrite_needed or appended_row_indexes) and self._thumb_rows is not None:
-            self._refresh_thumb_row_cache()
+            if persisted:
+                logger.info("thumb_csv_appended", count=len(appended_row_indexes))
+
+        if rewrite_needed or appended_row_indexes:
+            if persisted and self._thumb_rows is not None:
+                self._refresh_thumb_row_cache()
+            else:
+                for signature in added_signatures:
+                    self._auto_added_thumb_names.discard(signature)
+                self._load_thumb_csv()
 
     def _find_matching_thumb_row(self, identity: ActressIdentity) -> int | None:
         """Return the best matching thumbs.csv row index for an actress identity."""
-        if not identity.lookup_keys or not self._thumb_rows:
+        if not identity.match_keys or not self._thumb_rows:
             return None
 
-        best_choice: tuple[int, int, int] | None = None
+        best_choice: tuple[int, int, int, int, int] | None = None
         best_index: int | None = None
+        primary_lookup_keys = set(identity.lookup_keys)
         for row_index, row in enumerate(self._thumb_rows):
             row_identity = self._build_row_identity(row)
-            match_rank = self._row_match_rank(identity.lookup_keys, row_identity.match_keys)
-            if match_rank is None:
+            overlap = identity.match_keys & row_identity.match_keys
+            if not overlap:
                 continue
 
-            overlap_count = len(identity.match_keys & row_identity.match_keys)
-            choice = (
-                match_rank,
-                self._canonical_strength(row_identity.canonical_key),
-                -overlap_count,
-                row_index,
+            exact_canonical_match = (
+                0
+                if identity.canonical_key
+                and identity.canonical_key == row_identity.canonical_key
+                else 1
             )
+            alias_only_match = 1
+            row_primary_keys = set(row_identity.lookup_keys)
+            if not primary_lookup_keys or primary_lookup_keys & row_primary_keys:
+                alias_only_match = 0
+            overlap_count = len(overlap)
+            canonical_rank = self._canonical_strength(row_identity.canonical_key)
+            overlap_rank = -overlap_count
+            if alias_only_match:
+                choice = (
+                    exact_canonical_match,
+                    alias_only_match,
+                    overlap_rank,
+                    canonical_rank,
+                    row_index,
+                )
+            else:
+                choice = (
+                    exact_canonical_match,
+                    alias_only_match,
+                    canonical_rank,
+                    overlap_rank,
+                    row_index,
+                )
             if best_choice is None or choice < best_choice:
                 best_choice = choice
                 best_index = row_index
@@ -595,11 +642,11 @@ class DataAggregator:
         for row in self._thumb_rows or []:
             self._thumb_known_names.update(self._build_row_identity(row).match_keys)
 
-    def _write_thumb_rows(self, rows: list[dict[str, str]]) -> None:
+    def _write_thumb_rows(self, rows: list[dict[str, str]]) -> bool:
         """Atomically rewrite thumbs.csv using the canonical header."""
         path = self._resolve_data_path("thumbs.csv", allow_missing=True)
         if path is None:
-            return
+            return False
 
         temp_path: Path | None = None
         try:
@@ -619,19 +666,13 @@ class DataAggregator:
                 writer.writerows(rows)
 
             temp_path.replace(path)
+            self._thumb_rows_are_canonical = True
+            return True
         except Exception as exc:
             if temp_path is not None and temp_path.exists():
                 temp_path.unlink(missing_ok=True)
             logger.error("thumb_csv_write_error", error=str(exc))
-
-    @staticmethod
-    def _row_match_rank(lookup_keys: tuple[str, ...], match_keys: set[str]) -> int | None:
-        """Return the lowest priority index that matches the row."""
-        for index, key in enumerate(lookup_keys):
-            if key in match_keys:
-                return index
-        return None
-
+            return False
     @staticmethod
     def _canonical_strength(value: str | None) -> int:
         """Rank canonical key strength for deterministic tie-breaking."""
@@ -667,11 +708,11 @@ class DataAggregator:
         filename: str,
         fieldnames: list[str],
         rows: list[dict[str, str]],
-    ) -> None:
+    ) -> bool:
         """Append rows to a CSV file, creating it with a header when needed."""
         path = self._resolve_data_path(filename, allow_missing=True)
         if path is None:
-            return
+            return False
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -681,8 +722,10 @@ class DataAggregator:
                 if not file_exists:
                     writer.writeheader()
                 writer.writerows(rows)
+            return True
         except Exception as exc:
             logger.error("csv_append_error", file=filename, error=str(exc))
+            return False
 
     def _build_actress_identity(self, actress: Actress) -> ActressIdentity:
         """Build normalized actress identity keys for thumb lookup."""
@@ -711,12 +754,10 @@ class DataAggregator:
                 for value in self._english_alias_names(alias):
                     alias_key = self._english_identity_key(value)
                     self._add_identity_key(match_keys, alias_key)
-                    self._append_lookup_key(lookup_keys, alias_key)
 
             for alias in actress.japanese_aliases:
                 alias_key = self._japanese_identity_key(alias.japanese_name)
                 self._add_identity_key(match_keys, alias_key)
-                self._append_lookup_key(lookup_keys, alias_key)
 
         return ActressIdentity(
             canonical_key=canonical_key,
@@ -763,7 +804,6 @@ class DataAggregator:
                 default_prefix="jp" if japanese_name else "en",
             )
             self._add_identity_key(match_keys, alias_key)
-            self._append_lookup_key(lookup_keys, alias_key)
 
         return ActressIdentity(
             canonical_key=canonical_key,

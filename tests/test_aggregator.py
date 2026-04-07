@@ -701,11 +701,11 @@ class TestDataAggregator:
                     [dict(row) for row in rows],
                 )
             )
-            original_append(filename, fieldnames, rows)
+            return original_append(filename, fieldnames, rows)
 
         def spy_write(rows: list[dict[str, str]]) -> None:
             rewrite_calls.append([dict(row) for row in rows])
-            original_write(rows)
+            return original_write(rows)
 
         monkeypatch.setattr(aggregator, "_append_csv_rows", spy_append)
         monkeypatch.setattr(aggregator, "_write_thumb_rows", spy_write)
@@ -744,6 +744,83 @@ class TestDataAggregator:
         ]
         assert rewrite_calls == []
 
+    def test_thumb_csv_auto_add_rewrites_legacy_file_before_appending_new_row(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "FullName,JapaneseName,ThumbUrl\n"
+            "Doe Jane,,https://example.com/jane.jpg\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        append_calls: list[tuple[str, list[str], list[dict[str, str]]]] = []
+        rewrite_calls: list[list[dict[str, str]]] = []
+        original_append = aggregator._append_csv_rows
+        original_write = aggregator._write_thumb_rows
+
+        def spy_append(
+            filename: str,
+            fieldnames: list[str],
+            rows: list[dict[str, str]],
+        ) -> None:
+            append_calls.append(
+                (
+                    filename,
+                    list(fieldnames),
+                    [dict(row) for row in rows],
+                )
+            )
+            return original_append(filename, fieldnames, rows)
+
+        def spy_write(rows: list[dict[str, str]]) -> None:
+            rewrite_calls.append([dict(row) for row in rows])
+            return original_write(rows)
+
+        monkeypatch.setattr(aggregator, "_append_csv_rows", spy_append)
+        monkeypatch.setattr(aggregator, "_write_thumb_rows", spy_write)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                            thumb_url="https://example.com/rei.jpg",
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        assert append_calls == []
+        assert rewrite_calls == [
+            [
+                {
+                    "CanonicalKey": "en:doe_jane",
+                    "FullName": "Doe Jane",
+                    "JapaneseName": "",
+                    "ThumbUrl": "https://example.com/jane.jpg",
+                    "Aliases": "en:jane_doe",
+                },
+                {
+                    "CanonicalKey": "jp:神木麗",
+                    "FullName": "Kamiki Rei",
+                    "JapaneseName": "神木麗",
+                    "ThumbUrl": "https://example.com/rei.jpg",
+                    "Aliases": "en:kamiki_rei|en:rei_kamiki",
+                },
+            ]
+        ]
+
     def test_thumb_csv_merge_uses_atomic_rewrite_for_existing_row(self, tmp_path, monkeypatch):
         path = tmp_path / "thumbs.csv"
         path.write_text(
@@ -773,11 +850,11 @@ class TestDataAggregator:
                     [dict(row) for row in rows],
                 )
             )
-            original_append(filename, fieldnames, rows)
+            return original_append(filename, fieldnames, rows)
 
         def spy_write(rows: list[dict[str, str]]) -> None:
             rewrite_calls.append([dict(row) for row in rows])
-            original_write(rows)
+            return original_write(rows)
 
         monkeypatch.setattr(aggregator, "_append_csv_rows", spy_append)
         monkeypatch.setattr(aggregator, "_write_thumb_rows", spy_write)
@@ -810,6 +887,294 @@ class TestDataAggregator:
                 }
             ]
         ]
+
+    def test_thumb_csv_mixed_merge_and_append_rewrites_entire_batch(self, tmp_path, monkeypatch):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "en:kamiki_rei,Kamiki Rei,,https://example.com/legacy.jpg,\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        append_calls: list[tuple[str, list[str], list[dict[str, str]]]] = []
+        rewrite_calls: list[list[dict[str, str]]] = []
+        original_append = aggregator._append_csv_rows
+        original_write = aggregator._write_thumb_rows
+
+        def spy_append(
+            filename: str,
+            fieldnames: list[str],
+            rows: list[dict[str, str]],
+        ) -> None:
+            append_calls.append(
+                (
+                    filename,
+                    list(fieldnames),
+                    [dict(row) for row in rows],
+                )
+            )
+            return original_append(filename, fieldnames, rows)
+
+        def spy_write(rows: list[dict[str, str]]) -> None:
+            rewrite_calls.append([dict(row) for row in rows])
+            return original_write(rows)
+
+        monkeypatch.setattr(aggregator, "_append_csv_rows", spy_append)
+        monkeypatch.setattr(aggregator, "_write_thumb_rows", spy_write)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                        ),
+                        Actress(
+                            last_name="Doe",
+                            first_name="Jane",
+                            thumb_url="https://example.com/jane.jpg",
+                        ),
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        assert append_calls == []
+        assert rewrite_calls == [
+            [
+                {
+                    "CanonicalKey": "jp:神木麗",
+                    "FullName": "Kamiki Rei",
+                    "JapaneseName": "神木麗",
+                    "ThumbUrl": "https://example.com/legacy.jpg",
+                    "Aliases": "en:kamiki_rei|en:rei_kamiki",
+                },
+                {
+                    "CanonicalKey": "en:doe_jane",
+                    "FullName": "Doe Jane",
+                    "JapaneseName": "",
+                    "ThumbUrl": "https://example.com/jane.jpg",
+                    "Aliases": "en:jane_doe",
+                },
+            ]
+        ]
+
+    def test_thumb_csv_mixed_merge_and_append_persists_both_updates(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "en:kamiki_rei,Kamiki Rei,,https://example.com/legacy.jpg,\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                        ),
+                        Actress(
+                            last_name="Doe",
+                            first_name="Jane",
+                            thumb_url="https://example.com/jane.jpg",
+                        ),
+                        Actress(
+                            last_name="Jane",
+                            first_name="Doe",
+                            thumb_url="https://example.com/jane-ignored.jpg",
+                        ),
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
+        assert rows == [
+            {
+                "CanonicalKey": "jp:神木麗",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "神木麗",
+                "ThumbUrl": "https://example.com/legacy.jpg",
+                "Aliases": "en:kamiki_rei|en:rei_kamiki",
+            },
+            {
+                "CanonicalKey": "en:doe_jane",
+                "FullName": "Doe Jane",
+                "JapaneseName": "",
+                "ThumbUrl": "https://example.com/jane.jpg",
+                "Aliases": "en:jane_doe",
+            },
+        ]
+
+    def test_thumb_csv_append_failure_reloads_state_from_disk(self, tmp_path, monkeypatch):
+        path = tmp_path / "thumbs.csv"
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        def fail_append(
+            filename: str,
+            fieldnames: list[str],
+            rows: list[dict[str, str]],
+        ) -> bool:
+            return False
+
+        monkeypatch.setattr(aggregator, "_append_csv_rows", fail_append)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                            thumb_url="https://example.com/rei.jpg",
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        assert not path.exists()
+        assert aggregator._thumb_rows == []
+        assert aggregator._thumb_known_names == set()
+
+    def test_thumb_csv_rewrite_failure_reloads_state_from_disk(self, tmp_path, monkeypatch):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "en:kamiki_rei,Kamiki Rei,,https://example.com/legacy.jpg,\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.auto_add = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        def fail_write(rows: list[dict[str, str]]) -> bool:
+            return False
+
+        monkeypatch.setattr(aggregator, "_write_thumb_rows", fail_write)
+
+        aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Kamiki",
+                            first_name="Rei",
+                            japanese_name="神木麗",
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        rows = list(csv.DictReader(path.open(encoding="utf-8-sig")))
+        assert rows == [
+            {
+                "CanonicalKey": "en:kamiki_rei",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "",
+                "ThumbUrl": "https://example.com/legacy.jpg",
+                "Aliases": "",
+            }
+        ]
+        assert aggregator._thumb_rows == [
+            {
+                "CanonicalKey": "en:kamiki_rei",
+                "FullName": "Kamiki Rei",
+                "JapaneseName": "",
+                "ThumbUrl": "https://example.com/legacy.jpg",
+                "Aliases": "en:rei_kamiki",
+            }
+        ]
+
+    def test_thumb_csv_lookup_prefers_direct_name_match_over_alias_only_match(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "en:performer_alias,Performer Alias,,https://example.com/direct.jpg,\n"
+            "jp:別名,,別名,https://example.com/alias.jpg,en:alias_performer\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.convert_alias = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        result = aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            last_name="Alias",
+                            first_name="Performer",
+                            japanese_aliases=[JapaneseAlias(japanese_name="別名")],
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        assert result.actresses[0].thumb_url == "https://example.com/direct.jpg"
+
+    def test_thumb_csv_lookup_prefers_more_specific_alias_only_match(self, tmp_path):
+        path = tmp_path / "thumbs.csv"
+        path.write_text(
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases\n"
+            "jp:別名,,別名,https://example.com/jp.jpg,en:alias_performer\n"
+            "en:alias_performer,Alias Performer,,https://example.com/en.jpg,en:performer_alias\n",
+            encoding="utf-8",
+        )
+        self.config.sort.metadata.thumb_csv.enabled = True
+        self.config.sort.metadata.thumb_csv.convert_alias = True
+        self.config.locations.thumb_csv = str(path)
+        aggregator = DataAggregator(self.config)
+
+        result = aggregator.merge(
+            [
+                MovieData(
+                    id="ABP-420",
+                    actresses=[
+                        Actress(
+                            japanese_name="演員A",
+                            english_aliases=[
+                                ActressAlias(last_name="Alias", first_name="Performer")
+                            ],
+                        )
+                    ],
+                    source="test",
+                )
+            ]
+        )
+
+        assert result.actresses[0].thumb_url == "https://example.com/en.jpg"
 
     def test_thumb_csv_auto_add_avoids_duplicate_rows_in_same_run(self, tmp_path):
         path = tmp_path / "thumbs.csv"
