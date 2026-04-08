@@ -7,6 +7,7 @@ import sqlite3
 from typing import Any
 
 INITIAL_SCHEMA_VERSION = "0001_platform_foundation"
+JOB_EVENTS_JOB_ITEM_MATCH_VERSION = "0002_job_events_match_job_items"
 
 CREATE_SCHEMA_MIGRATIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -87,6 +88,50 @@ INITIAL_SCHEMA_STATEMENTS = (
 
 MIGRATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (INITIAL_SCHEMA_VERSION, INITIAL_SCHEMA_STATEMENTS),
+    (
+        JOB_EVENTS_JOB_ITEM_MATCH_VERSION,
+        (
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_job_items_job_id_id
+            ON job_items (job_id, id)
+            """,
+            """
+            CREATE TABLE job_events_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                job_item_id INTEGER,
+                event_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (job_id, job_item_id)
+                    REFERENCES job_items(job_id, id)
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            INSERT INTO job_events_v2 (
+                id,
+                job_id,
+                job_item_id,
+                event_type,
+                payload_json,
+                created_at
+            )
+            SELECT id, job_id, job_item_id, event_type, payload_json, created_at
+            FROM job_events
+            """,
+            """
+            DROP TABLE job_events
+            """,
+            """
+            ALTER TABLE job_events_v2 RENAME TO job_events
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_job_events_job_id
+            ON job_events (job_id)
+            """,
+        ),
+    ),
 )
 
 JOB_JSON_FIELDS = ("request_json", "result_json", "summary_json", "error_json")

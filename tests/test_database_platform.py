@@ -47,7 +47,10 @@ def test_initialize_platform_schema_records_migration_version(tmp_path: Path) ->
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
 
-    assert [row["version"] for row in rows] == ["0001_platform_foundation"]
+    assert [row["version"] for row in rows] == [
+        "0001_platform_foundation",
+        "0002_job_events_match_job_items",
+    ]
 
 
 def test_open_database_configures_mapping_rows_and_foreign_keys(tmp_path: Path) -> None:
@@ -76,7 +79,10 @@ def test_initialize_database_is_idempotent(tmp_path: Path) -> None:
     with open_database(db_path) as connection:
         rows = connection.execute("SELECT version FROM schema_migrations").fetchall()
 
-    assert [row["version"] for row in rows] == ["0001_platform_foundation"]
+    assert [row["version"] for row in rows] == [
+        "0001_platform_foundation",
+        "0002_job_events_match_job_items",
+    ]
 
 
 def test_job_repository_can_create_get_list_and_update_jobs(tmp_path: Path) -> None:
@@ -233,6 +239,43 @@ def test_job_items_enforce_parent_job_foreign_key(tmp_path: Path) -> None:
             pass
         else:
             raise AssertionError("expected foreign key enforcement for job_items.job_id")
+
+
+def test_job_events_reject_job_items_from_a_different_job(tmp_path: Path) -> None:
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+
+    with open_database(db_path) as connection:
+        jobs = JobsRepository(connection)
+        items = JobItemsRepository(connection)
+        events = JobEventsRepository(connection)
+
+        first_job_id = jobs.create_job(
+            kind="sort",
+            origin="cli",
+            request_json={"source": "/library/a"},
+        )
+        second_job_id = jobs.create_job(
+            kind="sort",
+            origin="cli",
+            request_json={"source": "/library/b"},
+        )
+        first_job_item_id = items.create_item(
+            job_id=first_job_id,
+            item_key="item-1",
+            status="pending",
+        )
+
+        try:
+            events.add_event(
+                job_id=second_job_id,
+                job_item_id=first_job_item_id,
+                event_type="item.created",
+            )
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("expected job_events to reject cross-job job_item_id references")
 
 
 def test_deleting_a_job_cascades_to_child_rows(tmp_path: Path) -> None:
