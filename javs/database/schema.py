@@ -117,7 +117,22 @@ MIGRATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                 payload_json,
                 created_at
             )
-            SELECT id, job_id, job_item_id, event_type, payload_json, created_at
+            SELECT
+                id,
+                job_id,
+                CASE
+                    WHEN job_item_id IS NULL THEN NULL
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM job_items
+                        WHERE job_items.id = job_events.job_item_id
+                          AND job_items.job_id = job_events.job_id
+                    ) THEN job_item_id
+                    ELSE NULL
+                END,
+                event_type,
+                payload_json,
+                created_at
             FROM job_events
             """,
             """

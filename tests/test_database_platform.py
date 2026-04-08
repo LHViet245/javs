@@ -6,11 +6,16 @@ import sqlite3
 from pathlib import Path
 
 from javs.database.connection import open_database
-from javs.database.migrations import initialize_database
+from javs.database.migrations import apply_migrations, initialize_database
 from javs.database.repositories.events import JobEventsRepository
 from javs.database.repositories.job_items import JobItemsRepository
 from javs.database.repositories.jobs import JobsRepository
 from javs.database.repositories.settings_audit import SettingsAuditRepository
+from javs.database.schema import (
+    CREATE_SCHEMA_MIGRATIONS_TABLE_SQL,
+    INITIAL_SCHEMA_STATEMENTS,
+    INITIAL_SCHEMA_VERSION,
+)
 
 
 def fetch_table_names(path: Path) -> set[str]:
@@ -276,6 +281,63 @@ def test_job_events_reject_job_items_from_a_different_job(tmp_path: Path) -> Non
             pass
         else:
             raise AssertionError("expected job_events to reject cross-job job_item_id references")
+
+
+def test_apply_migrations_repairs_legacy_cross_job_event_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-platform.db"
+
+    with open_database(db_path) as connection:
+        connection.execute(CREATE_SCHEMA_MIGRATIONS_TABLE_SQL)
+        for statement in INITIAL_SCHEMA_STATEMENTS:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations (version) VALUES (?)",
+            (INITIAL_SCHEMA_VERSION,),
+        )
+        connection.execute(
+            """
+            INSERT INTO jobs (id, kind, status, origin)
+            VALUES ('job-a', 'sort', 'pending', 'cli')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO jobs (id, kind, status, origin)
+            VALUES ('job-b', 'sort', 'pending', 'cli')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO job_items (job_id, item_key, status)
+            VALUES ('job-a', 'item-1', 'pending')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO job_events (job_id, job_item_id, event_type)
+            VALUES ('job-b', 1, 'item.created')
+            """
+        )
+
+    with open_database(db_path) as connection:
+        apply_migrations(connection)
+        migrated_versions = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        migrated_event = connection.execute(
+            "SELECT job_id, job_item_id, event_type FROM job_events"
+        ).fetchone()
+
+    assert [row["version"] for row in migrated_versions] == [
+        "0001_platform_foundation",
+        "0002_job_events_match_job_items",
+    ]
+    assert migrated_event is not None
+    assert dict(migrated_event) == {
+        "job_id": "job-b",
+        "job_item_id": None,
+        "event_type": "item.created",
+    }
 
 
 def test_deleting_a_job_cascades_to_child_rows(tmp_path: Path) -> None:
