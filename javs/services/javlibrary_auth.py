@@ -188,6 +188,10 @@ async def configure_javlibrary_credentials(
         console.print("[red]Missing cf_clearance or User-Agent. Config was not saved.[/red]")
         return None
 
+    apply_javlibrary_credentials(config, credentials)
+    if save_on_success:
+        await asyncio.to_thread(save_config, config, config_path)
+
     try:
         await validate_javlibrary_credentials(config, credentials)
     except Exception as exc:
@@ -196,8 +200,5 @@ async def configure_javlibrary_credentials(
             print_cloudflare_guidance(exc)
         return None
 
-    apply_javlibrary_credentials(config, credentials)
-    if save_on_success:
-        await asyncio.to_thread(save_config, config, config_path)
     console.print("[green]Saved Javlibrary cf_clearance and browser User-Agent.[/green]")
     return credentials
