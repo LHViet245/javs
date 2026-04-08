@@ -46,7 +46,6 @@ class SettingsAuditRepository:
                 dump_json(change_summary_json),
             ),
         )
-        self.connection.commit()
         return int(cursor.lastrowid)
 
     def list_entries(self) -> list[dict[str, Any]]:

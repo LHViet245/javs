@@ -64,7 +64,6 @@ class JobItemsRepository:
                 finished_at,
             ),
         )
-        self.connection.commit()
         return int(cursor.lastrowid)
 
     def list_for_job(self, job_id: str) -> list[dict[str, Any]]:

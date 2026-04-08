@@ -39,7 +39,6 @@ class JobsRepository:
             """,
             (job_id, kind, "pending", origin, dump_json(request_json)),
         )
-        self.connection.commit()
         return job_id
 
     def get(self, job_id: str) -> dict[str, Any] | None:
@@ -106,7 +105,6 @@ class JobsRepository:
             f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ?",
             values,
         )
-        self.connection.commit()
 
     def mark_started(self, job_id: str) -> None:
         """Mark a job as running."""
