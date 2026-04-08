@@ -20,6 +20,7 @@ from javs.application.models import (
     UpdateJobRequest,
 )
 from javs.config import JavsConfig, load_config, save_config
+from javs.jobs.executor import JobExecutor
 
 
 class JobEventsRepository(Protocol):
@@ -49,13 +50,41 @@ class PlatformHistory(Protocol):
 class PlatformRunner(Protocol):
     """Minimal runner contract reserved for later task wiring."""
 
-    async def run_find(self, request: FindMovieRequest, *, origin: str) -> str:
+    async def run_job(
+        self,
+        *,
+        kind: str,
+        origin: str,
+        request: object | None,
+        executor: JobExecutor[object | None],
+    ) -> str:
+        """Create and execute a job with a supplied executor."""
+
+    async def run_find(
+        self,
+        request: FindMovieRequest,
+        *,
+        origin: str,
+        executor: JobExecutor[FindMovieRequest] | None = None,
+    ) -> str:
         """Create and execute a find job, returning its job ID."""
 
-    async def run_sort(self, request: SortJobRequest, *, origin: str) -> str:
+    async def run_sort(
+        self,
+        request: SortJobRequest,
+        *,
+        origin: str,
+        executor: JobExecutor[SortJobRequest] | None = None,
+    ) -> str:
         """Create and execute a sort job, returning its job ID."""
 
-    async def run_update(self, request: UpdateJobRequest, *, origin: str) -> str:
+    async def run_update(
+        self,
+        request: UpdateJobRequest,
+        *,
+        origin: str,
+        executor: JobExecutor[UpdateJobRequest] | None = None,
+    ) -> str:
         """Create and execute an update job, returning its job ID."""
 
 

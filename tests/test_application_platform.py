@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from javs.application import (
     FindMovieRequest,
@@ -216,3 +219,133 @@ def test_platform_facade_accepts_typed_dependencies_and_exposes_planned_methods(
         "save_settings",
     ]:
         assert hasattr(facade, method_name)
+
+
+def build_platform_runner(tmp_path: Path):
+    from javs.database.connection import open_database
+    from javs.database.migrations import initialize_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.jobs import PlatformJobRunner
+
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+
+    return connection, PlatformJobRunner(
+        jobs=JobsRepository(connection),
+        events=JobEventsRepository(connection),
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_creates_running_and_completed_job_with_persisted_events(
+    tmp_path: Path,
+) -> None:
+    from javs.jobs import JobExecutionContext, JobExecutionResult
+
+    connection, runner = build_platform_runner(tmp_path)
+
+    async def successful_executor(
+        context: JobExecutionContext[FindMovieRequest],
+    ) -> JobExecutionResult:
+        assert context.job_id
+        assert context.kind == "find"
+        assert context.origin == "cli"
+        assert context.request.movie_id == "ABP-420"
+        return JobExecutionResult(
+            result={"movie_id": context.request.movie_id},
+            summary={"matched": 1},
+        )
+
+    try:
+        job_id = await runner.run_job(
+            kind="find",
+            origin="cli",
+            request=FindMovieRequest(movie_id="ABP-420"),
+            executor=successful_executor,
+        )
+        job = runner.jobs.get(job_id)
+        events = runner.events.list_for_job(job_id)
+    finally:
+        connection.close()
+
+    assert job is not None
+    assert job["status"] == "completed"
+    assert job["started_at"] is not None
+    assert job["finished_at"] is not None
+    assert job["result_json"] == {"movie_id": "ABP-420"}
+    assert job["summary_json"] == {"matched": 1}
+    assert [event["event_type"] for event in events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_marks_job_failed_and_records_error_details_when_executor_raises(
+    tmp_path: Path,
+) -> None:
+    from javs.jobs import JobExecutionContext
+
+    connection, runner = build_platform_runner(tmp_path)
+
+    async def failing_executor(context: JobExecutionContext[dict[str, Any] | None]) -> None:
+        assert context.kind == "find"
+        raise RuntimeError("boom")
+
+    try:
+        job_id = await runner.run_job(
+            kind="find",
+            origin="cli",
+            request={"movie_id": "ABP-420"},
+            executor=failing_executor,
+        )
+        job = runner.jobs.get(job_id)
+        events = runner.events.list_for_job(job_id)
+    finally:
+        connection.close()
+
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["finished_at"] is not None
+    assert job["error_json"] == {"type": "RuntimeError", "message": "boom"}
+    assert [event["event_type"] for event in events] == [
+        "job.created",
+        "job.started",
+        "job.failed",
+    ]
+    assert events[-1]["payload_json"] == {"type": "RuntimeError", "message": "boom"}
+
+
+def test_platform_facade_accepts_runner_surface_needed_for_later_job_tasks() -> None:
+    from javs.jobs import JobExecutionContext, PlatformJobRunner
+
+    class RunnerWithExecutorSurface(StubPlatformRunner):
+        async def run_job(
+            self,
+            *,
+            kind: str,
+            origin: str,
+            request: object | None,
+            executor: object,
+        ) -> str:
+            return "job-1"
+
+    runner = RunnerWithExecutorSurface()
+    facade = PlatformFacade(
+        jobs=StubJobsRepository(),
+        job_items=StubJobItemsRepository(),
+        events=StubJobEventsRepository(),
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    assert facade.runner is runner
+    assert inspect.iscoroutinefunction(runner.run_job)
+    assert PlatformJobRunner is not None
+    assert JobExecutionContext is not None
