@@ -1,6 +1,14 @@
 """Shared application contracts for CLI and future API adapters."""
 
-from javs.application.facade import PlatformFacade
+from javs.application.facade import (
+    ConfigLoader,
+    ConfigSaver,
+    JobEventsRepository,
+    PlatformFacade,
+    PlatformHistory,
+    PlatformRunner,
+    SettingsAuditRepository,
+)
 from javs.application.history import (
     JobHistoryRepository,
     JobItemsHistoryRepository,
@@ -25,15 +33,21 @@ from javs.application.models import (
 __all__ = [
     "FindMovieRequest",
     "FindMovieResponse",
+    "ConfigLoader",
+    "ConfigSaver",
     "JobDetail",
     "JobHistoryRepository",
+    "JobEventsRepository",
     "JobItemSummary",
     "JobItemsHistoryRepository",
     "JobStartResponse",
     "JobSummary",
     "PlatformFacade",
+    "PlatformHistory",
+    "PlatformRunner",
     "SaveSettingsRequest",
     "SaveSettingsResponse",
+    "SettingsAuditRepository",
     "SettingsResponse",
     "SortJobRequest",
     "UpdateJobRequest",

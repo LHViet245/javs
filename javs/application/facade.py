@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
+from javs.application.history import JobHistoryRepository, JobItemsHistoryRepository
 from javs.application.models import (
     FindMovieRequest,
     FindMovieResponse,
@@ -21,20 +22,61 @@ from javs.application.models import (
 from javs.config import JavsConfig, load_config, save_config
 
 
+class JobEventsRepository(Protocol):
+    """Minimal event repository contract kept for future facade wiring."""
+
+    def list_for_job(self, job_id: str) -> list[dict[str, object]]:
+        """Return persisted events for a job."""
+
+
+class SettingsAuditRepository(Protocol):
+    """Minimal settings audit repository contract kept for future facade wiring."""
+
+    def list_entries(self) -> list[dict[str, object]]:
+        """Return persisted settings audit rows."""
+
+
+class PlatformHistory(Protocol):
+    """Minimal history service contract exposed to the facade."""
+
+    def get_job(self, job_id: str) -> JobDetail | None:
+        """Return a mapped job detail for a single job."""
+
+    def list_jobs(self, *, limit: int | None = None) -> list[JobSummary]:
+        """Return mapped job summaries."""
+
+
+class PlatformRunner(Protocol):
+    """Minimal runner contract reserved for later task wiring."""
+
+    async def run_find(self, request: FindMovieRequest, *, origin: str) -> str:
+        """Create and execute a find job, returning its job ID."""
+
+    async def run_sort(self, request: SortJobRequest, *, origin: str) -> str:
+        """Create and execute a sort job, returning its job ID."""
+
+    async def run_update(self, request: UpdateJobRequest, *, origin: str) -> str:
+        """Create and execute an update job, returning its job ID."""
+
+
+ConfigLoader = Callable[[Path], JavsConfig]
+ConfigSaver = Callable[[JavsConfig, Path], None]
+
+
 class PlatformFacade:
     """Main application entrypoint shared by CLI and future API adapters."""
 
     def __init__(
         self,
         *,
-        jobs: Any,
-        job_items: Any = None,
-        events: Any = None,
-        settings_audit: Any = None,
-        history: Any = None,
-        runner: Any = None,
-        config_loader: Callable[[Path], JavsConfig] = load_config,
-        config_saver: Callable[[JavsConfig, Path], None] = save_config,
+        jobs: JobHistoryRepository,
+        job_items: JobItemsHistoryRepository | None = None,
+        events: JobEventsRepository | None = None,
+        settings_audit: SettingsAuditRepository | None = None,
+        history: PlatformHistory | None = None,
+        runner: PlatformRunner | None = None,
+        config_loader: ConfigLoader = load_config,
+        config_saver: ConfigSaver = save_config,
     ) -> None:
         self.jobs = jobs
         self.job_items = job_items

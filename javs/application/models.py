@@ -18,10 +18,12 @@ def _normalize_movie_id(value: str) -> str:
 
     if "-" in movie_id:
         prefix, suffix = movie_id.split("-", 1)
+        if not prefix.isalpha() or not suffix.isdigit():
+            return movie_id
         number = suffix.lstrip("0") or "0"
         return f"{prefix}-{number.zfill(3)}"
 
-    match = _MOVIE_ID_PATTERN.match(movie_id)
+    match = _MOVIE_ID_PATTERN.fullmatch(movie_id)
     if match is None:
         return movie_id
 
