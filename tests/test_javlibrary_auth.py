@@ -54,7 +54,7 @@ class TestConfigureJavlibraryCredentials:
         assert saved == [tmp_path / "config.yaml"]
 
     @pytest.mark.asyncio
-    async def test_configure_does_not_save_when_validation_fails(
+    async def test_configure_persists_credentials_even_when_validation_fails(
         self, monkeypatch, tmp_path: Path
     ):
         config = JavsConfig()
@@ -86,9 +86,9 @@ class TestConfigureJavlibraryCredentials:
         )
 
         assert credentials is None
-        assert config.javlibrary.cookie_cf_clearance == ""
-        assert config.javlibrary.browser_user_agent == ""
-        assert saved == []
+        assert config.javlibrary.cookie_cf_clearance == "bad-cookie"
+        assert config.javlibrary.browser_user_agent == "browser-ua"
+        assert saved == [tmp_path / "config.yaml"]
 
 
 class TestPromptForJavlibraryCredentials:
