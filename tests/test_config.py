@@ -24,6 +24,37 @@ class TestJavsConfig:
         assert config.sleep == 2
         assert config.scrapers.enabled["r18dev"] is True
 
+    def test_database_config_defaults_are_loaded(self) -> None:
+        config = JavsConfig()
+
+        assert config.database.enabled is True
+        assert config.database.path == "~/.javs/platform.db"
+
+    def test_database_path_can_be_overridden(self, tmp_path: Path) -> None:
+        path = tmp_path / "database.yaml"
+        path.write_text(
+            yaml.dump({"database": {"path": "/tmp/custom-platform.db"}}),
+            encoding="utf-8",
+        )
+
+        config = load_config(path)
+
+        assert config.database.enabled is True
+        assert config.database.path == "/tmp/custom-platform.db"
+
+    def test_resolve_database_path_expands_user(self, tmp_path: Path, monkeypatch) -> None:
+        from javs.database.connection import resolve_database_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        config = JavsConfig()
+        config.database.path = "~/.javs/platform.db"
+
+        resolved = resolve_database_path(config)
+
+        assert resolved == tmp_path / ".javs" / "platform.db"
+        assert isinstance(resolved, Path)
+
     def test_default_config_scrapers(self) -> None:
         config = JavsConfig()
         assert config.scrapers.enabled["dmm"] is True
