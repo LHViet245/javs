@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import csv
 import re
+import tempfile
+import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 
 from javs.config.models import JavsConfig
@@ -15,6 +18,26 @@ from javs.utils.logging import get_logger
 from javs.utils.string import clean_title, format_template
 
 logger = get_logger(__name__)
+
+THUMB_CSV_FIELDNAMES = [
+    "CanonicalKey",
+    "FullName",
+    "JapaneseName",
+    "ThumbUrl",
+    "Aliases",
+]
+
+
+@dataclass(slots=True)
+class ActressIdentity:
+    """Normalized actress or CSV row identity used for thumb matching."""
+
+    canonical_key: str | None
+    display_full_name: str | None
+    display_japanese_name: str | None
+    match_keys: set[str]
+    lookup_keys: tuple[str, ...] = ()
+    thumb_url: str | None = None
 
 
 class DataAggregator:
@@ -28,7 +51,8 @@ class DataAggregator:
         self.config = config
         self._genre_map: dict[str, str] | None = None
         self._genre_ignore: list[re.Pattern] | None = None
-        self._thumb_cache: dict[str, str] | None = None
+        self._thumb_rows: list[dict[str, str]] | None = None
+        self._thumb_rows_are_canonical: bool = True
         self._thumb_known_names: set[str] | None = None
         self._auto_added_genres: set[str] = set()
         self._auto_added_thumb_names: set[str] = set()
@@ -329,20 +353,6 @@ class DataAggregator:
 
         return [g for g in genres if not any(p.search(g) for p in self._genre_ignore)]
 
-    def _resolve_actress_thumbs(self, data: MovieData) -> None:
-        """Resolve actress thumbnails from the thumbs CSV cache."""
-        if self._thumb_cache is None:
-            self._load_thumb_csv()
-
-        for actress in data.actresses:
-            if not actress.thumb_url:
-                for candidate in self._actress_lookup_names(actress):
-                    if candidate in self._thumb_cache:
-                        actress.thumb_url = self._thumb_cache[candidate]
-                        break
-
-        self._auto_add_actress_thumbs(data)
-
     def _load_genre_csv(self) -> None:
         """Load genre replacement CSV into memory."""
         self._genre_map = {}
@@ -363,7 +373,8 @@ class DataAggregator:
 
     def _load_thumb_csv(self) -> None:
         """Load actress thumbnail CSV into memory."""
-        self._thumb_cache = {}
+        self._thumb_rows = []
+        self._thumb_rows_are_canonical = True
         self._thumb_known_names = set()
         csv_path = self._resolve_data_path("thumbs.csv")
         if not csv_path or not csv_path.exists():
@@ -372,74 +383,336 @@ class DataAggregator:
         try:
             with open(csv_path, encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
+                self._thumb_rows_are_canonical = (
+                    list(reader.fieldnames or []) == THUMB_CSV_FIELDNAMES
+                )
                 for row in reader:
-                    full_name = (row.get("FullName", "") or row.get("Name", "")).strip()
-                    japanese_name = row.get("JapaneseName", "").strip()
-                    thumb = row.get("ThumbUrl", "").strip()
-                    for name in (full_name, japanese_name):
-                        if not name:
-                            continue
-                        normalized = name.lower()
-                        self._thumb_known_names.add(normalized)
-                        if thumb:
-                            self._thumb_cache[normalized] = thumb
+                    normalized_row = self._normalize_thumb_row(row)
+                    identity = self._build_row_identity(normalized_row)
+                    if not identity.match_keys:
+                        continue
+
+                    self._thumb_rows.append(normalized_row)
+                    self._thumb_known_names.update(identity.match_keys)
         except Exception as exc:
             logger.error("thumb_csv_load_error", error=str(exc))
+
+    def _resolve_actress_thumbs(self, data: MovieData) -> None:
+        """Resolve actress thumbnails from the thumbs CSV cache."""
+        if self._thumb_rows is None:
+            self._load_thumb_csv()
+
+        for actress in data.actresses:
+            if not actress.thumb_url:
+                identity = self._build_actress_identity(actress)
+                row_index = self._find_matching_thumb_row(identity)
+                if row_index is not None and self._thumb_rows is not None:
+                    actress.thumb_url = self._display_identity_text(
+                        self._thumb_rows[row_index].get("ThumbUrl", "")
+                    )
+
+        self._auto_add_actress_thumbs(data)
 
     def _auto_add_actress_thumbs(self, data: MovieData) -> None:
         """Append unseen actresses to the thumbs CSV cache."""
         if not self.config.sort.metadata.thumb_csv.auto_add:
             return
-        if self._thumb_known_names is None:
+        if self._thumb_rows is None or self._thumb_known_names is None:
             self._load_thumb_csv()
 
-        rows_to_append: list[dict[str, str]] = []
+        original_row_count = len(self._thumb_rows or [])
+        rewrite_needed = False
+        appended_row_indexes: list[int] = []
+        added_signatures: list[str] = []
         for actress in data.actresses:
-            names = self._actress_lookup_names(actress)
-            if not names:
+            identity = self._build_actress_identity(actress)
+            if not identity.match_keys:
                 continue
-            if self._thumb_known_names is not None and any(
-                name in self._thumb_known_names for name in names
-            ):
+            row_index = self._find_matching_thumb_row(identity)
+            if row_index is not None and self._thumb_rows is not None:
+                merged_row = self._merge_thumb_row(self._thumb_rows[row_index], identity)
+                if merged_row != self._thumb_rows[row_index]:
+                    self._thumb_rows[row_index] = merged_row
+                    rewrite_needed = rewrite_needed or row_index < original_row_count
                 continue
-            signature = "|".join(sorted(names))
+
+            signature = identity.canonical_key or "|".join(
+                identity.lookup_keys or sorted(identity.match_keys)
+            )
             if signature in self._auto_added_thumb_names:
                 continue
 
-            row = {
-                "FullName": actress.full_name if actress.full_name != "Unknown" else "",
-                "JapaneseName": actress.japanese_name or "",
-                "ThumbUrl": actress.thumb_url or "",
-            }
+            row = self._canonical_thumb_row_from_identity(identity)
             if not row["FullName"] and not row["JapaneseName"]:
                 continue
 
-            rows_to_append.append(row)
+            if self._thumb_rows is None:
+                self._thumb_rows = []
+            self._thumb_rows.append(row)
+            appended_row_indexes.append(len(self._thumb_rows) - 1)
             self._auto_added_thumb_names.add(signature)
-            if self._thumb_known_names is not None:
-                self._thumb_known_names.update(names)
-            if actress.thumb_url:
-                for name in names:
-                    self._thumb_cache[name] = actress.thumb_url
+            added_signatures.append(signature)
 
-        if rows_to_append:
-            self._append_csv_rows(
+        persisted = False
+        if rewrite_needed and self._thumb_rows is not None:
+            persisted = self._write_thumb_rows(self._thumb_rows)
+            if persisted:
+                logger.info("thumb_csv_rewritten", count=len(self._thumb_rows))
+        elif (
+            appended_row_indexes
+            and self._thumb_rows is not None
+            and not self._thumb_rows_are_canonical
+        ):
+            persisted = self._write_thumb_rows(self._thumb_rows)
+            if persisted:
+                logger.info("thumb_csv_rewritten", count=len(self._thumb_rows))
+        elif appended_row_indexes and self._thumb_rows is not None:
+            persisted = self._append_csv_rows(
                 "thumbs.csv",
-                ["FullName", "JapaneseName", "ThumbUrl"],
-                rows_to_append,
+                THUMB_CSV_FIELDNAMES,
+                [self._thumb_rows[index] for index in appended_row_indexes],
             )
-            logger.info("thumb_csv_appended", count=len(rows_to_append))
+            if persisted:
+                logger.info("thumb_csv_appended", count=len(appended_row_indexes))
+
+        if rewrite_needed or appended_row_indexes:
+            if persisted and self._thumb_rows is not None:
+                self._refresh_thumb_row_cache()
+            else:
+                for signature in added_signatures:
+                    self._auto_added_thumb_names.discard(signature)
+                self._load_thumb_csv()
+
+    def _find_matching_thumb_row(self, identity: ActressIdentity) -> int | None:
+        """Return the best matching thumbs.csv row index for an actress identity."""
+        if not identity.match_keys or not self._thumb_rows:
+            return None
+
+        best_choice: tuple[int, int, int, int, int] | None = None
+        best_index: int | None = None
+        primary_lookup_keys = set(identity.lookup_keys)
+        for row_index, row in enumerate(self._thumb_rows):
+            row_identity = self._build_row_identity(row)
+            overlap = identity.match_keys & row_identity.match_keys
+            if not overlap:
+                continue
+
+            exact_canonical_match = (
+                0
+                if identity.canonical_key
+                and identity.canonical_key == row_identity.canonical_key
+                else 1
+            )
+            alias_only_match = 1
+            row_primary_keys = set(row_identity.lookup_keys)
+            if not primary_lookup_keys or primary_lookup_keys & row_primary_keys:
+                alias_only_match = 0
+            overlap_count = len(overlap)
+            canonical_rank = self._canonical_strength(row_identity.canonical_key)
+            overlap_rank = -overlap_count
+            if alias_only_match:
+                choice = (
+                    exact_canonical_match,
+                    alias_only_match,
+                    overlap_rank,
+                    canonical_rank,
+                    row_index,
+                )
+            else:
+                choice = (
+                    exact_canonical_match,
+                    alias_only_match,
+                    canonical_rank,
+                    overlap_rank,
+                    row_index,
+                )
+            if best_choice is None or choice < best_choice:
+                best_choice = choice
+                best_index = row_index
+
+        return best_index
+
+    def _merge_thumb_row(self, row: dict[str, str], identity: ActressIdentity) -> dict[str, str]:
+        """Merge actress identity data into a canonical thumbs.csv row."""
+        existing_identity = self._build_row_identity(row)
+
+        canonical_key = existing_identity.canonical_key
+        if self._is_stronger_canonical_key(
+            existing=canonical_key,
+            candidate=identity.canonical_key,
+        ):
+            canonical_key = identity.canonical_key
+
+        full_name = self._merge_thumb_row_field(
+            field_name="FullName",
+            stored_value=row.get("FullName", ""),
+            incoming_value=identity.display_full_name or "",
+            canonical_key=canonical_key,
+        )
+        japanese_name = self._merge_thumb_row_field(
+            field_name="JapaneseName",
+            stored_value=row.get("JapaneseName", ""),
+            incoming_value=identity.display_japanese_name or "",
+            canonical_key=canonical_key,
+        )
+        thumb_url = self._merge_thumb_thumb_url(
+            stored_value=row.get("ThumbUrl", ""),
+            incoming_value=identity.thumb_url or "",
+            canonical_key=canonical_key,
+        )
+
+        alias_keys = (existing_identity.match_keys | identity.match_keys) - {
+            canonical_key or "",
+        }
+
+        return {
+            "CanonicalKey": canonical_key or "",
+            "FullName": full_name,
+            "JapaneseName": japanese_name,
+            "ThumbUrl": thumb_url,
+            "Aliases": self._serialize_alias_keys(alias_keys),
+        }
+
+    def _merge_thumb_row_field(
+        self,
+        *,
+        field_name: str,
+        stored_value: str,
+        incoming_value: str,
+        canonical_key: str | None,
+    ) -> str:
+        """Merge one non-thumb thumb-row field while warning on preserved conflicts."""
+        if stored_value and incoming_value and stored_value != incoming_value:
+            logger.warning(
+                "thumb_csv_name_conflict_preserved",
+                field=field_name,
+                existing_value=stored_value,
+                incoming_value=incoming_value,
+                canonical_key=canonical_key or "",
+            )
+            return stored_value
+        return stored_value or incoming_value
+
+    def _merge_thumb_thumb_url(
+        self,
+        *,
+        stored_value: str,
+        incoming_value: str,
+        canonical_key: str | None,
+    ) -> str:
+        """Merge thumb URLs while preserving existing values on conflict."""
+        if stored_value and incoming_value and stored_value != incoming_value:
+            logger.warning(
+                "thumb_csv_thumb_conflict_preserved",
+                existing_thumb_url=stored_value,
+                incoming_thumb_url=incoming_value,
+                canonical_key=canonical_key or "",
+            )
+            return stored_value
+        return stored_value or incoming_value
+
+    def _canonical_thumb_row_from_identity(self, identity: ActressIdentity) -> dict[str, str]:
+        """Build a canonical thumbs.csv row from actress identity data."""
+        return {
+            "CanonicalKey": identity.canonical_key or "",
+            "FullName": identity.display_full_name or "",
+            "JapaneseName": identity.display_japanese_name or "",
+            "ThumbUrl": identity.thumb_url or "",
+            "Aliases": self._serialize_alias_keys(
+                identity.match_keys - {identity.canonical_key or ""}
+            ),
+        }
+
+    def _normalize_thumb_row(self, row: dict[str, str]) -> dict[str, str]:
+        """Normalize legacy or canonical thumb CSV rows into canonical columns."""
+        row_identity = self._build_row_identity(row)
+        return {
+            "CanonicalKey": row_identity.canonical_key or "",
+            "FullName": row_identity.display_full_name or "",
+            "JapaneseName": row_identity.display_japanese_name or "",
+            "ThumbUrl": row_identity.thumb_url or "",
+            "Aliases": self._serialize_alias_keys(
+                row_identity.match_keys - {row_identity.canonical_key or ""}
+            ),
+        }
+
+    def _refresh_thumb_row_cache(self) -> None:
+        """Refresh in-memory thumb lookup state from normalized rows."""
+        self._thumb_known_names = set()
+        for row in self._thumb_rows or []:
+            self._thumb_known_names.update(self._build_row_identity(row).match_keys)
+
+    def _write_thumb_rows(self, rows: list[dict[str, str]]) -> bool:
+        """Atomically rewrite thumbs.csv using the canonical header."""
+        path = self._resolve_data_path("thumbs.csv", allow_missing=True)
+        if path is None:
+            return False
+
+        temp_path: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8-sig",
+                newline="",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                temp_path = Path(tmp_file.name)
+                writer = csv.DictWriter(tmp_file, fieldnames=THUMB_CSV_FIELDNAMES)
+                writer.writeheader()
+                writer.writerows(rows)
+
+            temp_path.replace(path)
+            self._thumb_rows_are_canonical = True
+            return True
+        except Exception as exc:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            logger.error("thumb_csv_write_error", error=str(exc))
+            return False
+    @staticmethod
+    def _canonical_strength(value: str | None) -> int:
+        """Rank canonical key strength for deterministic tie-breaking."""
+        if not value:
+            return 2
+        if value.startswith("jp:"):
+            return 0
+        if value.startswith("en:"):
+            return 1
+        return 2
+
+    @classmethod
+    def _is_stronger_canonical_key(cls, existing: str | None, candidate: str | None) -> bool:
+        """Return True when the candidate canonical key should replace the existing one."""
+        if not candidate:
+            return False
+        if not existing:
+            return True
+        return cls._canonical_strength(candidate) < cls._canonical_strength(existing)
+
+    @classmethod
+    def _serialize_alias_keys(cls, keys: set[str]) -> str:
+        """Serialize alias keys in deterministic strength-first order."""
+        return "|".join(sorted(keys, key=cls._identity_sort_key))
+
+    @classmethod
+    def _identity_sort_key(cls, value: str) -> tuple[int, str]:
+        """Sort identity keys by strength and then lexically."""
+        return cls._canonical_strength(value), value
 
     def _append_csv_rows(
         self,
         filename: str,
         fieldnames: list[str],
         rows: list[dict[str, str]],
-    ) -> None:
+    ) -> bool:
         """Append rows to a CSV file, creating it with a header when needed."""
         path = self._resolve_data_path(filename, allow_missing=True)
         if path is None:
-            return
+            return False
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -449,36 +722,134 @@ class DataAggregator:
                 if not file_exists:
                     writer.writeheader()
                 writer.writerows(rows)
+            return True
         except Exception as exc:
             logger.error("csv_append_error", file=filename, error=str(exc))
+            return False
+
+    def _build_actress_identity(self, actress: Actress) -> ActressIdentity:
+        """Build normalized actress identity keys for thumb lookup."""
+        match_keys: set[str] = set()
+        lookup_keys: list[str] = []
+
+        english_display = self._display_identity_text(
+            " ".join(part for part in [actress.last_name, actress.first_name] if part)
+        )
+        reversed_english_display = None
+        if actress.last_name and actress.first_name:
+            reversed_english_display = self._display_identity_text(actress.full_name_reversed)
+        japanese_display = self._display_identity_text(actress.japanese_name)
+
+        canonical_key = self._japanese_identity_key(actress.japanese_name)
+        if not canonical_key:
+            canonical_key = self._english_identity_key(english_display)
+        self._add_identity_key(match_keys, canonical_key)
+        self._append_lookup_key(lookup_keys, canonical_key)
+        for key in self._english_identity_variants(english_display):
+            self._add_identity_key(match_keys, key)
+            self._append_lookup_key(lookup_keys, key)
+        for key in self._english_identity_variants(reversed_english_display):
+            self._add_identity_key(match_keys, key)
+            self._append_lookup_key(lookup_keys, key)
+        japanese_key = self._japanese_identity_key(japanese_display)
+        self._add_identity_key(match_keys, japanese_key)
+        self._append_lookup_key(lookup_keys, japanese_key)
+
+        if self.config.sort.metadata.thumb_csv.convert_alias:
+            for alias in actress.english_aliases:
+                for value in self._english_alias_names(alias):
+                    alias_key = self._english_identity_key(value)
+                    self._add_identity_key(match_keys, alias_key)
+
+            for alias in actress.japanese_aliases:
+                alias_key = self._japanese_identity_key(alias.japanese_name)
+                self._add_identity_key(match_keys, alias_key)
+
+        return ActressIdentity(
+            canonical_key=canonical_key,
+            display_full_name=english_display,
+            display_japanese_name=japanese_display,
+            match_keys=match_keys,
+            lookup_keys=tuple(lookup_keys),
+            thumb_url=actress.thumb_url,
+        )
+
+    def _build_row_identity(self, row: dict[str, str]) -> ActressIdentity:
+        """Build normalized identity keys from a thumbs.csv row."""
+        match_keys: set[str] = set()
+        lookup_keys: list[str] = []
+
+        thumb_url = self._display_identity_text(row.get("ThumbUrl", ""))
+        full_name_raw = row.get("FullName", "") or row.get("Name", "") or ""
+        japanese_raw = row.get("JapaneseName", "") or ""
+        full_name = self._display_identity_text(full_name_raw)
+        japanese_name = self._display_identity_text(japanese_raw)
+        canonical_key = self._normalize_stored_identity_key(
+            row.get("CanonicalKey", ""),
+            default_prefix="infer",
+        )
+
+        if not canonical_key:
+            canonical_key = self._japanese_identity_key(japanese_name)
+            if not canonical_key:
+                canonical_key = self._english_identity_key(full_name)
+
+        self._add_identity_key(match_keys, canonical_key)
+        self._append_lookup_key(lookup_keys, canonical_key)
+        for key in self._english_identity_variants(full_name):
+            self._add_identity_key(match_keys, key)
+            self._append_lookup_key(lookup_keys, key)
+        japanese_key = self._japanese_identity_key(japanese_name)
+        self._add_identity_key(match_keys, japanese_key)
+        self._append_lookup_key(lookup_keys, japanese_key)
+
+        aliases_raw = row.get("Aliases", "") or ""
+        for alias in re.split(r"[|;]", aliases_raw):
+            alias_key = self._normalize_stored_identity_key(
+                alias,
+                default_prefix="infer",
+            )
+            self._add_identity_key(match_keys, alias_key)
+
+        return ActressIdentity(
+            canonical_key=canonical_key,
+            display_full_name=full_name,
+            display_japanese_name=japanese_name,
+            match_keys=match_keys,
+            lookup_keys=tuple(lookup_keys),
+            thumb_url=thumb_url,
+        )
 
     def _actress_lookup_names(self, actress: Actress) -> set[str]:
-        """Return normalized actress names used for CSV lookup and duplicate detection."""
-        names: set[str] = set()
-        for value in (
-            actress.full_name,
-            actress.full_name_reversed,
-            actress.japanese_name,
-        ):
-            normalized = self._normalize_lookup_value(value)
-            if normalized:
-                names.add(normalized)
+        """Backward-compatible wrapper for actress thumb identities."""
+        return set(self._build_actress_identity(actress).match_keys)
 
-        if not self.config.sort.metadata.thumb_csv.convert_alias:
-            return names
+    @staticmethod
+    def _add_identity_key(keys: set[str], value: str | None) -> None:
+        """Add a normalized identity key to a set when one exists."""
+        if value:
+            keys.add(value)
 
-        for alias in actress.english_aliases:
-            for value in self._english_alias_names(alias):
-                normalized = self._normalize_lookup_value(value)
-                if normalized:
-                    names.add(normalized)
+    @staticmethod
+    def _append_lookup_key(keys: list[str], value: str | None) -> None:
+        """Append a lookup key once while preserving priority order."""
+        if value and value not in keys:
+            keys.append(value)
 
-        for alias in actress.japanese_aliases:
-            normalized = self._normalize_lookup_value(alias.japanese_name)
-            if normalized:
-                names.add(normalized)
+    @staticmethod
+    def _english_identity_variants(value: str | None) -> tuple[str, ...]:
+        """Return the direct and swapped English storage keys for a name."""
+        normalized = DataAggregator._normalize_identity_text(value)
+        if not normalized:
+            return ()
 
-        return names
+        parts = normalized.split(" ")
+        direct = f"en:{'_'.join(parts)}"
+        if len(parts) == 2:
+            swapped = f"en:{parts[1]}_{parts[0]}"
+            if swapped != direct:
+                return direct, swapped
+        return (direct,)
 
     @staticmethod
     def _english_alias_names(alias: ActressAlias) -> tuple[str, str]:
@@ -488,14 +859,78 @@ class DataAggregator:
         return direct, reversed_name
 
     @staticmethod
-    def _normalize_lookup_value(value: str | None) -> str:
-        """Normalize a lookup value for CSV matching."""
+    def _display_identity_text(value: str | None) -> str | None:
+        """Normalize human-facing identity text without collapsing case."""
         if not value:
-            return ""
-        normalized = value.strip().lower()
-        if normalized == "unknown":
-            return ""
+            return None
+
+        normalized = unicodedata.normalize("NFKC", value)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized or normalized.casefold() == "unknown":
+            return None
         return normalized
+
+    @staticmethod
+    def _normalize_identity_text(value: str | None) -> str | None:
+        """Normalize an identity string for matching and storage."""
+        display = DataAggregator._display_identity_text(value)
+        if not display:
+            return None
+        return display.casefold()
+
+    @staticmethod
+    def _normalize_lookup_value(value: str | None) -> str | None:
+        """Normalize a lookup value for CSV matching."""
+        return DataAggregator._normalize_identity_text(value)
+
+    @staticmethod
+    def _english_identity_key(value: str | None) -> str | None:
+        """Build a normalized English identity key."""
+        normalized = DataAggregator._normalize_identity_text(value)
+        if not normalized:
+            return None
+
+        parts = normalized.split(" ")
+        return f"en:{'_'.join(parts)}"
+
+    @staticmethod
+    def _japanese_identity_key(value: str | None) -> str | None:
+        """Build a normalized Japanese identity key."""
+        normalized = DataAggregator._normalize_identity_text(value)
+        if not normalized:
+            return None
+        return f"jp:{normalized}"
+
+    @staticmethod
+    def _normalize_stored_identity_key(value: str | None, *, default_prefix: str) -> str | None:
+        """Normalize a stored identity key from CSV data."""
+        normalized = DataAggregator._normalize_identity_text(value)
+        if not normalized:
+            return None
+
+        if ":" not in normalized:
+            if default_prefix == "infer":
+                default_prefix = DataAggregator._infer_identity_prefix(normalized)
+            if default_prefix == "jp":
+                return DataAggregator._japanese_identity_key(normalized)
+            return DataAggregator._english_identity_key(normalized)
+
+        prefix, body = normalized.split(":", 1)
+        body = DataAggregator._normalize_identity_text(body)
+        if not body:
+            return None
+        if prefix == "en":
+            return DataAggregator._english_identity_key(body)
+        if prefix == "jp":
+            return DataAggregator._japanese_identity_key(body)
+        return f"{prefix}:{body}"
+
+    @staticmethod
+    def _infer_identity_prefix(value: str) -> str:
+        """Infer whether an unprefixed stored identity looks Japanese or English."""
+        if re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", value):
+            return "jp"
+        return "en"
 
     def _resolve_data_path(self, filename: str, *, allow_missing: bool = False) -> Path | None:
         """Resolve a data file path from config or default location."""
