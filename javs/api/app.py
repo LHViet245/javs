@@ -1,0 +1,127 @@
+"""Minimal ASGI app exposing the shared platform facade over HTTP."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import parse_qs
+
+from javs.api.routes import (
+    handle_find_job,
+    handle_get_settings,
+    handle_save_settings,
+    handle_sort_job,
+    handle_update_job,
+)
+
+Scope = dict[str, Any]
+Receive = Callable[[], Awaitable[dict[str, Any]]]
+Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+_JOB_POST_PATHS = {"/jobs/find", "/jobs/sort", "/jobs/update", "/settings"}
+
+
+@dataclass(slots=True)
+class JavsAPIApp:
+    """Very small ASGI adapter around the shared platform facade."""
+
+    facade: object
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            await self._handle_lifespan(receive, send)
+            return
+
+        if scope["type"] != "http":
+            await self._send_json(send, 500, {"detail": "Unsupported ASGI scope type."})
+            return
+
+        method = scope["method"].upper()
+        path = scope["path"]
+
+        try:
+            if method == "GET" and path == "/settings":
+                source_path = self._query_param(scope, "source_path")
+                payload = handle_get_settings(self.facade, source_path)
+                await self._send_json(send, 200, self._to_json_payload(payload))
+                return
+
+            if method == "POST" and path in _JOB_POST_PATHS:
+                body = await self._read_json_body(receive)
+                if path == "/jobs/find":
+                    payload = await handle_find_job(self.facade, body)
+                elif path == "/jobs/sort":
+                    payload = await handle_sort_job(self.facade, body)
+                elif path == "/jobs/update":
+                    payload = await handle_update_job(self.facade, body)
+                else:
+                    payload = await handle_save_settings(self.facade, body)
+                await self._send_json(send, 200, self._to_json_payload(payload))
+                return
+        except ValueError as error:
+            await self._send_json(send, 400, {"detail": str(error)})
+            return
+
+        await self._send_json(send, 404, {"detail": "Not found."})
+
+    async def _handle_lifespan(self, receive: Receive, send: Send) -> None:
+        message = await receive()
+        if message["type"] == "lifespan.startup":
+            await send({"type": "lifespan.startup.complete"})
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        await send({"type": "lifespan.startup.failed", "message": "Unsupported lifespan event."})
+
+    @staticmethod
+    async def _read_json_body(receive: Receive) -> dict[str, Any]:
+        chunks: list[bytes] = []
+        while True:
+            message = await receive()
+            if message["type"] == "http.request":
+                chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    break
+            elif message["type"] == "http.disconnect":
+                break
+        raw = b"".join(chunks).strip()
+        if not raw:
+            return {}
+        body = json.loads(raw.decode("utf-8"))
+        if not isinstance(body, dict):
+            raise ValueError("Request body must be a JSON object.")
+        return body
+
+    @staticmethod
+    async def _send_json(send: Send, status: int, payload: Any) -> None:
+        body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ]
+        await send({"type": "http.response.start", "status": status, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+    @staticmethod
+    def _to_json_payload(payload: Any) -> Any:
+        if hasattr(payload, "model_dump"):
+            return payload.model_dump(mode="json")
+        return payload
+
+    @staticmethod
+    def _query_param(scope: Scope, name: str) -> str | None:
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        query = parse_qs(query_string, keep_blank_values=True)
+        values = query.get(name)
+        if not values:
+            return None
+        return values[0] or None
+
+
+def create_app(facade: object) -> JavsAPIApp:
+    """Create the minimal ASGI application used by tests and future adapters."""
+    return JavsAPIApp(facade=facade)
