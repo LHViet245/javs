@@ -6,6 +6,7 @@ Replaces Javinizer's complex single-function CmdletBinding with clean subcommand
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -93,6 +94,7 @@ def _build_platform_facade(cfg, config_path: Path):
     from javs.database.repositories.events import JobEventsRepository
     from javs.database.repositories.job_items import JobItemsRepository
     from javs.database.repositories.jobs import JobsRepository
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
     from javs.jobs import PlatformJobRunner
 
     db_path = resolve_database_path(cfg)
@@ -101,6 +103,7 @@ def _build_platform_facade(cfg, config_path: Path):
     jobs = JobsRepository(connection)
     events = JobEventsRepository(connection)
     job_items = JobItemsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
 
     def engine_factory() -> JavsEngine:
         return JavsEngine(
@@ -112,6 +115,7 @@ def _build_platform_facade(cfg, config_path: Path):
         jobs=jobs,
         job_items=job_items,
         events=events,
+        settings_audit=settings_audit,
         runner=PlatformJobRunner(jobs=jobs, events=events),
         find_engine_factory=engine_factory,
         sort_engine_factory=engine_factory,
@@ -425,11 +429,16 @@ def config(
     action: str = typer.Argument(
         "show",
         help=(
-            "Action: show, edit, create, path, sync, csv-paths, "
+            "Action: show, save, edit, create, path, sync, csv-paths, "
             "init-csv, javlibrary-cookie, javlibrary-test, proxy-test."
         ),
     ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
+    changes: str | None = typer.Option(
+        None,
+        "--changes",
+        help="JSON object of validated config updates for `config save`.",
+    ),
 ) -> None:
     """⚙️ Manage configuration."""
     from javs.config import create_default_config, load_config
@@ -448,6 +457,40 @@ def config(
 
         cfg = load_config(path)
         console.print_json(data=redact_config_for_display(cfg))
+
+    elif action == "save":
+        from javs.application import SaveSettingsRequest
+
+        if not changes:
+            console.print("[red]`javs config save` requires --changes with a JSON object.[/red]")
+            raise typer.Exit(1)
+
+        try:
+            payload = json.loads(changes)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Invalid JSON for --changes:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+        if not isinstance(payload, dict):
+            console.print("[red]`--changes` must decode to a JSON object.[/red]")
+            raise typer.Exit(1)
+
+        cfg = load_config(path)
+        facade, cleanup = _build_platform_facade(cfg, path)
+        try:
+            response = asyncio.run(
+                facade.save_settings(
+                    SaveSettingsRequest(source_path=str(path), changes=payload),
+                    origin="cli",
+                )
+            )
+        finally:
+            cleanup()
+
+        console.print(
+            f"[green]Saved config at {response.settings.source_path}[/green] "
+            f"(job {response.job.id})"
+        )
 
     elif action == "create":
         create_default_config(path)

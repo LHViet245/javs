@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 from javs.config import (
     JavsConfig,
@@ -41,6 +43,40 @@ class TestJavsConfig:
 
         assert config.database.enabled is True
         assert config.database.path == "/tmp/custom-platform.db"
+
+    def test_apply_settings_changes_merges_nested_values(self) -> None:
+        from javs.config.loader import apply_settings_changes
+
+        config = JavsConfig()
+
+        updated = apply_settings_changes(
+            config,
+            {
+                "proxy": {
+                    "enabled": True,
+                    "url": "http://127.0.0.1:8888",
+                },
+                "database": {"path": "/tmp/updated-platform.db"},
+            },
+        )
+
+        assert config.proxy.enabled is False
+        assert updated.proxy.enabled is True
+        assert updated.proxy.url == "http://127.0.0.1:8888"
+        assert updated.database.path == "/tmp/updated-platform.db"
+
+    def test_apply_settings_changes_revalidates_nested_models(self) -> None:
+        from javs.config.loader import apply_settings_changes
+
+        with pytest.raises(ValidationError):
+            apply_settings_changes(
+                JavsConfig(),
+                {
+                    "proxy": {
+                        "enabled": True,
+                    }
+                },
+            )
 
     def test_resolve_database_path_expands_user(self, tmp_path: Path, monkeypatch) -> None:
         from javs.database.connection import resolve_database_path

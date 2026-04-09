@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -73,6 +74,13 @@ def load_config(path: Path | None = None) -> JavsConfig:
         logger.warning("deprecated_config_key_ignored", path=deprecated_path)
 
     return JavsConfig(**migrate_config_data(raw))
+
+
+def apply_settings_changes(config: JavsConfig, changes: dict[str, Any]) -> JavsConfig:
+    """Return a validated config with nested changes merged over the current values."""
+    merged = migrate_config_data(config.model_dump(exclude_defaults=False))
+    _merge_config_data(merged, migrate_config_data(changes))
+    return JavsConfig(**migrate_config_data(merged))
 
 
 def save_config(config: JavsConfig, path: Path | None = None) -> None:

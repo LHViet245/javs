@@ -11,7 +11,13 @@ from typer.testing import CliRunner
 import javs.config as config_module
 import javs.core.engine as engine_module
 import javs.scrapers.registry as registry_module
-from javs.application import FindMovieResponse, JobStartResponse, JobSummary
+from javs.application import (
+    FindMovieResponse,
+    JobStartResponse,
+    JobSummary,
+    SaveSettingsResponse,
+    SettingsResponse,
+)
 from javs.application.find import FindMovieError
 from javs.cli import app
 from javs.config import JavsConfig
@@ -132,6 +138,7 @@ class TestCliConfigCommand:
         assert "javlibrary-cookie" in result.stdout
         assert "javlibrary-test" in result.stdout
         assert "proxy-test" in result.stdout
+        assert "save" in result.stdout
 
     def test_config_sync_supports_custom_config_path(self, tmp_path: Path) -> None:
         """config sync should work with an explicit --config path."""
@@ -338,6 +345,61 @@ class TestCliConfigCommand:
         assert result.exit_code == 1
         assert "Proxy unreachable" in result.stdout
         assert "timed out" in result.stdout
+
+    def test_config_save_uses_platform_settings_flow(self, monkeypatch, tmp_path: Path) -> None:
+        target = tmp_path / "config.yaml"
+        captured: dict[str, object] = {}
+        updated = JavsConfig()
+        updated.proxy.enabled = True
+        updated.proxy.url = "http://127.0.0.1:8888"
+
+        class DummyFacade:
+            async def save_settings(self, request, *, origin: str = "cli") -> SaveSettingsResponse:
+                captured["request"] = request
+                captured["origin"] = origin
+                return SaveSettingsResponse(
+                    job=JobSummary(
+                        id="job-settings-1",
+                        kind="save_settings",
+                        status="completed",
+                        origin=origin,
+                    ),
+                    settings=SettingsResponse(
+                        config=updated,
+                        source_path=str(target),
+                        config_version=1,
+                    ),
+                )
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(
+            "javs.cli._build_platform_facade",
+            lambda cfg, config_path: (DummyFacade(), lambda: None),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "config",
+                "save",
+                "--config",
+                str(target),
+                "--changes",
+                '{"proxy":{"enabled":true,"url":"http://127.0.0.1:8888"}}',
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].source_path == str(target)
+        assert captured["request"].changes == {
+            "proxy": {
+                "enabled": True,
+                "url": "http://127.0.0.1:8888",
+            }
+        }
+        assert "Saved config at" in result.stdout
+        assert "job-settings-1" in result.stdout
 
 
 class TestCliFindCommand:

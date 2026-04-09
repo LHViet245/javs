@@ -16,6 +16,8 @@ from javs.application import (
     JobStartResponse,
     JobSummary,
     PlatformFacade,
+    SaveSettingsRequest,
+    SaveSettingsResponse,
     SettingsResponse,
     SortJobRequest,
     UpdateJobRequest,
@@ -150,6 +152,9 @@ class StubJobEventsRepository:
 
 
 class StubSettingsAuditRepository:
+    def create_entry(self, **kwargs: object) -> int:
+        return 1
+
     def list_entries(self) -> list[dict[str, object]]:
         return []
 
@@ -263,6 +268,139 @@ def load_persisted_job_items(db_path: Path, job_id: str) -> list[dict[str, Any]]
     with open_database(db_path) as connection:
         items = JobItemsRepository(connection)
         return items.list_for_job(job_id)
+
+
+def load_persisted_settings_audit(db_path: Path) -> list[dict[str, Any]]:
+    from javs.database.connection import open_database
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+
+    with open_database(db_path) as connection:
+        audit = SettingsAuditRepository(connection)
+        return audit.list_entries()
+
+
+def test_facade_get_settings_returns_shared_settings_response(tmp_path: Path) -> None:
+    from javs.config import load_config, save_config
+
+    config_path = tmp_path / "config.yaml"
+    config = JavsConfig()
+    config.proxy.enabled = True
+    config.proxy.url = "http://127.0.0.1:8888"
+    save_config(config, config_path)
+
+    facade = PlatformFacade(
+        jobs=StubJobsRepository(),
+        job_items=StubJobItemsRepository(),
+        events=StubJobEventsRepository(),
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=StubPlatformRunner(),
+        config_loader=load_config,
+        config_saver=save_test_config,
+    )
+
+    response = facade.get_settings(config_path)
+
+    assert response == SettingsResponse(
+        config=load_config(config_path),
+        source_path=str(config_path),
+        config_version=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_settings_writes_yaml_and_settings_audit_rows(tmp_path: Path) -> None:
+    from javs.config import load_config, save_config
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+
+    config_path = tmp_path / "config.yaml"
+    initial = JavsConfig()
+    save_config(initial, config_path)
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=settings_audit,
+        history=StubPlatformHistory(),
+        runner=runner,
+        config_loader=load_config,
+        config_saver=save_config,
+    )
+
+    try:
+        response = await facade.save_settings(
+            SaveSettingsRequest(
+                source_path=str(config_path),
+                changes={
+                    "proxy": {
+                        "enabled": True,
+                        "url": "http://127.0.0.1:8888",
+                    }
+                },
+            ),
+            origin="cli",
+        )
+    finally:
+        connection.close()
+
+    persisted_config = load_config(config_path)
+    job, persisted_events = load_persisted_job_state(db_path, response.job.id)
+    audit_rows = load_persisted_settings_audit(db_path)
+
+    assert response == SaveSettingsResponse(
+        job=JobSummary(
+            id=response.job.id,
+            kind="save_settings",
+            status="completed",
+            origin="cli",
+            created_at=response.job.created_at,
+            started_at=response.job.started_at,
+            finished_at=response.job.finished_at,
+            summary={"saved": 1},
+            error=None,
+        ),
+        settings=SettingsResponse(
+            config=persisted_config,
+            source_path=str(config_path),
+            config_version=1,
+        ),
+    )
+    assert persisted_config.proxy.enabled is True
+    assert persisted_config.proxy.url == "http://127.0.0.1:8888"
+    assert job is not None
+    assert job["request_json"] == {
+        "changes": {"proxy": {"enabled": True, "url": "http://127.0.0.1:8888"}},
+        "source_path": str(config_path),
+    }
+    assert job["result_json"] == {
+        "config_version": 1,
+        "source_path": str(config_path),
+    }
+    assert job["summary_json"] == {"saved": 1}
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+    assert audit_rows == [
+        {
+            "id": audit_rows[0]["id"],
+            "job_id": response.job.id,
+            "source_path": str(config_path),
+            "config_version": 1,
+            "before_json": initial.model_dump(mode="json"),
+            "after_json": persisted_config.model_dump(mode="json"),
+            "change_summary_json": {"changed": ["proxy.enabled", "proxy.url"]},
+            "created_at": audit_rows[0]["created_at"],
+        }
+    ]
 
 
 @pytest.mark.asyncio

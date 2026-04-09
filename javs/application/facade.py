@@ -20,6 +20,7 @@ from javs.application.models import (
     SortJobRequest,
     UpdateJobRequest,
 )
+from javs.application.settings import SettingsUseCase
 from javs.application.sort_jobs import SortEngineFactory, SortJobUseCase
 from javs.application.update_jobs import UpdateEngineFactory, UpdateJobUseCase
 from javs.config import JavsConfig, load_config, save_config
@@ -35,6 +36,18 @@ class JobEventsRepository(Protocol):
 
 class SettingsAuditRepository(Protocol):
     """Minimal settings audit repository contract kept for future facade wiring."""
+
+    def create_entry(
+        self,
+        *,
+        job_id: str,
+        source_path: str,
+        config_version: int,
+        before_json: object | None = None,
+        after_json: object | None = None,
+        change_summary_json: object | None = None,
+    ) -> int:
+        """Persist a settings audit row."""
 
     def list_entries(self) -> list[dict[str, object]]:
         """Return persisted settings audit rows."""
@@ -209,17 +222,27 @@ class PlatformFacade:
         raise NotImplementedError("PlatformFacade.list_jobs is implemented in a later task.")
 
     def get_settings(self, source_path: Path) -> SettingsResponse:
-        """Return active settings once the shared settings flow is implemented."""
-        raise NotImplementedError("PlatformFacade.get_settings is implemented in a later task.")
+        """Return active settings through the shared application use case."""
+        return SettingsUseCase(
+            jobs=self.jobs,
+            config_loader=self.config_loader,
+            config_saver=self.config_saver,
+        ).get(source_path)
 
-    def save_settings(
+    async def save_settings(
         self,
         request: SaveSettingsRequest,
         *,
         origin: str = "cli",
     ) -> SaveSettingsResponse:
-        """Persist settings once the shared settings flow is implemented."""
-        raise NotImplementedError("PlatformFacade.save_settings is implemented in a later task.")
+        """Persist settings through the shared application use case."""
+        return await SettingsUseCase(
+            jobs=self.jobs,
+            config_loader=self.config_loader,
+            config_saver=self.config_saver,
+            runner=self.runner,
+            settings_audit=self.settings_audit,
+        ).save(request, origin=origin)
 
     def _capture_batch_state(self, use_case: SortJobUseCase | UpdateJobUseCase) -> None:
         self.last_run_diagnostics = [dict(item) for item in use_case.last_run_diagnostics]
