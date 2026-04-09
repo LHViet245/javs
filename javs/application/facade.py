@@ -20,6 +20,8 @@ from javs.application.models import (
     SortJobRequest,
     UpdateJobRequest,
 )
+from javs.application.sort_jobs import SortEngineFactory, SortJobUseCase
+from javs.application.update_jobs import UpdateEngineFactory, UpdateJobUseCase
 from javs.config import JavsConfig, load_config, save_config
 from javs.jobs.executor import JobExecutor
 
@@ -106,6 +108,8 @@ class PlatformFacade:
         history: PlatformHistory | None = None,
         runner: PlatformRunner | None = None,
         find_engine_factory: FindMovieEngineFactory | None = None,
+        sort_engine_factory: SortEngineFactory | None = None,
+        update_engine_factory: UpdateEngineFactory | None = None,
         config_loader: ConfigLoader = load_config,
         config_saver: ConfigSaver = save_config,
     ) -> None:
@@ -116,9 +120,15 @@ class PlatformFacade:
         self.history = history
         self.runner = runner
         self.find_engine_factory = find_engine_factory
+        self.sort_engine_factory = sort_engine_factory
+        self.update_engine_factory = update_engine_factory
         self.config_loader = config_loader
         self.config_saver = config_saver
         self.last_run_diagnostics: list[dict[str, str]] = []
+        self.last_run_items: list[dict[str, object]] = []
+        self.last_preview_plan: list[dict[str, str]] = []
+        self.last_run_results: list[object] = []
+        self.last_run_summary: dict[str, int] = {}
 
     async def find_movie(
         self,
@@ -148,8 +158,23 @@ class PlatformFacade:
         *,
         origin: str = "cli",
     ) -> JobStartResponse:
-        """Start a shared sort job once the job runner exists."""
-        raise NotImplementedError("PlatformFacade.start_sort_job is implemented in a later task.")
+        """Run the synchronous shared sort flow through the platform job runner."""
+        if self.runner is None:
+            raise NotImplementedError("PlatformFacade.start_sort_job requires a runner.")
+
+        engine_factory = self.sort_engine_factory or self.find_engine_factory
+        if engine_factory is None:
+            raise NotImplementedError("PlatformFacade.start_sort_job requires an engine factory.")
+
+        use_case = SortJobUseCase(
+            jobs=self.jobs,
+            job_items=self.job_items,
+            runner=self.runner,
+            engine_factory=engine_factory,
+        )
+        response = await use_case.run(request, origin=origin)
+        self._capture_batch_state(use_case)
+        return response
 
     async def start_update_job(
         self,
@@ -157,8 +182,23 @@ class PlatformFacade:
         *,
         origin: str = "cli",
     ) -> JobStartResponse:
-        """Start a shared update job once the job runner exists."""
-        raise NotImplementedError("PlatformFacade.start_update_job is implemented in a later task.")
+        """Run the synchronous shared update flow through the platform job runner."""
+        if self.runner is None:
+            raise NotImplementedError("PlatformFacade.start_update_job requires a runner.")
+
+        engine_factory = self.update_engine_factory or self.find_engine_factory
+        if engine_factory is None:
+            raise NotImplementedError("PlatformFacade.start_update_job requires an engine factory.")
+
+        use_case = UpdateJobUseCase(
+            jobs=self.jobs,
+            job_items=self.job_items,
+            runner=self.runner,
+            engine_factory=engine_factory,
+        )
+        response = await use_case.run(request, origin=origin)
+        self._capture_batch_state(use_case)
+        return response
 
     def get_job(self, job_id: str) -> JobDetail | None:
         """Return job detail once history reads are wired through the facade."""
@@ -180,3 +220,10 @@ class PlatformFacade:
     ) -> SaveSettingsResponse:
         """Persist settings once the shared settings flow is implemented."""
         raise NotImplementedError("PlatformFacade.save_settings is implemented in a later task.")
+
+    def _capture_batch_state(self, use_case: SortJobUseCase | UpdateJobUseCase) -> None:
+        self.last_run_diagnostics = [dict(item) for item in use_case.last_run_diagnostics]
+        self.last_run_items = [dict(item) for item in use_case.last_run_items]
+        self.last_preview_plan = [dict(item) for item in use_case.last_preview_plan]
+        self.last_run_results = list(use_case.last_run_results)
+        self.last_run_summary = dict(use_case.last_run_summary)

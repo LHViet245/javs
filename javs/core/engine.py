@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from javs.config import JavsConfig, load_config
@@ -42,6 +43,20 @@ def _empty_run_summary() -> dict[str, int]:
     }
 
 
+@dataclass(slots=True)
+class _ProcessedFileOutcome:
+    """Internal representation of a single scanned-file outcome."""
+
+    status: str
+    source_path: str
+    movie_id: str
+    step: str
+    data: MovieData | None = None
+    dest_path: str | None = None
+    message: str | None = None
+    metadata: dict[str, object] | None = None
+
+
 class JavsEngine:
     """Main engine that orchestrates the entire javs workflow.
 
@@ -73,6 +88,7 @@ class JavsEngine:
         self._cloudflare_recovery_lock = asyncio.Lock()
         self._cloudflare_recovery_used = False
         self.last_run_diagnostics: list[dict[str, str]] = []
+        self.last_run_items: list[dict[str, object]] = []
         self.last_run_summary: dict[str, int] = _empty_run_summary()
         self.last_preview_plan: list[dict[str, str]] = []
 
@@ -240,7 +256,11 @@ class JavsEngine:
 
         logger.info("files_scanned", count=len(files))
 
-        async def sort_one(file: ScannedFile, data: MovieData, nfo_data: MovieData | None) -> None:
+        async def sort_one(
+            file: ScannedFile,
+            data: MovieData,
+            nfo_data: MovieData | None,
+        ) -> str | None:
             paths = await self.organizer.sort_movie(
                 file,
                 data,
@@ -258,8 +278,16 @@ class JavsEngine:
                         "target": str(paths.file_path),
                     }
                 )
+            if paths is None or getattr(paths, "file_path", None) is None:
+                return None
+            return str(paths.file_path)
 
-        results = await self._process_scanned_files(files, process_movie=sort_one)
+        results = await self._process_scanned_files(
+            files,
+            process_movie=sort_one,
+            step="sort",
+            preview=preview,
+        )
         logger.info("sort_complete", processed=len(results), total=len(files))
         return results
 
@@ -286,7 +314,7 @@ class JavsEngine:
             file: ScannedFile,
             data: MovieData,
             nfo_data: MovieData | None,
-        ) -> None:
+        ) -> str | None:
             paths = await self.organizer.update_movie(
                 file,
                 data,
@@ -304,11 +332,16 @@ class JavsEngine:
                         "target": str(paths.nfo_path),
                     }
                 )
+            if paths is None or getattr(paths, "nfo_path", None) is None:
+                return None
+            return str(paths.nfo_path)
 
         results = await self._process_scanned_files(
             files,
             scraper_names=scraper_names,
             process_movie=update_one,
+            step="update",
+            preview=preview,
         )
         logger.info("update_complete", processed=len(results), total=len(files))
         return results
@@ -330,8 +363,10 @@ class JavsEngine:
         self,
         files: list[ScannedFile],
         *,
-        process_movie: Callable[[ScannedFile, MovieData, MovieData | None], Awaitable[None]],
+        process_movie: Callable[[ScannedFile, MovieData, MovieData | None], Awaitable[str | None]],
         scraper_names: list[str] | None = None,
+        step: str,
+        preview: bool,
     ) -> list[MovieData]:
         """Process a batch of scanned files with shared scrape pacing and session lifecycle."""
         results: list[MovieData] = []
@@ -354,7 +389,7 @@ class JavsEngine:
             cooldown_tasks.add(task)
             task.add_done_callback(cooldown_tasks.discard)
 
-        async def process_one(file: ScannedFile, *, is_last: bool) -> MovieData | None:
+        async def process_one(file: ScannedFile, *, is_last: bool) -> _ProcessedFileOutcome:
             nonlocal waiting_for_scrape_slot
             waiting_for_scrape_slot += 1
             await scrape_sem.acquire()
@@ -368,7 +403,14 @@ class JavsEngine:
 
             if not raw_data:
                 logger.warning("skip_no_data", file=file.filename, id=file.movie_id)
-                return None
+                return _ProcessedFileOutcome(
+                    status="skipped",
+                    source_path=str(file.path),
+                    movie_id=file.movie_id,
+                    step=step,
+                    message="No data found",
+                    metadata={"preview": preview},
+                )
 
             translated_data = await self._translate_for_display(raw_data)
             active_data = (
@@ -385,12 +427,28 @@ class JavsEngine:
                     id=file.movie_id,
                     missing_fields=missing_fields,
                 )
-                return None
+                return _ProcessedFileOutcome(
+                    status="skipped",
+                    source_path=str(file.path),
+                    movie_id=file.movie_id,
+                    step=step,
+                    message=f"Missing required fields: {', '.join(missing_fields)}",
+                    metadata={"preview": preview},
+                )
 
             active_data.original_filename = file.filename
             translated_data.original_filename = file.filename
-            await process_movie(file, active_data, translated_data)
-            return active_data
+            dest_path = await process_movie(file, active_data, translated_data)
+            return _ProcessedFileOutcome(
+                status="completed",
+                source_path=str(file.path),
+                movie_id=file.movie_id,
+                step=step,
+                data=active_data,
+                dest_path=dest_path,
+                message="Processed successfully",
+                metadata={"preview": preview},
+            )
 
         async with self.http:
             self._reset_cloudflare_recovery_state()
@@ -399,14 +457,41 @@ class JavsEngine:
             if cooldown_tasks:
                 await asyncio.gather(*cooldown_tasks, return_exceptions=True)
 
-        for result in task_results:
-            if isinstance(result, MovieData):
-                results.append(result)
+        self.last_run_items = []
+
+        for file, result in zip(files, task_results, strict=False):
+            if isinstance(result, _ProcessedFileOutcome):
+                if result.data is not None:
+                    results.append(result.data)
+                else:
+                    skipped += 1
+                self.last_run_items.append(
+                    {
+                        "item_key": result.movie_id,
+                        "status": result.status,
+                        "source_path": result.source_path,
+                        "dest_path": result.dest_path,
+                        "movie_id": result.movie_id,
+                        "step": result.step,
+                        "message": result.message,
+                        "metadata": dict(result.metadata or {}),
+                    }
+                )
             elif isinstance(result, Exception):
                 failed += 1
                 logger.error("process_error", error=str(result))
-            else:
-                skipped += 1
+                self.last_run_items.append(
+                    {
+                        "item_key": file.movie_id,
+                        "status": "failed",
+                        "source_path": str(file.path),
+                        "dest_path": None,
+                        "movie_id": file.movie_id,
+                        "step": step,
+                        "message": str(result),
+                        "metadata": {"preview": preview},
+                    }
+                )
 
         self.last_run_summary = {
             "total": total_files,
@@ -488,6 +573,7 @@ class JavsEngine:
     def _reset_run_diagnostics(self) -> None:
         """Clear user-facing run diagnostics before a new public operation."""
         self.last_run_diagnostics = []
+        self.last_run_items = []
         self.last_run_summary = _empty_run_summary()
         self.last_preview_plan = []
 

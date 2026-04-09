@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 import javs.config as config_module
 import javs.core.engine as engine_module
 import javs.scrapers.registry as registry_module
-from javs.application import FindMovieResponse, JobSummary
+from javs.application import FindMovieResponse, JobStartResponse, JobSummary
 from javs.application.find import FindMovieError
 from javs.cli import app
 from javs.config import JavsConfig
@@ -62,6 +62,45 @@ def _patch_find_facade(
     monkeypatch.setattr(engine_module, "JavsEngine", _UnexpectedEngineUsage)
     monkeypatch.setattr(
         "javs.cli._build_find_facade",
+        lambda cfg, config_path: (DummyFacade(), lambda: None),
+    )
+
+
+def _patch_batch_facade(
+    monkeypatch,
+    *,
+    movies: list[MovieData],
+    summary: dict[str, int] | None = None,
+    diagnostics: list[dict[str, str]] | None = None,
+    preview_plan: list[dict[str, str]] | None = None,
+    capture: dict[str, object] | None = None,
+) -> None:
+    class DummyFacade:
+        def __init__(self) -> None:
+            self.last_run_diagnostics = list(diagnostics or [])
+            self.last_run_summary = dict(summary or {})
+            self.last_preview_plan = [dict(item) for item in (preview_plan or [])]
+            self.last_run_results = list(movies)
+
+        async def start_sort_job(self, request, *, origin: str = "cli") -> JobStartResponse:
+            if capture is not None:
+                capture["request"] = request
+                capture["origin"] = origin
+            return JobStartResponse(
+                job=JobSummary(id="job-sort-1", kind="sort", status="completed", origin=origin)
+            )
+
+        async def start_update_job(self, request, *, origin: str = "cli") -> JobStartResponse:
+            if capture is not None:
+                capture["request"] = request
+                capture["origin"] = origin
+            return JobStartResponse(
+                job=JobSummary(id="job-update-1", kind="update", status="completed", origin=origin)
+            )
+
+    monkeypatch.setattr(engine_module, "JavsEngine", _UnexpectedEngineUsage)
+    monkeypatch.setattr(
+        "javs.cli._build_platform_facade",
         lambda cfg, config_path: (DummyFacade(), lambda: None),
     )
 
@@ -522,6 +561,77 @@ class TestCliFindCommand:
 
 class TestCliSortAndScrapers:
     """Test sort command wiring and scraper listing output."""
+
+    def test_cli_sort_uses_platform_facade(self, monkeypatch, tmp_path: Path) -> None:
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            summary={"total": 1, "processed": 1, "skipped": 0, "failed": 0, "warnings": 0},
+            capture=captured,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "sort",
+                str(tmp_path / "source"),
+                str(tmp_path / "dest"),
+                "--recurse",
+                "--force",
+                "--preview",
+                "--cleanup-empty-source-dir",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].source_path == str(tmp_path / "source")
+        assert captured["request"].destination_path == str(tmp_path / "dest")
+        assert captured["request"].recurse is True
+        assert captured["request"].force is True
+        assert captured["request"].preview is True
+        assert captured["request"].cleanup_empty_source_dir is True
+        assert "Sorted 1 files" in result.stdout
+
+    def test_cli_update_uses_platform_facade(self, monkeypatch, tmp_path: Path) -> None:
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            summary={"total": 1, "processed": 1, "skipped": 0, "failed": 0, "warnings": 0},
+            capture=captured,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "update",
+                str(tmp_path / "library"),
+                "--recurse",
+                "--force",
+                "--preview",
+                "--refresh-images",
+                "--refresh-trailer",
+                "--scrapers",
+                "javlibrary,dmm",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].source_path == str(tmp_path / "library")
+        assert captured["request"].recurse is True
+        assert captured["request"].force is True
+        assert captured["request"].preview is True
+        assert captured["request"].scraper_names == ["javlibrary", "dmm"]
+        assert captured["request"].refresh_images is True
+        assert captured["request"].refresh_trailer is True
+        assert "Updated 1 files" in result.stdout
 
     def test_sort_passes_flags_to_engine_and_shows_result_table(self, monkeypatch, tmp_path: Path):
         captured: dict[str, object] = {}

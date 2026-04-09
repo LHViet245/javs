@@ -82,11 +82,16 @@ def _status_context(message: str):
 
 
 def _build_find_facade(cfg, config_path: Path):
+    return _build_platform_facade(cfg, config_path)
+
+
+def _build_platform_facade(cfg, config_path: Path):
     from javs.application import PlatformFacade
     from javs.core.engine import JavsEngine
     from javs.database.connection import open_database, resolve_database_path
     from javs.database.migrations import initialize_database
     from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.job_items import JobItemsRepository
     from javs.database.repositories.jobs import JobsRepository
     from javs.jobs import PlatformJobRunner
 
@@ -95,14 +100,22 @@ def _build_find_facade(cfg, config_path: Path):
     connection = open_database(db_path)
     jobs = JobsRepository(connection)
     events = JobEventsRepository(connection)
-    facade = PlatformFacade(
-        jobs=jobs,
-        events=events,
-        runner=PlatformJobRunner(jobs=jobs, events=events),
-        find_engine_factory=lambda: JavsEngine(
+    job_items = JobItemsRepository(connection)
+
+    def engine_factory() -> JavsEngine:
+        return JavsEngine(
             cfg,
             cloudflare_recovery_handler=_build_javlibrary_recovery_handler(cfg, config_path),
-        ),
+        )
+
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=job_items,
+        events=events,
+        runner=PlatformJobRunner(jobs=jobs, events=events),
+        find_engine_factory=engine_factory,
+        sort_engine_factory=engine_factory,
+        update_engine_factory=engine_factory,
     )
     return facade, connection.close
 
@@ -198,8 +211,8 @@ def sort(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """📂 Scan, scrape, and sort video files into an organized library."""
+    from javs.application import SortJobRequest
     from javs.config import load_config
-    from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
     effective_cleanup_empty_source_dir = (
@@ -207,21 +220,28 @@ def sort(
         if cleanup_empty_source_dir is not None
         else cfg.sort.cleanup_empty_source_dir
     )
-    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
-        cfg, _resolve_config_path(config_path)
-    ))
+    resolved_config_path = _resolve_config_path(config_path)
+    facade, cleanup = _build_platform_facade(cfg, resolved_config_path)
 
-    with _status_context("[bold green]Sorting files..."):
-        results = asyncio.run(
-            engine.sort_path(
-                source,
-                dest,
-                recurse,
-                force,
-                preview,
-                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+    try:
+        with _status_context("[bold green]Sorting files..."):
+            asyncio.run(
+                facade.start_sort_job(
+                    SortJobRequest(
+                        source_path=str(source),
+                        destination_path=str(dest),
+                        recurse=recurse,
+                        force=force,
+                        preview=preview,
+                        cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+                    ),
+                    origin="cli",
+                )
             )
-        )
+    finally:
+        cleanup()
+
+    results = facade.last_run_results
 
     if results:
         table = Table(title=f"✅ Sorted {len(results)} files")
@@ -237,9 +257,9 @@ def sort(
         console.print("[yellow]No files were processed.[/yellow]")
 
     if preview:
-        _print_preview_plan(engine)
-    _print_run_summary(engine)
-    _print_run_diagnostics(engine)
+        _print_preview_plan(facade)
+    _print_run_summary(facade)
+    _print_run_diagnostics(facade)
 
 
 @app.command("update")
@@ -269,30 +289,34 @@ def update(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """♻️ Refresh metadata sidecars for an already-sorted library without moving files."""
+    from javs.application import UpdateJobRequest
     from javs.config import load_config
-    from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(
-        cfg,
-        cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
-            cfg, _resolve_config_path(config_path)
-        ),
-    )
+    resolved_config_path = _resolve_config_path(config_path)
+    facade, cleanup = _build_platform_facade(cfg, resolved_config_path)
     scraper_list = scrapers.split(",") if scrapers else None
 
-    with _status_context("[bold green]Updating sorted library..."):
-        results = asyncio.run(
-            engine.update_path(
-                source,
-                recurse=recurse,
-                force=force,
-                preview=preview,
-                scraper_names=scraper_list,
-                refresh_images=refresh_images,
-                refresh_trailer=refresh_trailer,
+    try:
+        with _status_context("[bold green]Updating sorted library..."):
+            asyncio.run(
+                facade.start_update_job(
+                    UpdateJobRequest(
+                        source_path=str(source),
+                        recurse=recurse,
+                        force=force,
+                        preview=preview,
+                        scraper_names=scraper_list,
+                        refresh_images=refresh_images,
+                        refresh_trailer=refresh_trailer,
+                    ),
+                    origin="cli",
+                )
             )
-        )
+    finally:
+        cleanup()
+
+    results = facade.last_run_results
 
     if results:
         table = Table(title=f"♻️ Updated {len(results)} files")
@@ -308,9 +332,9 @@ def update(
         console.print("[yellow]No files were updated.[/yellow]")
 
     if preview:
-        _print_preview_plan(engine)
-    _print_run_summary(engine)
-    _print_run_diagnostics(engine)
+        _print_preview_plan(facade)
+    _print_run_summary(facade)
+    _print_run_diagnostics(facade)
 
 
 @app.command()

@@ -78,13 +78,28 @@ class SortJobRequest(BaseModel):
     """Request contract for a shared sort job."""
 
     source_path: str
-    destination_path: str | None = None
+    destination_path: str
+    recurse: bool = False
+    force: bool = False
+    preview: bool = False
+    cleanup_empty_source_dir: bool | None = None
 
 
 class UpdateJobRequest(BaseModel):
     """Request contract for a shared update job."""
 
     source_path: str
+    recurse: bool = False
+    force: bool = False
+    preview: bool = False
+    scraper_names: list[str] | None = None
+    refresh_images: bool = False
+    refresh_trailer: bool = False
+
+    @field_validator("scraper_names", mode="before")
+    @classmethod
+    def normalize_scraper_names(cls, value: object) -> object:
+        return _normalize_scraper_names(value)
 
 
 class SaveSettingsRequest(BaseModel):

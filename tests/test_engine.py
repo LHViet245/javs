@@ -410,6 +410,94 @@ class TestJavsEngineLifecycle:
         assert [movie.id for movie in result] == ["ABP-420"]
         assert captured == {"cleanup_empty_source_dir": True}
 
+    def test_sort_path_records_item_history_for_platform_jobs(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """sort_path() should expose per-file item history for the shared platform layer."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+
+        scanned_files = [
+            ScannedFile(
+                path=source / "ABP-420.mp4",
+                filename="ABP-420.mp4",
+                basename="ABP-420",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="ABP-420",
+            ),
+            ScannedFile(
+                path=source / "SSIS-001.mp4",
+                filename="SSIS-001.mp4",
+                basename="SSIS-001",
+                extension=".mp4",
+                directory=source,
+                size_bytes=1024,
+                movie_id="SSIS-001",
+            ),
+        ]
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: scanned_files)
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            if movie_id == "SSIS-001":
+                return None
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        async def fake_sort_movie(
+            file,
+            data,
+            dest_root,
+            force=False,
+            preview=False,
+            nfo_data=None,
+            cleanup_empty_source_dir=False,
+        ):
+            del data, force, preview, nfo_data, cleanup_empty_source_dir
+            return SimpleNamespace(file_path=dest_root / file.movie_id / file.filename)
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "sort_movie", fake_sort_movie)
+
+        result = asyncio.run(engine.sort_path(source, dest))
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert engine.last_run_items == [
+            {
+                "item_key": "ABP-420",
+                "status": "completed",
+                "source_path": str(source / "ABP-420.mp4"),
+                "dest_path": str(dest / "ABP-420" / "ABP-420.mp4"),
+                "movie_id": "ABP-420",
+                "step": "sort",
+                "message": "Processed successfully",
+                "metadata": {"preview": False},
+            },
+            {
+                "item_key": "SSIS-001",
+                "status": "skipped",
+                "source_path": str(source / "SSIS-001.mp4"),
+                "dest_path": None,
+                "movie_id": "SSIS-001",
+                "step": "sort",
+                "message": "No data found",
+                "metadata": {"preview": False},
+            },
+        ]
+
     def test_sort_path_uses_config_cleanup_toggle_when_kwarg_omitted(
         self, monkeypatch, tmp_path: Path
     ):

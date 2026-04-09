@@ -13,9 +13,12 @@ from javs.application import (
     FindMovieRequest,
     JobDetail,
     JobItemSummary,
+    JobStartResponse,
     JobSummary,
     PlatformFacade,
     SettingsResponse,
+    SortJobRequest,
+    UpdateJobRequest,
     build_job_detail,
     build_job_item_summary,
     build_job_summary,
@@ -253,6 +256,15 @@ def load_persisted_job_state(
         return jobs.get(job_id), events.list_for_job(job_id)
 
 
+def load_persisted_job_items(db_path: Path, job_id: str) -> list[dict[str, Any]]:
+    from javs.database.connection import open_database
+    from javs.database.repositories.job_items import JobItemsRepository
+
+    with open_database(db_path) as connection:
+        items = JobItemsRepository(connection)
+        return items.list_for_job(job_id)
+
+
 @pytest.mark.asyncio
 async def test_facade_find_movie_returns_job_and_result(tmp_path: Path) -> None:
     from javs.database.repositories.events import JobEventsRepository
@@ -318,6 +330,371 @@ async def test_facade_find_movie_returns_job_and_result(tmp_path: Path) -> None:
         "job.started",
         "job.completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_facade_start_sort_job_persists_summary_and_item_history(tmp_path: Path) -> None:
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.job_items import JobItemsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.models.movie import MovieData
+
+    source = tmp_path / "incoming"
+    dest = tmp_path / "sorted"
+    source.mkdir()
+    dest.mkdir()
+
+    class StubSortEngine:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Path, Path, bool, bool, bool, bool | None]] = []
+            self.last_run_diagnostics = [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+            self.last_run_summary = {
+                "total": 2,
+                "processed": 1,
+                "skipped": 1,
+                "failed": 0,
+                "warnings": 1,
+            }
+            self.last_preview_plan = [
+                {
+                    "source": str(source / "ABP-420.mp4"),
+                    "id": "ABP-420",
+                    "target": str(dest / "ABP-420" / "ABP-420.mp4"),
+                }
+            ]
+            self.last_run_items = [
+                {
+                    "item_key": "ABP-420",
+                    "status": "completed",
+                    "source_path": str(source / "ABP-420.mp4"),
+                    "dest_path": str(dest / "ABP-420" / "ABP-420.mp4"),
+                    "movie_id": "ABP-420",
+                    "step": "sort",
+                    "message": "Sorted successfully",
+                    "metadata": {"preview": False},
+                },
+                {
+                    "item_key": "SSIS-001",
+                    "status": "skipped",
+                    "source_path": str(source / "SSIS-001.mp4"),
+                    "movie_id": "SSIS-001",
+                    "step": "sort",
+                    "message": "No data found",
+                    "metadata": {"preview": False},
+                },
+            ]
+
+        async def sort_path(
+            self,
+            source_path: Path,
+            destination_path: Path,
+            recurse: bool = False,
+            force: bool = False,
+            preview: bool = False,
+            cleanup_empty_source_dir: bool | None = None,
+        ) -> list[MovieData]:
+            self.calls.append(
+                (
+                    source_path,
+                    destination_path,
+                    recurse,
+                    force,
+                    preview,
+                    cleanup_empty_source_dir,
+                )
+            )
+            return [MovieData(id="ABP-420", title="Facade Movie", source="stub")]
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    job_items = JobItemsRepository(connection)
+    events = JobEventsRepository(connection)
+    engine = StubSortEngine()
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=job_items,
+        events=events,
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        sort_engine_factory=lambda: engine,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    try:
+        response = await facade.start_sort_job(
+            SortJobRequest(
+                source_path=str(source),
+                destination_path=str(dest),
+                recurse=True,
+                force=True,
+                preview=False,
+                cleanup_empty_source_dir=True,
+            ),
+            origin="cli",
+        )
+    finally:
+        connection.close()
+
+    job, persisted_events = load_persisted_job_state(db_path, response.job.id)
+    persisted_items = load_persisted_job_items(db_path, response.job.id)
+
+    assert response == JobStartResponse(
+        job=JobSummary(
+            id=response.job.id,
+            kind="sort",
+            status="completed",
+            origin="cli",
+            created_at=response.job.created_at,
+            started_at=response.job.started_at,
+            finished_at=response.job.finished_at,
+            summary={"total": 2, "processed": 1, "skipped": 1, "failed": 0, "warnings": 1},
+            error=None,
+        )
+    )
+    assert facade.last_run_diagnostics == [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+    assert facade.last_run_summary == {
+        "total": 2,
+        "processed": 1,
+        "skipped": 1,
+        "failed": 0,
+        "warnings": 1,
+    }
+    assert facade.last_preview_plan == [
+        {
+            "source": str(source / "ABP-420.mp4"),
+            "id": "ABP-420",
+            "target": str(dest / "ABP-420" / "ABP-420.mp4"),
+        }
+    ]
+    assert [movie.id for movie in facade.last_run_results] == ["ABP-420"]
+    assert facade.last_run_items == [
+        {
+            "item_key": "ABP-420",
+            "status": "completed",
+            "source_path": str(source / "ABP-420.mp4"),
+            "dest_path": str(dest / "ABP-420" / "ABP-420.mp4"),
+            "movie_id": "ABP-420",
+            "step": "sort",
+            "message": "Sorted successfully",
+            "metadata": {"preview": False},
+        },
+        {
+            "item_key": "SSIS-001",
+            "status": "skipped",
+            "source_path": str(source / "SSIS-001.mp4"),
+            "movie_id": "SSIS-001",
+            "step": "sort",
+            "message": "No data found",
+            "metadata": {"preview": False},
+        },
+    ]
+    assert engine.calls == [(source, dest, True, True, False, True)]
+    assert job is not None
+    assert job["request_json"] == {
+        "source_path": str(source),
+        "destination_path": str(dest),
+        "recurse": True,
+        "force": True,
+        "preview": False,
+        "cleanup_empty_source_dir": True,
+    }
+    assert len(job["result_json"]) == 1
+    assert job["result_json"][0]["id"] == "ABP-420"
+    assert job["result_json"][0]["title"] == "Facade Movie"
+    assert job["result_json"][0]["source"] == "stub"
+    assert job["summary_json"] == {
+        "total": 2,
+        "processed": 1,
+        "skipped": 1,
+        "failed": 0,
+        "warnings": 1,
+    }
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.item.recorded",
+        "job.item.recorded",
+        "job.completed",
+    ]
+    assert persisted_items == [
+        {
+            "id": persisted_items[0]["id"],
+            "job_id": response.job.id,
+            "item_key": "ABP-420",
+            "source_path": str(source / "ABP-420.mp4"),
+            "dest_path": str(dest / "ABP-420" / "ABP-420.mp4"),
+            "movie_id": "ABP-420",
+            "status": "completed",
+            "step": "sort",
+            "message": "Sorted successfully",
+            "metadata_json": {"preview": False},
+            "error_json": None,
+            "created_at": persisted_items[0]["created_at"],
+            "started_at": None,
+            "finished_at": None,
+        },
+        {
+            "id": persisted_items[1]["id"],
+            "job_id": response.job.id,
+            "item_key": "SSIS-001",
+            "source_path": str(source / "SSIS-001.mp4"),
+            "dest_path": None,
+            "movie_id": "SSIS-001",
+            "status": "skipped",
+            "step": "sort",
+            "message": "No data found",
+            "metadata_json": {"preview": False},
+            "error_json": None,
+            "created_at": persisted_items[1]["created_at"],
+            "started_at": None,
+            "finished_at": None,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_facade_start_update_job_persists_summary_and_item_history(tmp_path: Path) -> None:
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.job_items import JobItemsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.models.movie import MovieData
+
+    library = tmp_path / "library"
+    library.mkdir()
+
+    class StubUpdateEngine:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Path, bool, bool, bool, list[str] | None, bool, bool]] = []
+            self.last_run_diagnostics = []
+            self.last_run_summary = {
+                "total": 1,
+                "processed": 1,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": 0,
+            }
+            self.last_preview_plan = []
+            self.last_run_items = [
+                {
+                    "item_key": "ABP-420",
+                    "status": "completed",
+                    "source_path": str(library / "ABP-420" / "ABP-420.mp4"),
+                    "dest_path": str(library / "ABP-420" / "ABP-420.nfo"),
+                    "movie_id": "ABP-420",
+                    "step": "update",
+                    "message": "Updated successfully",
+                    "metadata": {"refresh_images": True, "refresh_trailer": True},
+                }
+            ]
+
+        async def update_path(
+            self,
+            source_path: Path,
+            recurse: bool = False,
+            force: bool = False,
+            preview: bool = False,
+            scraper_names: list[str] | None = None,
+            refresh_images: bool = False,
+            refresh_trailer: bool = False,
+        ) -> list[MovieData]:
+            self.calls.append(
+                (
+                    source_path,
+                    recurse,
+                    force,
+                    preview,
+                    scraper_names,
+                    refresh_images,
+                    refresh_trailer,
+                )
+            )
+            return [MovieData(id="ABP-420", title="Updated Movie", source="stub")]
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    job_items = JobItemsRepository(connection)
+    events = JobEventsRepository(connection)
+    engine = StubUpdateEngine()
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=job_items,
+        events=events,
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        update_engine_factory=lambda: engine,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    try:
+        response = await facade.start_update_job(
+            UpdateJobRequest(
+                source_path=str(library),
+                recurse=True,
+                force=True,
+                preview=False,
+                scraper_names=[" javlibrary ", "dmm", "javlibrary"],
+                refresh_images=True,
+                refresh_trailer=True,
+            ),
+            origin="cli",
+        )
+    finally:
+        connection.close()
+
+    job, persisted_events = load_persisted_job_state(db_path, response.job.id)
+    persisted_items = load_persisted_job_items(db_path, response.job.id)
+
+    assert response.job.kind == "update"
+    assert response.job.status == "completed"
+    assert facade.last_run_summary == {
+        "total": 1,
+        "processed": 1,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": 0,
+    }
+    assert [movie.id for movie in facade.last_run_results] == ["ABP-420"]
+    assert engine.calls == [
+        (library, True, True, False, ["javlibrary", "dmm"], True, True)
+    ]
+    assert job is not None
+    assert job["request_json"] == {
+        "source_path": str(library),
+        "recurse": True,
+        "force": True,
+        "preview": False,
+        "scraper_names": ["javlibrary", "dmm"],
+        "refresh_images": True,
+        "refresh_trailer": True,
+    }
+    assert len(job["result_json"]) == 1
+    assert job["result_json"][0]["id"] == "ABP-420"
+    assert job["result_json"][0]["title"] == "Updated Movie"
+    assert job["result_json"][0]["source"] == "stub"
+    assert job["summary_json"] == {
+        "total": 1,
+        "processed": 1,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": 0,
+    }
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.item.recorded",
+        "job.completed",
+    ]
+    assert persisted_items[0]["item_key"] == "ABP-420"
+    assert persisted_items[0]["status"] == "completed"
+    assert persisted_items[0]["dest_path"] == str(library / "ABP-420" / "ABP-420.nfo")
+    assert persisted_items[0]["metadata_json"] == {
+        "refresh_images": True,
+        "refresh_trailer": True,
+    }
 
 
 @pytest.mark.asyncio
