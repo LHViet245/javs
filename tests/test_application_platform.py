@@ -698,6 +698,63 @@ async def test_facade_start_update_job_persists_summary_and_item_history(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_facade_start_sort_job_raises_for_failed_terminal_job(tmp_path: Path) -> None:
+    from javs.application import BatchJobError
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    del db_path
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+
+    class StubSortEngine:
+        last_preview_plan: list[dict[str, str]] = []
+        last_run_diagnostics: list[dict[str, str]] = []
+        last_run_items: list[dict[str, object]] = []
+        last_run_summary: dict[str, int] = {}
+
+        async def sort_path(
+            self,
+            source: Path,
+            dest: Path,
+            recurse: bool = False,
+            force: bool = False,
+            preview: bool = False,
+            cleanup_empty_source_dir: bool | None = None,
+        ) -> list[object]:
+            del source, dest, recurse, force, preview, cleanup_empty_source_dir
+            raise RuntimeError("sort exploded")
+
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        sort_engine_factory=StubSortEngine,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    try:
+        with pytest.raises(BatchJobError) as exc_info:
+            await facade.start_sort_job(
+                SortJobRequest(
+                    source_path=str(tmp_path / "source"),
+                    destination_path=str(tmp_path / "dest"),
+                ),
+                origin="cli",
+            )
+    finally:
+        connection.close()
+
+    assert exc_info.value.kind == "sort"
+    assert exc_info.value.error == {"type": "RuntimeError", "message": "sort exploded"}
+
+
+@pytest.mark.asyncio
 async def test_facade_find_movie_requires_synchronous_terminal_job_state(tmp_path: Path) -> None:
     from javs.application.find import FindMovieError
     from javs.database.repositories.jobs import JobsRepository

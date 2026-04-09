@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -175,3 +176,17 @@ class SaveSettingsResponse(BaseModel):
 
     job: JobSummary
     settings: SettingsResponse
+
+
+@dataclass(slots=True)
+class BatchJobError(Exception):
+    """Structured application error for failed or incompatible batch jobs."""
+
+    job_id: str
+    kind: str
+    error: dict[str, Any]
+
+    def __str__(self) -> str:
+        error_type = self.error.get("type", "BatchJobError")
+        message = self.error.get("message", f"{self.kind} job failed.")
+        return f"{error_type} for {self.kind} job {self.job_id}: {message}"

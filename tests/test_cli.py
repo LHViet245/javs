@@ -70,9 +70,11 @@ def _patch_batch_facade(
     monkeypatch,
     *,
     movies: list[MovieData],
+    status: str = "completed",
     summary: dict[str, int] | None = None,
     diagnostics: list[dict[str, str]] | None = None,
     preview_plan: list[dict[str, str]] | None = None,
+    error: dict[str, str] | None = None,
     capture: dict[str, object] | None = None,
 ) -> None:
     class DummyFacade:
@@ -87,7 +89,13 @@ def _patch_batch_facade(
                 capture["request"] = request
                 capture["origin"] = origin
             return JobStartResponse(
-                job=JobSummary(id="job-sort-1", kind="sort", status="completed", origin=origin)
+                job=JobSummary(
+                    id="job-sort-1",
+                    kind="sort",
+                    status=status,
+                    origin=origin,
+                    error=error,
+                )
             )
 
         async def start_update_job(self, request, *, origin: str = "cli") -> JobStartResponse:
@@ -95,7 +103,13 @@ def _patch_batch_facade(
                 capture["request"] = request
                 capture["origin"] = origin
             return JobStartResponse(
-                job=JobSummary(id="job-update-1", kind="update", status="completed", origin=origin)
+                job=JobSummary(
+                    id="job-update-1",
+                    kind="update",
+                    status=status,
+                    origin=origin,
+                    error=error,
+                )
             )
 
     monkeypatch.setattr(engine_module, "JavsEngine", _UnexpectedEngineUsage)
@@ -632,6 +646,40 @@ class TestCliSortAndScrapers:
         assert captured["request"].refresh_images is True
         assert captured["request"].refresh_trailer is True
         assert "Updated 1 files" in result.stdout
+
+    def test_cli_sort_exits_nonzero_for_failed_platform_job(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[],
+            status="failed",
+            error={"type": "RuntimeError", "message": "sort exploded"},
+        )
+
+        result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
+
+        assert result.exit_code == 1
+        assert "sort exploded" in result.stdout
+        assert "No files were processed." not in result.stdout
+
+    def test_cli_update_exits_nonzero_for_failed_platform_job(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[],
+            status="failed",
+            error={"type": "RuntimeError", "message": "update exploded"},
+        )
+
+        result = runner.invoke(app, ["update", str(tmp_path / "library")])
+
+        assert result.exit_code == 1
+        assert "update exploded" in result.stdout
+        assert "No files were updated." not in result.stdout
 
     def test_sort_passes_flags_to_engine_and_shows_result_table(self, monkeypatch, tmp_path: Path):
         captured: dict[str, object] = {}

@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from javs.application.history import JobHistoryRepository, build_job_summary
-from javs.application.models import JobStartResponse, UpdateJobRequest
+from javs.application.models import BatchJobError, JobStartResponse, UpdateJobRequest
 from javs.jobs.executor import JobExecutionContext, JobExecutionResult, JobExecutor
+
+_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed"})
 
 
 class UpdateEngine(Protocol):
@@ -99,17 +101,20 @@ class UpdateJobUseCase:
             context: JobExecutionContext[UpdateJobRequest],
         ) -> JobExecutionResult:
             active_request = context.request or request
-            results = await engine.update_path(
-                Path(active_request.source_path),
-                recurse=active_request.recurse,
-                force=active_request.force,
-                preview=active_request.preview,
-                scraper_names=active_request.scraper_names,
-                refresh_images=active_request.refresh_images,
-                refresh_trailer=active_request.refresh_trailer,
-            )
-            self._capture_engine_state(engine, results)
-            self._persist_items(context.job_id, context)
+            results: list[object] = []
+            try:
+                results = await engine.update_path(
+                    Path(active_request.source_path),
+                    recurse=active_request.recurse,
+                    force=active_request.force,
+                    preview=active_request.preview,
+                    scraper_names=active_request.scraper_names,
+                    refresh_images=active_request.refresh_images,
+                    refresh_trailer=active_request.refresh_trailer,
+                )
+            finally:
+                self._capture_engine_state(engine, results)
+                self._persist_items(context.job_id, context)
             return JobExecutionResult(result=results, summary=self.last_run_summary)
 
         job_id = await self.runner.run_update(
@@ -117,9 +122,7 @@ class UpdateJobUseCase:
             origin=origin,
             executor=execute_update,
         )
-        job_record = self.jobs.get(job_id)
-        if job_record is None:
-            raise RuntimeError("Update job was not persisted.")
+        job_record = self._require_completed_job(job_id)
         return JobStartResponse(job=build_job_summary(job_record))
 
     def _capture_engine_state(self, engine: UpdateEngine, results: list[object]) -> None:
@@ -165,6 +168,65 @@ class UpdateJobUseCase:
         self.last_run_items = []
         self.last_run_results = []
         self.last_run_summary = {}
+
+    def _require_completed_job(self, job_id: str) -> dict[str, Any]:
+        job_record = self.jobs.get(job_id)
+        if job_record is None:
+            raise BatchJobError(
+                job_id=job_id,
+                kind="update",
+                error={
+                    "type": "BatchJobContractError",
+                    "message": (
+                        "Update requires a terminal job row to be persisted before the runner "
+                        "returns."
+                    ),
+                    "status": "missing",
+                },
+            )
+
+        status = str(job_record.get("status", "unknown"))
+        if status == "failed":
+            raise BatchJobError(
+                job_id=job_id,
+                kind="update",
+                error=self._normalize_error_payload(
+                    job_record.get("error_json"),
+                    fallback_type="UpdateJobFailed",
+                    fallback_message="Update job failed.",
+                ),
+            )
+        if status not in _TERMINAL_JOB_STATUSES:
+            raise BatchJobError(
+                job_id=job_id,
+                kind="update",
+                error={
+                    "type": "BatchJobContractError",
+                    "message": (
+                        "Update requires a terminal job row to be persisted before the runner "
+                        "returns."
+                    ),
+                    "status": status,
+                },
+            )
+        return job_record
+
+    def _normalize_error_payload(
+        self,
+        error: object,
+        *,
+        fallback_type: str,
+        fallback_message: str,
+    ) -> dict[str, Any]:
+        if isinstance(error, dict):
+            payload = dict(error)
+            payload.setdefault("type", fallback_type)
+            payload.setdefault("message", fallback_message)
+            return payload
+        return {
+            "type": fallback_type,
+            "message": fallback_message,
+        }
 
 
 def _string_or_none(value: object) -> str | None:

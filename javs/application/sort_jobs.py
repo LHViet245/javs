@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from javs.application.history import JobHistoryRepository, build_job_summary
-from javs.application.models import JobStartResponse, SortJobRequest
+from javs.application.models import BatchJobError, JobStartResponse, SortJobRequest
 from javs.jobs.executor import JobExecutionContext, JobExecutionResult, JobExecutor
+
+_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed"})
 
 
 class SortEngine(Protocol):
@@ -98,16 +100,19 @@ class SortJobUseCase:
             context: JobExecutionContext[SortJobRequest],
         ) -> JobExecutionResult:
             active_request = context.request or request
-            results = await engine.sort_path(
-                Path(active_request.source_path),
-                Path(active_request.destination_path),
-                recurse=active_request.recurse,
-                force=active_request.force,
-                preview=active_request.preview,
-                cleanup_empty_source_dir=active_request.cleanup_empty_source_dir,
-            )
-            self._capture_engine_state(engine, results)
-            self._persist_items(context.job_id, context)
+            results: list[object] = []
+            try:
+                results = await engine.sort_path(
+                    Path(active_request.source_path),
+                    Path(active_request.destination_path),
+                    recurse=active_request.recurse,
+                    force=active_request.force,
+                    preview=active_request.preview,
+                    cleanup_empty_source_dir=active_request.cleanup_empty_source_dir,
+                )
+            finally:
+                self._capture_engine_state(engine, results)
+                self._persist_items(context.job_id, context)
             return JobExecutionResult(result=results, summary=self.last_run_summary)
 
         job_id = await self.runner.run_sort(
@@ -115,9 +120,7 @@ class SortJobUseCase:
             origin=origin,
             executor=execute_sort,
         )
-        job_record = self.jobs.get(job_id)
-        if job_record is None:
-            raise RuntimeError("Sort job was not persisted.")
+        job_record = self._require_completed_job(job_id)
         return JobStartResponse(job=build_job_summary(job_record))
 
     def _capture_engine_state(self, engine: SortEngine, results: list[object]) -> None:
@@ -163,6 +166,65 @@ class SortJobUseCase:
         self.last_run_items = []
         self.last_run_results = []
         self.last_run_summary = {}
+
+    def _require_completed_job(self, job_id: str) -> dict[str, Any]:
+        job_record = self.jobs.get(job_id)
+        if job_record is None:
+            raise BatchJobError(
+                job_id=job_id,
+                kind="sort",
+                error={
+                    "type": "BatchJobContractError",
+                    "message": (
+                        "Sort requires a terminal job row to be persisted before the runner "
+                        "returns."
+                    ),
+                    "status": "missing",
+                },
+            )
+
+        status = str(job_record.get("status", "unknown"))
+        if status == "failed":
+            raise BatchJobError(
+                job_id=job_id,
+                kind="sort",
+                error=self._normalize_error_payload(
+                    job_record.get("error_json"),
+                    fallback_type="SortJobFailed",
+                    fallback_message="Sort job failed.",
+                ),
+            )
+        if status not in _TERMINAL_JOB_STATUSES:
+            raise BatchJobError(
+                job_id=job_id,
+                kind="sort",
+                error={
+                    "type": "BatchJobContractError",
+                    "message": (
+                        "Sort requires a terminal job row to be persisted before the runner "
+                        "returns."
+                    ),
+                    "status": status,
+                },
+            )
+        return job_record
+
+    def _normalize_error_payload(
+        self,
+        error: object,
+        *,
+        fallback_type: str,
+        fallback_message: str,
+    ) -> dict[str, Any]:
+        if isinstance(error, dict):
+            payload = dict(error)
+            payload.setdefault("type", fallback_type)
+            payload.setdefault("message", fallback_message)
+            return payload
+        return {
+            "type": fallback_type,
+            "message": fallback_message,
+        }
 
 
 def _string_or_none(value: object) -> str | None:

@@ -211,7 +211,7 @@ def sort(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """📂 Scan, scrape, and sort video files into an organized library."""
-    from javs.application import SortJobRequest
+    from javs.application import BatchJobError, SortJobRequest
     from javs.config import load_config
 
     cfg = load_config(config_path)
@@ -224,22 +224,36 @@ def sort(
     facade, cleanup = _build_platform_facade(cfg, resolved_config_path)
 
     try:
-        with _status_context("[bold green]Sorting files..."):
-            asyncio.run(
-                facade.start_sort_job(
-                    SortJobRequest(
-                        source_path=str(source),
-                        destination_path=str(dest),
-                        recurse=recurse,
-                        force=force,
-                        preview=preview,
-                        cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
-                    ),
-                    origin="cli",
+        try:
+            with _status_context("[bold green]Sorting files..."):
+                response = asyncio.run(
+                    facade.start_sort_job(
+                        SortJobRequest(
+                            source_path=str(source),
+                            destination_path=str(dest),
+                            recurse=recurse,
+                            force=force,
+                            preview=preview,
+                            cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+                        ),
+                        origin="cli",
+                    )
                 )
-            )
+        except BatchJobError as error:
+            _print_run_summary(facade)
+            _print_run_diagnostics(facade)
+            message = str(error.error.get("message", "Sort job failed."))
+            console.print(f"[red]Sort failed: {message}[/red]")
+            raise typer.Exit(1) from error
     finally:
         cleanup()
+
+    if response.job.status != "completed":
+        _print_run_summary(facade)
+        _print_run_diagnostics(facade)
+        message = str((response.job.error or {}).get("message", "Sort job failed."))
+        console.print(f"[red]Sort failed: {message}[/red]")
+        raise typer.Exit(1)
 
     results = facade.last_run_results
 
@@ -289,7 +303,7 @@ def update(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """♻️ Refresh metadata sidecars for an already-sorted library without moving files."""
-    from javs.application import UpdateJobRequest
+    from javs.application import BatchJobError, UpdateJobRequest
     from javs.config import load_config
 
     cfg = load_config(config_path)
@@ -298,23 +312,37 @@ def update(
     scraper_list = scrapers.split(",") if scrapers else None
 
     try:
-        with _status_context("[bold green]Updating sorted library..."):
-            asyncio.run(
-                facade.start_update_job(
-                    UpdateJobRequest(
-                        source_path=str(source),
-                        recurse=recurse,
-                        force=force,
-                        preview=preview,
-                        scraper_names=scraper_list,
-                        refresh_images=refresh_images,
-                        refresh_trailer=refresh_trailer,
-                    ),
-                    origin="cli",
+        try:
+            with _status_context("[bold green]Updating sorted library..."):
+                response = asyncio.run(
+                    facade.start_update_job(
+                        UpdateJobRequest(
+                            source_path=str(source),
+                            recurse=recurse,
+                            force=force,
+                            preview=preview,
+                            scraper_names=scraper_list,
+                            refresh_images=refresh_images,
+                            refresh_trailer=refresh_trailer,
+                        ),
+                        origin="cli",
+                    )
                 )
-            )
+        except BatchJobError as error:
+            _print_run_summary(facade)
+            _print_run_diagnostics(facade)
+            message = str(error.error.get("message", "Update job failed."))
+            console.print(f"[red]Update failed: {message}[/red]")
+            raise typer.Exit(1) from error
     finally:
         cleanup()
+
+    if response.job.status != "completed":
+        _print_run_summary(facade)
+        _print_run_diagnostics(facade)
+        message = str((response.job.error or {}).get("message", "Update job failed."))
+        console.print(f"[red]Update failed: {message}[/red]")
+        raise typer.Exit(1)
 
     results = facade.last_run_results
 

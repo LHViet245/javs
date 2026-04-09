@@ -18,6 +18,7 @@ from javs.application.history import (
     build_job_summary,
 )
 from javs.application.models import (
+    BatchJobError,
     FindMovieRequest,
     FindMovieResponse,
     JobDetail,
@@ -34,6 +35,7 @@ from javs.application.models import (
 __all__ = [
     "FindMovieRequest",
     "FindMovieResponse",
+    "BatchJobError",
     "ConfigLoader",
     "ConfigSaver",
     "FindMovieError",

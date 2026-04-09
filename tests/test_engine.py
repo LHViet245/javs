@@ -664,6 +664,93 @@ class TestJavsEngineLifecycle:
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
 
+    def test_update_path_records_item_history_for_platform_jobs(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """update_path() should expose per-file item history for the shared platform layer."""
+        config = JavsConfig(throttle_limit=1, sleep=0)
+        engine = self._make_engine(monkeypatch, config=config)
+        library = tmp_path / "library"
+        library.mkdir()
+
+        scanned_files = [
+            ScannedFile(
+                path=library / "ABP-420.mp4",
+                filename="ABP-420.mp4",
+                basename="ABP-420",
+                extension=".mp4",
+                directory=library,
+                size_bytes=1024,
+                movie_id="ABP-420",
+            ),
+            ScannedFile(
+                path=library / "SSIS-001.mp4",
+                filename="SSIS-001.mp4",
+                basename="SSIS-001",
+                extension=".mp4",
+                directory=library,
+                size_bytes=1024,
+                movie_id="SSIS-001",
+            ),
+        ]
+        monkeypatch.setattr(engine.scanner, "scan", lambda *_args, **_kwargs: scanned_files)
+
+        async def fake_find_merged(movie_id: str, scraper_names=None, aggregate: bool = True):
+            del scraper_names, aggregate
+            if movie_id == "SSIS-001":
+                return None
+            return MovieData(
+                id=movie_id,
+                title=f"{movie_id} title",
+                maker="Studio",
+                release_date=date(2024, 1, 1),
+                cover_url="https://example.com/cover.jpg",
+                genres=["Drama"],
+                source="test",
+            )
+
+        async def fake_update_movie(
+            file,
+            data,
+            *,
+            force=False,
+            preview=False,
+            refresh_images=False,
+            refresh_trailer=False,
+            nfo_data=None,
+        ):
+            del data, force, preview, refresh_images, refresh_trailer, nfo_data
+            return SimpleNamespace(nfo_path=library / file.movie_id / f"{file.movie_id}.nfo")
+
+        monkeypatch.setattr(engine, "_find_merged", fake_find_merged)
+        monkeypatch.setattr(engine.organizer, "update_movie", fake_update_movie)
+
+        result = asyncio.run(engine.update_path(library))
+
+        assert [movie.id for movie in result] == ["ABP-420"]
+        assert engine.last_run_items == [
+            {
+                "item_key": "ABP-420",
+                "status": "completed",
+                "source_path": str(library / "ABP-420.mp4"),
+                "dest_path": str(library / "ABP-420" / "ABP-420.nfo"),
+                "movie_id": "ABP-420",
+                "step": "update",
+                "message": "Processed successfully",
+                "metadata": {"preview": False},
+            },
+            {
+                "item_key": "SSIS-001",
+                "status": "skipped",
+                "source_path": str(library / "SSIS-001.mp4"),
+                "dest_path": None,
+                "movie_id": "SSIS-001",
+                "step": "update",
+                "message": "No data found",
+                "metadata": {"preview": False},
+            },
+        ]
+
     def test_sort_path_preserves_original_naming_data_when_translate_affect_sort_names_disabled(
         self,
         monkeypatch,
