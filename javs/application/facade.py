@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
+from javs.application.find import FindMovieEngineFactory, FindMovieUseCase
 from javs.application.history import JobHistoryRepository, JobItemsHistoryRepository
 from javs.application.models import (
     FindMovieRequest,
@@ -104,6 +105,7 @@ class PlatformFacade:
         settings_audit: SettingsAuditRepository | None = None,
         history: PlatformHistory | None = None,
         runner: PlatformRunner | None = None,
+        find_engine_factory: FindMovieEngineFactory | None = None,
         config_loader: ConfigLoader = load_config,
         config_saver: ConfigSaver = save_config,
     ) -> None:
@@ -113,8 +115,10 @@ class PlatformFacade:
         self.settings_audit = settings_audit
         self.history = history
         self.runner = runner
+        self.find_engine_factory = find_engine_factory
         self.config_loader = config_loader
         self.config_saver = config_saver
+        self.last_run_diagnostics: list[dict[str, str]] = []
 
     async def find_movie(
         self,
@@ -122,8 +126,20 @@ class PlatformFacade:
         *,
         origin: str = "cli",
     ) -> FindMovieResponse:
-        """Run a shared find flow once a runner-backed implementation exists."""
-        raise NotImplementedError("PlatformFacade.find_movie is implemented in a later task.")
+        """Run the shared find flow through the platform job runner."""
+        if self.runner is None or self.find_engine_factory is None:
+            raise NotImplementedError(
+                "PlatformFacade.find_movie requires a runner and find_engine_factory."
+            )
+
+        use_case = FindMovieUseCase(
+            jobs=self.jobs,
+            runner=self.runner,
+            engine_factory=self.find_engine_factory,
+        )
+        response = await use_case.run(request, origin=origin)
+        self.last_run_diagnostics = use_case.last_run_diagnostics
+        return response
 
     async def start_sort_job(
         self,

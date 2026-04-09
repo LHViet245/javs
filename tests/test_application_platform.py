@@ -254,6 +254,73 @@ def load_persisted_job_state(
 
 
 @pytest.mark.asyncio
+async def test_facade_find_movie_returns_job_and_result(tmp_path: Path) -> None:
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.models.movie import MovieData
+
+    class StubFindEngine:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list[str] | None]] = []
+            self._diagnostics = [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+
+        async def find_one(
+            self,
+            movie_id: str,
+            scraper_names: list[str] | None = None,
+            aggregate: bool = True,
+        ) -> MovieData | None:
+            assert aggregate is True
+            self.calls.append((movie_id, scraper_names))
+            return MovieData(id=movie_id, title="Facade Movie", source="stub")
+
+        def get_last_run_diagnostics(self) -> list[dict[str, str]]:
+            return [dict(item) for item in self._diagnostics]
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    engine = StubFindEngine()
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        find_engine_factory=lambda: engine,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    try:
+        response = await facade.find_movie(
+            FindMovieRequest(movie_id=" abp420 ", scraper_names=[" DMM ", ""]),
+            origin="cli",
+        )
+    finally:
+        connection.close()
+
+    job, persisted_events = load_persisted_job_state(db_path, response.job.id)
+
+    assert response.job.kind == "find"
+    assert response.job.status == "completed"
+    assert response.result is not None
+    assert response.result.id == "ABP-420"
+    assert facade.last_run_diagnostics == [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+    assert engine.calls == [("ABP-420", ["dmm"])]
+    assert job is not None
+    assert job["request_json"] == {"movie_id": "ABP-420", "scraper_names": ["dmm"]}
+    assert job["result_json"]["id"] == "ABP-420"
+    assert job["summary_json"] == {"matched": 1}
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runner_persists_completed_job_and_events_across_connection_reopen(
     tmp_path: Path,
 ) -> None:

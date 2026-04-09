@@ -317,6 +317,10 @@ class JavsEngine:
         """Clean up resources."""
         await self.http.close()
 
+    def get_last_run_diagnostics(self) -> list[dict[str, str]]:
+        """Return a copy of diagnostics from the last engine run."""
+        return [dict(item) for item in self.last_run_diagnostics]
+
     async def _run_scrapers(self, scrapers, movie_id: str) -> list[MovieData | Exception | None]:
         """Run scraper tasks concurrently and keep exception objects for inspection."""
         tasks = [s.search_and_scrape(movie_id) for s in scrapers]

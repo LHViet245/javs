@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 import javs.config as config_module
 import javs.core.engine as engine_module
 import javs.scrapers.registry as registry_module
+from javs.application import FindMovieResponse, JobSummary
 from javs.cli import app
 from javs.config import JavsConfig
 from javs.models.movie import Actress, MovieData, Rating
@@ -26,6 +27,38 @@ def _movie_data() -> MovieData:
         maker="Test Studio",
         release_date=date(2023, 6, 15),
         source="test",
+    )
+
+
+class _UnexpectedEngineUsage:
+    def __init__(self, *args, **kwargs) -> None:
+        raise AssertionError("CLI find should route through the platform facade.")
+
+
+def _patch_find_facade(
+    monkeypatch,
+    *,
+    movie: MovieData | None,
+    diagnostics: list[dict[str, str]] | None = None,
+    capture: dict[str, object] | None = None,
+) -> None:
+    class DummyFacade:
+        def __init__(self) -> None:
+            self.last_run_diagnostics = list(diagnostics or [])
+
+        async def find_movie(self, request, *, origin: str = "cli") -> FindMovieResponse:
+            if capture is not None:
+                capture["request"] = request
+                capture["origin"] = origin
+            return FindMovieResponse(
+                job=JobSummary(id="job-1", kind="find", status="completed", origin=origin),
+                result=movie,
+            )
+
+    monkeypatch.setattr(engine_module, "JavsEngine", _UnexpectedEngineUsage)
+    monkeypatch.setattr(
+        "javs.cli._build_find_facade",
+        lambda cfg, config_path: (DummyFacade(), lambda: None),
     )
 
 
@@ -253,20 +286,29 @@ class TestCliConfigCommand:
 class TestCliFindCommand:
     """Test `find` command output and exit behavior."""
 
+    def test_cli_find_uses_platform_facade(self, monkeypatch) -> None:
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            capture=captured,
+        )
+
+        result = runner.invoke(app, ["find", "abp420", "--json", "--scrapers", "dmm,r18dev"])
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].movie_id == "ABP-420"
+        assert captured["request"].scraper_names == ["dmm", "r18dev"]
+        assert '"id": "ABP-420"' in result.stdout
+
     def test_find_json_outputs_serialized_movie_data(self, monkeypatch) -> None:
         movie = _movie_data()
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                assert movie_id == "ABP-420"
-                assert scraper_names == ["dmm", "r18dev"]
-                return movie
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=movie)
 
         result = runner.invoke(app, ["find", "ABP-420", "--json", "--scrapers", "dmm,r18dev"])
 
@@ -283,16 +325,8 @@ class TestCliFindCommand:
             pass
 
     def test_find_exits_with_code_1_when_no_results(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return None
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=None)
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -300,20 +334,12 @@ class TestCliFindCommand:
         assert "No results found for ABP-420" in result.stdout
 
     def test_find_prints_proxy_failure_summary(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {"kind": "proxy_unreachable", "scraper": "dmm"}
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return _movie_data()
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            diagnostics=[{"kind": "proxy_unreachable", "scraper": "dmm"}],
+        )
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -323,24 +349,18 @@ class TestCliFindCommand:
         assert "Next: run `javs config proxy-test`." in result.stdout
 
     def test_find_prints_translation_provider_warning(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {
-                        "kind": "translation_provider_unavailable",
-                        "scraper": "translate",
-                        "detail": "Install googletrans to enable translation.",
-                    }
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return _movie_data()
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            diagnostics=[
+                {
+                    "kind": "translation_provider_unavailable",
+                    "scraper": "translate",
+                    "detail": "Install googletrans to enable translation.",
+                }
+            ],
+        )
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -352,24 +372,18 @@ class TestCliFindCommand:
         assert '".[translate]"`.' in result.stdout
 
     def test_find_prints_translation_config_warning(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {
-                        "kind": "translation_config_invalid",
-                        "scraper": "translate",
-                        "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
-                    }
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return _movie_data()
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            diagnostics=[
+                {
+                    "kind": "translation_config_invalid",
+                    "scraper": "translate",
+                    "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+                }
+            ],
+        )
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -423,16 +437,8 @@ class TestCliFindCommand:
             },
         )
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return movie
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=movie)
 
         result = runner.invoke(app, ["find", "ABP-420"])
         normalized_output = " ".join(result.stdout.split())
@@ -478,16 +484,8 @@ class TestCliFindCommand:
             field_sources={"title": "dmm"},
         )
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return movie
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=movie)
 
         result = runner.invoke(app, ["find", "ABP-420"])
 

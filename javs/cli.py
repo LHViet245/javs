@@ -81,6 +81,32 @@ def _status_context(message: str):
     return console.status(message, spinner="dots")
 
 
+def _build_find_facade(cfg, config_path: Path):
+    from javs.application import PlatformFacade
+    from javs.core.engine import JavsEngine
+    from javs.database.connection import open_database, resolve_database_path
+    from javs.database.migrations import initialize_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.jobs import PlatformJobRunner
+
+    db_path = resolve_database_path(cfg)
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        events=events,
+        runner=PlatformJobRunner(jobs=jobs, events=events),
+        find_engine_factory=lambda: JavsEngine(
+            cfg,
+            cloudflare_recovery_handler=_build_javlibrary_recovery_handler(cfg, config_path),
+        ),
+    )
+    return facade, connection.close
+
+
 def _print_run_diagnostics(engine) -> None:
     """Render compact warnings collected during the last engine run."""
     diagnostics = getattr(engine, "last_run_diagnostics", [])
@@ -298,18 +324,26 @@ def find(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """🔍 Look up metadata for a movie ID."""
+    from javs.application import FindMovieRequest
     from javs.config import load_config
-    from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
-        cfg, _resolve_config_path(config_path)
-    ))
-
+    resolved_config_path = _resolve_config_path(config_path)
+    facade, cleanup = _build_find_facade(cfg, resolved_config_path)
     scraper_list = scrapers.split(",") if scrapers else None
 
-    with _status_context("[bold cyan]Searching..."):
-        data = asyncio.run(engine.find_one(movie_id, scraper_names=scraper_list))
+    try:
+        with _status_context("[bold cyan]Searching..."):
+            response = asyncio.run(
+                facade.find_movie(
+                    FindMovieRequest(movie_id=movie_id, scraper_names=scraper_list),
+                    origin="cli",
+                )
+            )
+    finally:
+        cleanup()
+
+    data = response.result
 
     if not data:
         console.print(f"[red]No results found for {movie_id}[/red]")
@@ -325,7 +359,7 @@ def find(
     else:
         _display_movie_data(data)
 
-    _print_run_diagnostics(engine)
+    _print_run_diagnostics(facade)
 
 
 @app.command()

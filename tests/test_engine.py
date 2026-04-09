@@ -176,6 +176,17 @@ class TestJavsEngineLifecycle:
         assert engine.http.enter_count == 1
         assert engine.http.exit_count == 1
 
+    def test_find_diagnostics_snapshot_returns_copy(self, monkeypatch):
+        """Application callers should be able to snapshot diagnostics safely."""
+        engine = self._make_engine(monkeypatch)
+        engine.last_run_diagnostics = [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+
+        snapshot = engine.get_last_run_diagnostics()
+        snapshot[0]["kind"] = "mutated"
+
+        assert snapshot == [{"kind": "mutated", "scraper": "dmm"}]
+        assert engine.last_run_diagnostics == [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+
     def test_find_preserves_field_sources_through_aggregation_and_translation(
         self, monkeypatch
     ):
