@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from javs.application.history import JobHistoryRepository, build_job_summary
-from javs.application.models import SaveSettingsRequest, SaveSettingsResponse, SettingsResponse
+from javs.application.models import (
+    SaveSettingsRequest,
+    SaveSettingsResponse,
+    SettingsResponse,
+    SettingsSaveError,
+)
 from javs.config.loader import (
     apply_settings_changes,
     get_default_config_path,
@@ -54,6 +59,10 @@ class SettingsAuditWriter(Protocol):
         """Insert a settings audit row and return its identifier."""
 
 
+class SettingsValidationError(Exception):
+    """Raised when a settings change is intentionally rejected by the shared flow."""
+
+
 @dataclass(slots=True)
 class SettingsUseCase:
     """Read and persist YAML-backed settings through shared application contracts."""
@@ -95,19 +104,28 @@ class SettingsUseCase:
 
             resolved_path = _resolve_settings_path(active_request.source_path)
             current_config = self.config_loader(resolved_path)
+            _reject_unsupported_changes(current_config, active_request.changes)
             before_json = current_config.model_dump(mode="json")
             updated_config = apply_settings_changes(current_config, active_request.changes)
-            self.config_saver(updated_config, resolved_path)
+            yaml_saved = False
 
-            after_json = updated_config.model_dump(mode="json")
-            self.settings_audit.create_entry(
-                job_id=context.job_id,
-                source_path=str(resolved_path),
-                config_version=updated_config.config_version,
-                before_json=before_json,
-                after_json=after_json,
-                change_summary_json=_build_change_summary(before_json, after_json),
-            )
+            try:
+                self.config_saver(updated_config, resolved_path)
+                yaml_saved = True
+                after_json = updated_config.model_dump(mode="json")
+                self.settings_audit.create_entry(
+                    job_id=context.job_id,
+                    source_path=str(resolved_path),
+                    config_version=updated_config.config_version,
+                    before_json=before_json,
+                    after_json=after_json,
+                    change_summary_json=_build_change_summary(before_json, after_json),
+                )
+            except Exception as error:
+                if yaml_saved:
+                    self._restore_previous_yaml(current_config, resolved_path, error)
+                raise
+
             return JobExecutionResult(
                 result={
                     "source_path": str(resolved_path),
@@ -134,25 +152,83 @@ class SettingsUseCase:
     def _require_completed_job(self, job_id: str) -> dict[str, Any]:
         job_record = self.jobs.get(job_id)
         if job_record is None:
-            raise RuntimeError(
-                "save_settings requires a terminal job row to be persisted before returning."
+            raise SettingsSaveError(
+                job_id=job_id,
+                error={
+                    "type": "SettingsSaveContractError",
+                    "message": (
+                        "save_settings requires a terminal job row to be persisted before "
+                        "returning."
+                    ),
+                    "status": "missing",
+                },
             )
 
         status = str(job_record.get("status", "unknown"))
         if status == "failed":
-            error = job_record.get("error_json") or {"message": "Settings save failed."}
-            raise RuntimeError(str(error.get("message", "Settings save failed.")))
+            raise SettingsSaveError(
+                job_id=job_id,
+                error=self._normalize_error_payload(job_record.get("error_json")),
+            )
         if status not in _TERMINAL_JOB_STATUSES:
-            raise RuntimeError(
-                "save_settings requires a terminal job row to be persisted before returning."
+            raise SettingsSaveError(
+                job_id=job_id,
+                error={
+                    "type": "SettingsSaveContractError",
+                    "message": (
+                        "save_settings requires a terminal job row to be persisted before "
+                        "returning."
+                    ),
+                    "status": status,
+                },
             )
         return job_record
+
+    def _normalize_error_payload(self, error: object) -> dict[str, Any]:
+        if isinstance(error, dict):
+            payload = dict(error)
+            payload.setdefault("type", "SettingsSaveError")
+            payload.setdefault("message", "Settings save failed.")
+            return payload
+        return {
+            "type": "SettingsSaveError",
+            "message": "Settings save failed.",
+        }
+
+    def _restore_previous_yaml(
+        self,
+        current_config: JavsConfig,
+        resolved_path: Path,
+        original_error: Exception,
+    ) -> None:
+        try:
+            self.config_saver(current_config, resolved_path)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                "Settings save failed after YAML was written, and rollback failed: "
+                f"{original_error}; rollback error: {rollback_error}"
+            ) from rollback_error
 
 
 def _resolve_settings_path(source_path: str | Path | None) -> Path:
     if source_path is None:
         return get_default_config_path()
     return Path(source_path)
+
+
+def _reject_unsupported_changes(config: JavsConfig, changes: dict[str, Any]) -> None:
+    database_changes = changes.get("database")
+    if not isinstance(database_changes, dict):
+        return
+
+    requested_path = database_changes.get("path")
+    if requested_path is None:
+        return
+
+    if str(requested_path) != config.database.path:
+        raise SettingsValidationError(
+            "Changing database.path through shared settings save is not supported yet."
+        )
 
 
 def _build_change_summary(

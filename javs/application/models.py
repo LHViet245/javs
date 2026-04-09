@@ -179,6 +179,19 @@ class SaveSettingsResponse(BaseModel):
 
 
 @dataclass(slots=True)
+class SettingsSaveError(Exception):
+    """Structured application error for failed or incompatible settings saves."""
+
+    job_id: str
+    error: dict[str, Any]
+
+    def __str__(self) -> str:
+        error_type = self.error.get("type", "SettingsSaveError")
+        message = self.error.get("message", "Settings save failed.")
+        return f"{error_type} for settings job {self.job_id}: {message}"
+
+
+@dataclass(slots=True)
 class BatchJobError(Exception):
     """Structured application error for failed or incompatible batch jobs."""
 

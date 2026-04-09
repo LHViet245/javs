@@ -19,6 +19,7 @@ from javs.application import (
     SaveSettingsRequest,
     SaveSettingsResponse,
     SettingsResponse,
+    SettingsSaveError,
     SortJobRequest,
     UpdateJobRequest,
     build_job_detail,
@@ -400,6 +401,133 @@ async def test_save_settings_writes_yaml_and_settings_audit_rows(tmp_path: Path)
             "change_summary_json": {"changed": ["proxy.enabled", "proxy.url"]},
             "created_at": audit_rows[0]["created_at"],
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_settings_restores_yaml_when_audit_write_fails(tmp_path: Path) -> None:
+    from javs.config import load_config, save_config
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+
+    class FailingSettingsAuditRepository:
+        def create_entry(self, **kwargs: object) -> int:
+            raise RuntimeError("audit insert exploded")
+
+        def list_entries(self) -> list[dict[str, object]]:
+            return []
+
+    config_path = tmp_path / "config.yaml"
+    initial = JavsConfig()
+    save_config(initial, config_path)
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=FailingSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        config_loader=load_config,
+        config_saver=save_config,
+    )
+
+    try:
+        with pytest.raises(SettingsSaveError) as exc_info:
+            await facade.save_settings(
+                SaveSettingsRequest(
+                    source_path=str(config_path),
+                    changes={
+                        "proxy": {
+                            "enabled": True,
+                            "url": "http://127.0.0.1:8888",
+                        }
+                    },
+                ),
+                origin="cli",
+            )
+    finally:
+        connection.close()
+
+    restored_config = load_config(config_path)
+    job, persisted_events = load_persisted_job_state(db_path, exc_info.value.job_id)
+
+    assert restored_config == initial
+    assert exc_info.value.error == {
+        "type": "RuntimeError",
+        "message": "audit insert exploded",
+    }
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["error_json"] == {
+        "type": "RuntimeError",
+        "message": "audit insert exploded",
+    }
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_settings_rejects_database_path_changes(tmp_path: Path) -> None:
+    from javs.config import load_config, save_config
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+
+    config_path = tmp_path / "config.yaml"
+    initial = JavsConfig()
+    save_config(initial, config_path)
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=settings_audit,
+        history=StubPlatformHistory(),
+        runner=runner,
+        config_loader=load_config,
+        config_saver=save_config,
+    )
+
+    try:
+        with pytest.raises(SettingsSaveError) as exc_info:
+            await facade.save_settings(
+                SaveSettingsRequest(
+                    source_path=str(config_path),
+                    changes={"database": {"path": str(tmp_path / "other-platform.db")}},
+                ),
+                origin="cli",
+            )
+    finally:
+        connection.close()
+
+    restored_config = load_config(config_path)
+    job, persisted_events = load_persisted_job_state(db_path, exc_info.value.job_id)
+    audit_rows = load_persisted_settings_audit(db_path)
+
+    assert restored_config.database.path == initial.database.path
+    assert exc_info.value.error == {
+        "type": "SettingsValidationError",
+        "message": "Changing database.path through shared settings save is not supported yet.",
+    }
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["error_json"] == exc_info.value.error
+    assert audit_rows == []
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.failed",
     ]
 
 

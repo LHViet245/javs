@@ -459,7 +459,7 @@ def config(
         console.print_json(data=redact_config_for_display(cfg))
 
     elif action == "save":
-        from javs.application import SaveSettingsRequest
+        from javs.application import SaveSettingsRequest, SettingsSaveError
 
         if not changes:
             console.print("[red]`javs config save` requires --changes with a JSON object.[/red]")
@@ -478,12 +478,17 @@ def config(
         cfg = load_config(path)
         facade, cleanup = _build_platform_facade(cfg, path)
         try:
-            response = asyncio.run(
-                facade.save_settings(
-                    SaveSettingsRequest(source_path=str(path), changes=payload),
-                    origin="cli",
+            try:
+                response = asyncio.run(
+                    facade.save_settings(
+                        SaveSettingsRequest(source_path=str(path), changes=payload),
+                        origin="cli",
+                    )
                 )
-            )
+            except SettingsSaveError as error:
+                message = str(error.error.get("message", "Settings save failed."))
+                console.print(f"[red]Config save failed: {message}[/red]")
+                raise typer.Exit(1) from error
         finally:
             cleanup()
 

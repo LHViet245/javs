@@ -28,6 +28,7 @@ from javs.application.models import (
     SaveSettingsRequest,
     SaveSettingsResponse,
     SettingsResponse,
+    SettingsSaveError,
     SortJobRequest,
     UpdateJobRequest,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "PlatformHistory",
     "PlatformRunner",
     "SaveSettingsRequest",
+    "SettingsSaveError",
     "SaveSettingsResponse",
     "SettingsAuditRepository",
     "SettingsResponse",

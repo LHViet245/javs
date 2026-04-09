@@ -17,6 +17,7 @@ from javs.application import (
     JobSummary,
     SaveSettingsResponse,
     SettingsResponse,
+    SettingsSaveError,
 )
 from javs.application.find import FindMovieError
 from javs.cli import app
@@ -400,6 +401,51 @@ class TestCliConfigCommand:
         }
         assert "Saved config at" in result.stdout
         assert "job-settings-1" in result.stdout
+
+    def test_config_save_exits_nonzero_for_structured_settings_failure(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "config.yaml"
+
+        class DummyFacade:
+            async def save_settings(self, request, *, origin: str = "cli") -> SaveSettingsResponse:
+                raise SettingsSaveError(
+                    job_id="job-settings-2",
+                    error={
+                        "type": "SettingsValidationError",
+                        "message": (
+                            "Changing database.path through shared settings save "
+                            "is not supported yet."
+                        ),
+                    },
+                )
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(
+            "javs.cli._build_platform_facade",
+            lambda cfg, config_path: (DummyFacade(), lambda: None),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "config",
+                "save",
+                "--config",
+                str(target),
+                "--changes",
+                '{"database":{"path":"/tmp/other-platform.db"}}',
+            ],
+        )
+
+        assert result.exit_code == 1
+        normalized_output = " ".join(result.stdout.split())
+        assert "Config save failed" in result.stdout
+        assert (
+            "Changing database.path through shared settings save is not supported yet."
+            in normalized_output
+        )
+        assert "Traceback" not in result.stdout
 
 
 class TestCliFindCommand:
