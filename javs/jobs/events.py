@@ -72,3 +72,7 @@ class PlatformJobEvents:
     def emit_job_failed(self, *, error: dict[str, str]) -> int:
         """Persist the job-failed event."""
         return self.emit("job.failed", payload=error)
+
+    def emit_job_cancelled(self, *, error: dict[str, str]) -> int:
+        """Persist the job-cancelled event."""
+        return self.emit("job.cancelled", payload=error)

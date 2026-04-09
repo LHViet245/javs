@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from javs.application.models import FindMovieRequest, SortJobRequest, UpdateJobRequest
 from javs.database.repositories.events import JobEventsRepository
 from javs.database.repositories.jobs import JobsRepository, utc_now
@@ -74,6 +76,9 @@ class PlatformJobRunner:
                 summary=execution.summary,
             )
             self.connection.commit()
+        except asyncio.CancelledError:
+            self._mark_cancelled(job_id, job_events)
+            raise
         except Exception as error:
             self._mark_failed(job_id, job_events, error)
         return job_id
@@ -160,4 +165,25 @@ class PlatformJobRunner:
             finished_at=utc_now(),
         )
         job_events.emit_job_failed(error=failure)
+        self.connection.commit()
+
+    def _mark_cancelled(
+        self,
+        job_id: str,
+        job_events: PlatformJobEvents,
+    ) -> None:
+        """Persist a failed terminal state for cancelled job execution."""
+        cancellation = {
+            "type": "CancelledError",
+            "message": "Job execution cancelled",
+        }
+        self.jobs.update_job(
+            job_id,
+            status="failed",
+            result_json=None,
+            summary_json=None,
+            error_json=cancellation,
+            finished_at=utc_now(),
+        )
+        job_events.emit_job_cancelled(error=cancellation)
         self.connection.commit()

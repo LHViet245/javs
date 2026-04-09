@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from pathlib import Path
 from typing import Any
@@ -372,6 +373,50 @@ async def test_runner_marks_job_failed_when_executor_returns_unsupported_result_
     ]
     assert events[-1]["payload_json"] is not None
     assert events[-1]["payload_json"]["type"] == "TypeError"
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_cancelled_job_and_emits_cancellation_event(
+    tmp_path: Path,
+) -> None:
+    from javs.jobs import JobExecutionContext
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+
+    async def cancelled_executor(context: JobExecutionContext[dict[str, Any] | None]) -> None:
+        assert context.kind == "find"
+        raise asyncio.CancelledError()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await runner.run_job(
+                kind="find",
+                origin="cli",
+                request={"movie_id": "ABP-420"},
+                executor=cancelled_executor,
+            )
+        job_id = runner.jobs.list_jobs(limit=1)[0]["id"]
+    finally:
+        connection.close()
+
+    job, events = load_persisted_job_state(db_path, job_id)
+
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["finished_at"] is not None
+    assert job["error_json"] == {
+        "type": "CancelledError",
+        "message": "Job execution cancelled",
+    }
+    assert [event["event_type"] for event in events] == [
+        "job.created",
+        "job.started",
+        "job.cancelled",
+    ]
+    assert events[-1]["payload_json"] == {
+        "type": "CancelledError",
+        "message": "Job execution cancelled",
+    }
 
 
 def test_platform_facade_accepts_runner_surface_needed_for_later_job_tasks() -> None:
