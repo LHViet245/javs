@@ -64,6 +64,16 @@ class SettingsValidationError(Exception):
 
 
 @dataclass(slots=True)
+class _SettingsSaveState:
+    """Track whether the shared save flow has already written YAML."""
+
+    previous_config: JavsConfig | None = None
+    resolved_path: Path | None = None
+    yaml_saved: bool = False
+    rollback_completed: bool = False
+
+
+@dataclass(slots=True)
 class SettingsUseCase:
     """Read and persist YAML-backed settings through shared application contracts."""
 
@@ -94,6 +104,7 @@ class SettingsUseCase:
             raise NotImplementedError(
                 "SettingsUseCase.save requires a runner and settings_audit repository."
             )
+        save_state = _SettingsSaveState()
 
         async def execute_save(
             context: JobExecutionContext[object | None],
@@ -104,14 +115,15 @@ class SettingsUseCase:
 
             resolved_path = _resolve_settings_path(active_request.source_path)
             current_config = self.config_loader(resolved_path)
+            save_state.previous_config = current_config
+            save_state.resolved_path = resolved_path
             _reject_unsupported_changes(current_config, active_request.changes)
             before_json = current_config.model_dump(mode="json")
             updated_config = apply_settings_changes(current_config, active_request.changes)
-            yaml_saved = False
 
             try:
                 self.config_saver(updated_config, resolved_path)
-                yaml_saved = True
+                save_state.yaml_saved = True
                 after_json = updated_config.model_dump(mode="json")
                 self.settings_audit.create_entry(
                     job_id=context.job_id,
@@ -122,8 +134,7 @@ class SettingsUseCase:
                     change_summary_json=_build_change_summary(before_json, after_json),
                 )
             except Exception as error:
-                if yaml_saved:
-                    self._restore_previous_yaml(current_config, resolved_path, error)
+                self._rollback_if_needed(save_state, error)
                 raise
 
             return JobExecutionResult(
@@ -134,15 +145,19 @@ class SettingsUseCase:
                 summary={"saved": 1},
             )
 
-        job_id = await self.runner.run_job(
-            kind="save_settings",
-            origin=origin,
-            request=request,
-            executor=execute_save,
-        )
-        job_record = self._require_completed_job(job_id)
-        result_json = job_record.get("result_json") or {}
-        source_path = result_json.get("source_path") or request.source_path
+        try:
+            job_id = await self.runner.run_job(
+                kind="save_settings",
+                origin=origin,
+                request=request,
+                executor=execute_save,
+            )
+            job_record = self._require_completed_job(job_id)
+            result_json = job_record.get("result_json") or {}
+            source_path = result_json.get("source_path") or request.source_path
+        except Exception as error:
+            self._rollback_if_needed(save_state, error)
+            raise
 
         return SaveSettingsResponse(
             job=build_job_summary(job_record),
@@ -208,6 +223,27 @@ class SettingsUseCase:
                 "Settings save failed after YAML was written, and rollback failed: "
                 f"{original_error}; rollback error: {rollback_error}"
             ) from rollback_error
+
+    def _rollback_if_needed(
+        self,
+        save_state: _SettingsSaveState,
+        original_error: Exception,
+    ) -> None:
+        if (
+            not save_state.yaml_saved
+            or save_state.rollback_completed
+            or save_state.previous_config is None
+            or save_state.resolved_path is None
+        ):
+            return
+
+        self._restore_previous_yaml(
+            save_state.previous_config,
+            save_state.resolved_path,
+            original_error,
+        )
+        save_state.rollback_completed = True
+        save_state.yaml_saved = False
 
 
 def _resolve_settings_path(source_path: str | Path | None) -> Path:

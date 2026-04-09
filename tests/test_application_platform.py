@@ -474,6 +474,144 @@ async def test_save_settings_restores_yaml_when_audit_write_fails(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_save_settings_restores_yaml_when_terminal_job_fails_after_write(
+    tmp_path: Path,
+) -> None:
+    from javs.config import load_config, save_config
+    from javs.config.loader import apply_settings_changes
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository, utc_now
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+    from javs.jobs.events import PlatformJobEvents
+    from javs.jobs.executor import JobExecutionContext, serialize_job_value
+
+    class FailedTerminalRunner:
+        def __init__(
+            self,
+            *,
+            jobs: JobsRepository,
+            events: JobEventsRepository,
+        ) -> None:
+            self.jobs = jobs
+            self.events = events
+            self.connection = jobs.connection
+
+        async def run_job(
+            self,
+            *,
+            kind: str,
+            origin: str,
+            request: object | None,
+            executor,
+        ) -> str:
+            job_id = self.jobs.create_job(
+                kind=kind,
+                origin=origin,
+                request_json=serialize_job_value(request),
+            )
+            job_events = PlatformJobEvents(repository=self.events, job_id=job_id)
+            job_events.emit_job_created(kind=kind, origin=origin, request=request)
+            self.jobs.mark_started(job_id)
+            job_events.emit_job_started(kind=kind, origin=origin)
+            self.connection.commit()
+
+            await executor(
+                JobExecutionContext(
+                    job_id=job_id,
+                    kind=kind,
+                    origin=origin,
+                    request=request,
+                    events=job_events,
+                )
+            )
+
+            failure = {
+                "type": "TerminalPersistenceError",
+                "message": "job completion persistence failed",
+            }
+            self.jobs.update_job(
+                job_id,
+                status="failed",
+                result_json=None,
+                summary_json=None,
+                error_json=failure,
+                finished_at=utc_now(),
+            )
+            job_events.emit_job_failed(error=failure)
+            self.connection.commit()
+            return job_id
+
+    config_path = tmp_path / "config.yaml"
+    initial = JavsConfig()
+    save_config(initial, config_path)
+
+    db_path, connection, _runner = build_platform_runner(tmp_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=settings_audit,
+        history=StubPlatformHistory(),
+        runner=FailedTerminalRunner(jobs=jobs, events=events),
+        config_loader=load_config,
+        config_saver=save_config,
+    )
+
+    try:
+        with pytest.raises(SettingsSaveError) as exc_info:
+            await facade.save_settings(
+                SaveSettingsRequest(
+                    source_path=str(config_path),
+                    changes={
+                        "proxy": {
+                            "enabled": True,
+                            "url": "http://127.0.0.1:8888",
+                        }
+                    },
+                ),
+                origin="cli",
+            )
+    finally:
+        connection.close()
+
+    restored_config = load_config(config_path)
+    job, persisted_events = load_persisted_job_state(db_path, exc_info.value.job_id)
+    audit_rows = load_persisted_settings_audit(db_path)
+
+    assert restored_config == initial
+    assert exc_info.value.error == {
+        "type": "TerminalPersistenceError",
+        "message": "job completion persistence failed",
+    }
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["error_json"] == exc_info.value.error
+    assert audit_rows == [
+        {
+            "id": audit_rows[0]["id"],
+            "job_id": exc_info.value.job_id,
+            "source_path": str(config_path),
+            "config_version": 1,
+            "before_json": initial.model_dump(mode="json"),
+            "after_json": apply_settings_changes(
+                initial,
+                {"proxy": {"enabled": True, "url": "http://127.0.0.1:8888"}},
+            ).model_dump(mode="json"),
+            "change_summary_json": {"changed": ["proxy.enabled", "proxy.url"]},
+            "created_at": audit_rows[0]["created_at"],
+        }
+    ]
+    assert [event["event_type"] for event in persisted_events] == [
+        "job.created",
+        "job.started",
+        "job.failed",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_save_settings_rejects_database_path_changes(tmp_path: Path) -> None:
     from javs.config import load_config, save_config
     from javs.database.repositories.events import JobEventsRepository
