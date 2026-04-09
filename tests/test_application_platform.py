@@ -232,19 +232,33 @@ def build_platform_runner(tmp_path: Path):
     initialize_database(db_path)
     connection = open_database(db_path)
 
-    return connection, PlatformJobRunner(
+    return db_path, connection, PlatformJobRunner(
         jobs=JobsRepository(connection),
         events=JobEventsRepository(connection),
     )
 
 
+def load_persisted_job_state(
+    db_path: Path,
+    job_id: str,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    from javs.database.connection import open_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+
+    with open_database(db_path) as connection:
+        jobs = JobsRepository(connection)
+        events = JobEventsRepository(connection)
+        return jobs.get(job_id), events.list_for_job(job_id)
+
+
 @pytest.mark.asyncio
-async def test_runner_creates_running_and_completed_job_with_persisted_events(
+async def test_runner_persists_completed_job_and_events_across_connection_reopen(
     tmp_path: Path,
 ) -> None:
     from javs.jobs import JobExecutionContext, JobExecutionResult
 
-    connection, runner = build_platform_runner(tmp_path)
+    db_path, connection, runner = build_platform_runner(tmp_path)
 
     async def successful_executor(
         context: JobExecutionContext[FindMovieRequest],
@@ -265,10 +279,10 @@ async def test_runner_creates_running_and_completed_job_with_persisted_events(
             request=FindMovieRequest(movie_id="ABP-420"),
             executor=successful_executor,
         )
-        job = runner.jobs.get(job_id)
-        events = runner.events.list_for_job(job_id)
     finally:
         connection.close()
+
+    job, events = load_persisted_job_state(db_path, job_id)
 
     assert job is not None
     assert job["status"] == "completed"
@@ -284,12 +298,12 @@ async def test_runner_creates_running_and_completed_job_with_persisted_events(
 
 
 @pytest.mark.asyncio
-async def test_runner_marks_job_failed_and_records_error_details_when_executor_raises(
+async def test_runner_persists_failed_job_and_events_across_connection_reopen(
     tmp_path: Path,
 ) -> None:
     from javs.jobs import JobExecutionContext
 
-    connection, runner = build_platform_runner(tmp_path)
+    db_path, connection, runner = build_platform_runner(tmp_path)
 
     async def failing_executor(context: JobExecutionContext[dict[str, Any] | None]) -> None:
         assert context.kind == "find"
@@ -302,10 +316,10 @@ async def test_runner_marks_job_failed_and_records_error_details_when_executor_r
             request={"movie_id": "ABP-420"},
             executor=failing_executor,
         )
-        job = runner.jobs.get(job_id)
-        events = runner.events.list_for_job(job_id)
     finally:
         connection.close()
+
+    job, events = load_persisted_job_state(db_path, job_id)
 
     assert job is not None
     assert job["status"] == "failed"
@@ -317,6 +331,47 @@ async def test_runner_marks_job_failed_and_records_error_details_when_executor_r
         "job.failed",
     ]
     assert events[-1]["payload_json"] == {"type": "RuntimeError", "message": "boom"}
+
+
+@pytest.mark.asyncio
+async def test_runner_marks_job_failed_when_executor_returns_unsupported_result_value(
+    tmp_path: Path,
+) -> None:
+    from javs.jobs import JobExecutionContext, JobExecutionResult
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+
+    async def unsupported_result_executor(
+        context: JobExecutionContext[FindMovieRequest],
+    ) -> JobExecutionResult:
+        assert context.request is not None
+        return JobExecutionResult(result={"movie_id": object()})
+
+    try:
+        job_id = await runner.run_job(
+            kind="find",
+            origin="cli",
+            request=FindMovieRequest(movie_id="ABP-420"),
+            executor=unsupported_result_executor,
+        )
+    finally:
+        connection.close()
+
+    job, events = load_persisted_job_state(db_path, job_id)
+
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["finished_at"] is not None
+    assert job["error_json"] is not None
+    assert job["error_json"]["type"] == "TypeError"
+    assert "Unsupported job payload type" in job["error_json"]["message"]
+    assert [event["event_type"] for event in events] == [
+        "job.created",
+        "job.started",
+        "job.failed",
+    ]
+    assert events[-1]["payload_json"] is not None
+    assert events[-1]["payload_json"]["type"] == "TypeError"
 
 
 def test_platform_facade_accepts_runner_surface_needed_for_later_job_tasks() -> None:

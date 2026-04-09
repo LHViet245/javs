@@ -26,6 +26,12 @@ class PlatformJobRunner:
     ) -> None:
         self.jobs = jobs
         self.events = events
+        self.connection = jobs.connection
+
+        if events.connection is not self.connection:
+            raise ValueError(
+                "PlatformJobRunner requires jobs and events repositories to share a connection."
+            )
 
     async def run_job(
         self,
@@ -46,6 +52,7 @@ class PlatformJobRunner:
 
         self.jobs.mark_started(job_id)
         job_events.emit_job_started(kind=kind, origin=origin)
+        self.connection.commit()
 
         context = JobExecutionContext(
             job_id=job_id,
@@ -57,26 +64,18 @@ class PlatformJobRunner:
 
         try:
             execution = normalize_execution_result(await executor(context))
-        except Exception as error:
-            failure = build_failure_details(error)
-            self.jobs.update_job(
+            self.jobs.mark_completed(
                 job_id,
-                status="failed",
-                error_json=failure,
-                finished_at=utc_now(),
+                result_json=execution.result,
+                summary_json=execution.summary,
             )
-            job_events.emit_job_failed(error=failure)
-            return job_id
-
-        self.jobs.mark_completed(
-            job_id,
-            result_json=execution.result,
-            summary_json=execution.summary,
-        )
-        job_events.emit_job_completed(
-            result=execution.result,
-            summary=execution.summary,
-        )
+            job_events.emit_job_completed(
+                result=execution.result,
+                summary=execution.summary,
+            )
+            self.connection.commit()
+        except Exception as error:
+            self._mark_failed(job_id, job_events, error)
         return job_id
 
     async def run_find(
@@ -143,3 +142,22 @@ class PlatformJobRunner:
             request=request,
             executor=executor,
         )
+
+    def _mark_failed(
+        self,
+        job_id: str,
+        job_events: PlatformJobEvents,
+        error: Exception,
+    ) -> None:
+        """Persist a failed terminal state for executor or serialization errors."""
+        failure = build_failure_details(error)
+        self.jobs.update_job(
+            job_id,
+            status="failed",
+            result_json=None,
+            summary_json=None,
+            error_json=failure,
+            finished_at=utc_now(),
+        )
+        job_events.emit_job_failed(error=failure)
+        self.connection.commit()

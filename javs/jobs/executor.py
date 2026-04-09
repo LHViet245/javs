@@ -52,15 +52,19 @@ JobExecutor: TypeAlias = Callable[
 
 def serialize_job_value(value: object) -> Any:
     """Convert common application values into JSON-friendly data."""
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
     if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
+        return serialize_job_value(value.model_dump(mode="json"))
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Mapping):
         return {str(key): serialize_job_value(item) for key, item in value.items()}
+    if isinstance(value, set | frozenset):
+        return [serialize_job_value(item) for item in value]
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [serialize_job_value(item) for item in value]
-    return value
+    raise TypeError(f"Unsupported job payload type: {value.__class__.__name__}")
 
 
 def normalize_execution_result(value: JobExecutionResult | object | None) -> JobExecutionResult:
