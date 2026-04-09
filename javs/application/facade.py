@@ -68,7 +68,7 @@ class PlatformRunner(Protocol):
         origin: str,
         executor: JobExecutor[FindMovieRequest] | None = None,
     ) -> str:
-        """Create and execute a find job, returning its job ID."""
+        """Create and execute a short-running find job, returning after terminal persistence."""
 
     async def run_sort(
         self,
@@ -126,7 +126,7 @@ class PlatformFacade:
         *,
         origin: str = "cli",
     ) -> FindMovieResponse:
-        """Run the shared find flow through the platform job runner."""
+        """Run the synchronous shared find flow through the platform job runner."""
         if self.runner is None or self.find_engine_factory is None:
             raise NotImplementedError(
                 "PlatformFacade.find_movie requires a runner and find_engine_factory."
@@ -137,9 +137,10 @@ class PlatformFacade:
             runner=self.runner,
             engine_factory=self.find_engine_factory,
         )
-        response = await use_case.run(request, origin=origin)
-        self.last_run_diagnostics = use_case.last_run_diagnostics
-        return response
+        try:
+            return await use_case.run(request, origin=origin)
+        finally:
+            self.last_run_diagnostics = use_case.last_run_diagnostics
 
     async def start_sort_job(
         self,

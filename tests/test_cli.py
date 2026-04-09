@@ -12,6 +12,7 @@ import javs.config as config_module
 import javs.core.engine as engine_module
 import javs.scrapers.registry as registry_module
 from javs.application import FindMovieResponse, JobSummary
+from javs.application.find import FindMovieError
 from javs.cli import app
 from javs.config import JavsConfig
 from javs.models.movie import Actress, MovieData, Rating
@@ -41,6 +42,7 @@ def _patch_find_facade(
     movie: MovieData | None,
     diagnostics: list[dict[str, str]] | None = None,
     capture: dict[str, object] | None = None,
+    error: FindMovieError | None = None,
 ) -> None:
     class DummyFacade:
         def __init__(self) -> None:
@@ -50,6 +52,8 @@ def _patch_find_facade(
             if capture is not None:
                 capture["request"] = request
                 capture["origin"] = origin
+            if error is not None:
+                raise error
             return FindMovieResponse(
                 job=JobSummary(id="job-1", kind="find", status="completed", origin=origin),
                 result=movie,
@@ -332,6 +336,22 @@ class TestCliFindCommand:
 
         assert result.exit_code == 1
         assert "No results found for ABP-420" in result.stdout
+
+    def test_find_exits_with_code_1_for_structured_find_failure(self, monkeypatch) -> None:
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_find_facade(
+            monkeypatch,
+            movie=None,
+            error=FindMovieError(
+                job_id="job-1",
+                error={"type": "RuntimeError", "message": "boom"},
+            ),
+        )
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 1
+        assert "Find failed for ABP-420: boom" in result.stdout
 
     def test_find_prints_proxy_failure_summary(self, monkeypatch) -> None:
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())

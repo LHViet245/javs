@@ -4,11 +4,26 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from javs.application.history import JobHistoryRepository, build_job_summary
 from javs.application.models import FindMovieRequest, FindMovieResponse
 from javs.jobs.executor import JobExecutionContext, JobExecutionResult, JobExecutor
+
+_FIND_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
+
+@dataclass(slots=True)
+class FindMovieError(Exception):
+    """Structured application error for failed or incompatible find execution."""
+
+    job_id: str
+    error: dict[str, Any]
+
+    def __str__(self) -> str:
+        error_type = self.error.get("type", "FindMovieError")
+        message = self.error.get("message", "Find job failed.")
+        return f"{error_type} for job {self.job_id}: {message}"
 
 
 class FindMovieEngine(Protocol):
@@ -30,7 +45,7 @@ FindMovieEngineFactory = Callable[[], FindMovieEngine]
 
 
 class FindMovieRunner(Protocol):
-    """Minimal runner surface used by the shared find use case."""
+    """Runner surface for synchronous, short-running find execution."""
 
     async def run_find(
         self,
@@ -39,7 +54,7 @@ class FindMovieRunner(Protocol):
         origin: str,
         executor: JobExecutor[FindMovieRequest] | None = None,
     ) -> str:
-        """Persist and execute a find job, returning its job ID."""
+        """Persist and execute a find job, returning only after a terminal job row exists."""
 
 
 @dataclass(slots=True)
@@ -57,7 +72,7 @@ class FindMovieUseCase:
         *,
         origin: str = "cli",
     ) -> FindMovieResponse:
-        """Run the shared find flow through the platform runner."""
+        """Run the shared find flow through the synchronous in-process runner path."""
         self.last_run_diagnostics = []
         engine = self.engine_factory()
         result = None
@@ -83,15 +98,69 @@ class FindMovieUseCase:
         )
         self.last_run_diagnostics = engine.get_last_run_diagnostics()
 
-        job_record = self.jobs.get(job_id)
-        if job_record is None:
-            raise RuntimeError(f"Find job {job_id} was not persisted.")
+        job_record = self._require_terminal_job(job_id)
 
         error = job_record.get("error_json")
-        if job_record.get("status") == "failed" and isinstance(error, dict):
-            raise RuntimeError(str(error.get("message", "Find job failed.")))
+        if job_record.get("status") == "failed":
+            raise FindMovieError(
+                job_id=job_id,
+                error=self._normalize_error_payload(
+                    error,
+                    fallback_type="FindJobFailed",
+                    fallback_message="Find job failed.",
+                ),
+            )
 
         return FindMovieResponse(
             job=build_job_summary(job_record),
             result=result,
         )
+
+    def _require_terminal_job(self, job_id: str) -> dict[str, Any]:
+        """Ensure the synchronous find runner returned only after persisting a terminal job row."""
+        job_record = self.jobs.get(job_id)
+        if job_record is None:
+            raise FindMovieError(
+                job_id=job_id,
+                error={
+                    "type": "FindContractError",
+                    "message": (
+                        "Find requires a terminal job row to be persisted before the runner "
+                        "returns."
+                    ),
+                    "status": "missing",
+                },
+            )
+
+        status = str(job_record.get("status", "unknown"))
+        if status not in _FIND_TERMINAL_STATUSES:
+            raise FindMovieError(
+                job_id=job_id,
+                error={
+                    "type": "FindContractError",
+                    "message": (
+                        "Find requires a terminal job row to be persisted before the runner "
+                        "returns."
+                    ),
+                    "status": status,
+                },
+            )
+        return job_record
+
+    def _normalize_error_payload(
+        self,
+        error: object,
+        *,
+        fallback_type: str,
+        fallback_message: str,
+    ) -> dict[str, Any]:
+        """Return a structured error payload for callers."""
+        if isinstance(error, dict):
+            payload = dict(error)
+            payload.setdefault("type", fallback_type)
+            payload.setdefault("message", fallback_message)
+            return payload
+        return {
+            "type": fallback_type,
+            "message": fallback_message,
+        }

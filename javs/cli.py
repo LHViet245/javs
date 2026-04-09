@@ -325,6 +325,7 @@ def find(
 ) -> None:
     """🔍 Look up metadata for a movie ID."""
     from javs.application import FindMovieRequest
+    from javs.application.find import FindMovieError
     from javs.config import load_config
 
     cfg = load_config(config_path)
@@ -334,12 +335,17 @@ def find(
 
     try:
         with _status_context("[bold cyan]Searching..."):
-            response = asyncio.run(
-                facade.find_movie(
-                    FindMovieRequest(movie_id=movie_id, scraper_names=scraper_list),
-                    origin="cli",
+            try:
+                response = asyncio.run(
+                    facade.find_movie(
+                        FindMovieRequest(movie_id=movie_id, scraper_names=scraper_list),
+                        origin="cli",
+                    )
                 )
-            )
+            except FindMovieError as error:
+                message = str(error.error.get("message", "Find job failed."))
+                console.print(f"[red]Find failed for {movie_id}: {message}[/red]")
+                raise typer.Exit(1) from error
     finally:
         cleanup()
 

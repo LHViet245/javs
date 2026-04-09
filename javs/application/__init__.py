@@ -9,6 +9,7 @@ from javs.application.facade import (
     PlatformRunner,
     SettingsAuditRepository,
 )
+from javs.application.find import FindMovieError
 from javs.application.history import (
     JobHistoryRepository,
     JobItemsHistoryRepository,
@@ -35,6 +36,7 @@ __all__ = [
     "FindMovieResponse",
     "ConfigLoader",
     "ConfigSaver",
+    "FindMovieError",
     "JobDetail",
     "JobHistoryRepository",
     "JobEventsRepository",

@@ -321,6 +321,96 @@ async def test_facade_find_movie_returns_job_and_result(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_facade_find_movie_requires_synchronous_terminal_job_state(tmp_path: Path) -> None:
+    from javs.application.find import FindMovieError
+    from javs.database.repositories.jobs import JobsRepository
+
+    class StubRunner:
+        async def run_find(self, request, *, origin: str, executor=None) -> str:
+            del request, origin, executor
+            return "job-async"
+
+    class StubFindEngine:
+        async def find_one(self, movie_id: str, scraper_names=None, aggregate: bool = True):
+            del movie_id, scraper_names, aggregate
+            return None
+
+        def get_last_run_diagnostics(self) -> list[dict[str, str]]:
+            return []
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    del db_path, runner
+    jobs = JobsRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=StubJobEventsRepository(),
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=StubRunner(),
+        find_engine_factory=StubFindEngine,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    try:
+        with pytest.raises(FindMovieError) as exc_info:
+            await facade.find_movie(FindMovieRequest(movie_id="ABP-420"), origin="cli")
+    finally:
+        connection.close()
+
+    assert exc_info.value.job_id == "job-async"
+    assert exc_info.value.error == {
+        "type": "FindContractError",
+        "message": "Find requires a terminal job row to be persisted before the runner returns.",
+        "status": "missing",
+    }
+
+
+@pytest.mark.asyncio
+async def test_facade_find_movie_raises_structured_error_for_failed_job(tmp_path: Path) -> None:
+    from javs.application.find import FindMovieError
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+
+    db_path, connection, runner = build_platform_runner(tmp_path)
+    del db_path
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+
+    class StubFindEngine:
+        async def find_one(self, movie_id: str, scraper_names=None, aggregate: bool = True):
+            del movie_id, scraper_names, aggregate
+            raise RuntimeError("boom")
+
+        def get_last_run_diagnostics(self) -> list[dict[str, str]]:
+            return [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=StubSettingsAuditRepository(),
+        history=StubPlatformHistory(),
+        runner=runner,
+        find_engine_factory=StubFindEngine,
+        config_loader=load_test_config,
+        config_saver=save_test_config,
+    )
+
+    try:
+        with pytest.raises(FindMovieError) as exc_info:
+            await facade.find_movie(FindMovieRequest(movie_id="ABP-420"), origin="cli")
+    finally:
+        connection.close()
+
+    assert exc_info.value.job_id
+    assert exc_info.value.error == {"type": "RuntimeError", "message": "boom"}
+    assert "RuntimeError" in str(exc_info.value)
+    assert facade.last_run_diagnostics == [{"kind": "proxy_unreachable", "scraper": "dmm"}]
+
+
+@pytest.mark.asyncio
 async def test_runner_persists_completed_job_and_events_across_connection_reopen(
     tmp_path: Path,
 ) -> None:
