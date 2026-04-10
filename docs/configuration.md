@@ -30,6 +30,43 @@ Useful facts:
 - `./venv/bin/javs config edit` creates the file first if it does not exist, then opens it in your editor.
 - Most CLI commands also accept `--config /path/to/config.yaml` when you want a non-default file.
 
+## Platform Database
+
+The `database` block holds the SQLite path used by the shared platform foundation:
+
+```yaml
+database:
+  enabled: true
+  path: "~/.javs/platform.db"
+```
+
+What it controls:
+
+- `enabled` is currently a reserved schema flag and does not change runtime behavior yet
+- `path` points to the SQLite file that stores jobs, job items, job events, and settings audit rows
+
+Current runtime truth:
+
+- YAML remains the source of truth for user-editable config
+- the database stores platform state and audit history, not the canonical config file
+- the runtime currently reads `database.path`; `database.enabled` is present in the schema but not enforced yet
+- `config save` records a `save_settings` job and a settings audit snapshot through the shared application layer
+
+Recommended default:
+
+- leave the default path in place unless you have a reason to relocate the database file
+
+When to change it:
+
+- you want the platform DB in a different location for local policy or storage reasons
+- you are preparing for a future API or UI deployment and want the database on a dedicated volume
+
+Common mistakes:
+
+- assuming the database replaces the YAML config file
+- assuming `database.enabled: false` disables platform persistence today
+- moving `path` without also updating backup or restore notes
+
 ## Safe Starter Defaults
 
 For a low-risk first setup, keep the config close to the packaged defaults:
@@ -93,6 +130,7 @@ Current runtime truth:
 - `locations.input` and `locations.output` exist in the schema, but the built-in `find`, `sort`, and `update` commands do not currently read them
 - `sort` still requires explicit `SOURCE DEST` arguments on the command line
 - `thumb_csv`, `genre_csv`, and `log` are the path keys in this block that have clear current runtime effect
+- job history and settings audit rows are stored in the platform database, not in `locations`
 
 Recommended default:
 
@@ -104,11 +142,13 @@ When to change it:
 - you want CSV templates in a non-default location
 - you want logs written to a specific file
 - you have your own wrapper scripts or notes that depend on fixed paths outside the built-in CLI behavior
+- you want to keep audit history without moving the YAML config itself
 
 Common mistakes:
 
 - assuming `locations.input` or `locations.output` changes built-in CLI source or destination behavior
 - pointing `thumb_csv` or `genre_csv` at files that do not exist yet
+- assuming the database path belongs in `locations` instead of the `database` block
 
 ## Matching Modes
 

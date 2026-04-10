@@ -65,6 +65,10 @@ Keep the CLI thin. `javs/cli.py` should stay focused on command wiring and user-
 Put runtime behavior in the layer that owns it:
 
 - `javs/core/`: orchestration, scanning, aggregation, organization, and NFO generation
+- `javs/application/`: shared request/response contracts and use cases used by CLI and API adapters
+- `javs/database/`: SQLite connection handling, schema, migrations, and repositories for jobs/history/settings audit
+- `javs/jobs/`: shared job execution, lifecycle, and event emission
+- `javs/api/`: thin ASGI adapter over the shared platform facade
 - `javs/services/`: shared services such as HTTP, translation, image handling, Emby, and Javlibrary helpers
 - `javs/scrapers/`: scraper-specific search and parse logic
 - `javs/config/`: typed config models, loading, sync, and migration behavior
@@ -76,6 +80,8 @@ Important repo rules:
 - keep scraper parsing inside scraper modules
 - treat `MovieData`, `Rating`, `Actress`, and config models as contracts
 - remember that sorting is filename-driven, not parent-directory-driven
+- remember that YAML remains the source of truth for settings even though SQLite stores jobs and audit history
+- keep CLI and API adapters thin so they both route through the shared application layer
 
 ## Regression Expectations
 
@@ -94,6 +100,7 @@ Preserve the current engine lifecycle contracts:
 - `JavsEngine.find()` assumes an open shared `HttpClient` session
 - `JavsEngine.find_one()` manages its own session
 - `sort_path()` and `update_path()` share one session across the batch
+- `config save` records a `save_settings` job and settings audit snapshot while preserving YAML as the editable config file
 
 ## Doc Maintenance Rules
 
