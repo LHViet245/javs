@@ -15,6 +15,9 @@ from javs.api.routes import (
     handle_sort_job,
     handle_update_job,
 )
+from javs.application import BatchJobError, SettingsSaveError
+from javs.application.find import FindMovieError
+from javs.application.settings import SettingsValidationError
 
 Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -62,6 +65,14 @@ class JavsAPIApp:
                 return
         except ValueError as error:
             await self._send_json(send, 400, {"detail": str(error)})
+            return
+        except (
+            FindMovieError,
+            BatchJobError,
+            SettingsSaveError,
+            SettingsValidationError,
+        ) as error:
+            await self._send_json(send, 409, self._build_application_error_payload(error))
             return
 
         await self._send_json(send, 404, {"detail": "Not found."})
@@ -120,6 +131,28 @@ class JavsAPIApp:
         if not values:
             return None
         return values[0] or None
+
+    @staticmethod
+    def _build_application_error_payload(
+        error: FindMovieError
+        | BatchJobError
+        | SettingsSaveError
+        | SettingsValidationError,
+    ) -> dict[str, Any]:
+        if isinstance(error, SettingsValidationError):
+            return {
+                "detail": str(error),
+                "job_id": None,
+                "error": {
+                    "type": "SettingsValidationError",
+                    "message": str(error),
+                },
+            }
+        return {
+            "detail": str(error),
+            "job_id": error.job_id,
+            "error": dict(error.error),
+        }
 
 
 def create_app(facade: object) -> JavsAPIApp:

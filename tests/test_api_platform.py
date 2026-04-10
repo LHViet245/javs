@@ -9,15 +9,19 @@ import pytest
 
 from javs.api.app import create_app
 from javs.application import (
+    BatchJobError,
     FindMovieResponse,
     JobStartResponse,
     JobSummary,
     SaveSettingsRequest,
     SaveSettingsResponse,
     SettingsResponse,
+    SettingsSaveError,
     SortJobRequest,
     UpdateJobRequest,
 )
+from javs.application.find import FindMovieError
+from javs.application.settings import SettingsValidationError
 from javs.config import JavsConfig
 from javs.models.movie import MovieData
 
@@ -248,4 +252,105 @@ async def test_get_and_post_settings_route_through_facade(
     assert save_request.source_path == str(tmp_path / "custom.yaml")
     assert save_request.changes == {
         "proxy": {"enabled": True, "url": "http://127.0.0.1:8888"}
+    }
+
+
+@pytest.mark.asyncio
+async def test_application_errors_are_translated_to_structured_http_responses() -> None:
+    class FailingFacade(StubFacade):
+        async def find_movie(self, request, *, origin: str = "cli") -> FindMovieResponse:
+            self.calls.append(("find_movie", request, origin))
+            raise FindMovieError(
+                job_id="job-find-failed",
+                error={"type": "RuntimeError", "message": "find exploded"},
+            )
+
+        async def start_sort_job(self, request, *, origin: str = "cli") -> JobStartResponse:
+            self.calls.append(("start_sort_job", request, origin))
+            raise BatchJobError(
+                job_id="job-sort-failed",
+                kind="sort",
+                error={"type": "RuntimeError", "message": "sort exploded"},
+            )
+
+        async def save_settings(
+            self,
+            request: SaveSettingsRequest,
+            *,
+            origin: str = "cli",
+        ) -> SaveSettingsResponse:
+            self.calls.append(("save_settings", request, origin))
+            raise SettingsSaveError(
+                job_id="job-save-failed",
+                error={"type": "SettingsValidationError", "message": "save exploded"},
+            )
+
+    app = create_app(FailingFacade())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        find_response = await client.post("/jobs/find", json={"movie_id": "ABP-420"})
+        sort_response = await client.post(
+            "/jobs/sort",
+            json={
+                "source_path": "/library/incoming",
+                "destination_path": "/library/sorted",
+            },
+        )
+        save_response = await client.post(
+            "/settings",
+            json={"changes": {"proxy": {"enabled": True, "url": "http://127.0.0.1:8888"}}},
+        )
+
+    assert find_response.status_code == 409
+    assert find_response.json() == {
+        "detail": "RuntimeError for job job-find-failed: find exploded",
+        "job_id": "job-find-failed",
+        "error": {"type": "RuntimeError", "message": "find exploded"},
+    }
+    assert sort_response.status_code == 409
+    assert sort_response.json() == {
+        "detail": "RuntimeError for sort job job-sort-failed: sort exploded",
+        "job_id": "job-sort-failed",
+        "error": {"type": "RuntimeError", "message": "sort exploded"},
+    }
+    assert save_response.status_code == 409
+    assert save_response.json() == {
+        "detail": "SettingsValidationError for settings job job-save-failed: save exploded",
+        "job_id": "job-save-failed",
+        "error": {"type": "SettingsValidationError", "message": "save exploded"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_settings_validation_errors_are_translated_to_structured_http_responses() -> None:
+    class ValidationFailingFacade(StubFacade):
+        async def save_settings(
+            self,
+            request: SaveSettingsRequest,
+            *,
+            origin: str = "cli",
+        ) -> SaveSettingsResponse:
+            self.calls.append(("save_settings", request, origin))
+            raise SettingsValidationError(
+                "Changing database.path through shared settings save is not supported yet."
+            )
+
+    app = create_app(ValidationFailingFacade())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/settings",
+            json={"changes": {"database": {"path": "/tmp/other-platform.db"}}},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Changing database.path through shared settings save is not supported yet.",
+        "job_id": None,
+        "error": {
+            "type": "SettingsValidationError",
+            "message": "Changing database.path through shared settings save is not supported yet.",
+        },
     }
