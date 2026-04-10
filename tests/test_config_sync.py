@@ -71,6 +71,14 @@ class TestDefaultConfigTemplate:
         assert cfg.javlibrary.cookie_cf_clearance == ""
         assert cfg.javlibrary.browser_user_agent == ""
 
+    def test_template_includes_database_section(self) -> None:
+        """Template YAML must explicitly ship the database config section."""
+        with open(TEMPLATE_PATH) as f:
+            raw = yaml.safe_load(f)
+
+        assert raw["database"]["enabled"] is True
+        assert raw["database"]["path"] == "~/.javs/platform.db"
+
     def test_template_no_unknown_top_level_keys(self) -> None:
         """Template should not contain keys that JavsConfig silently ignores."""
         with open(TEMPLATE_PATH) as f:

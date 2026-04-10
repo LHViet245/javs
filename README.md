@@ -4,7 +4,7 @@ JavS is a fast, async-native Python CLI for finding JAV metadata by ID, sorting 
 
 ## Project Summary
 
-JavS is built for repeatable library management. It searches enabled scrapers in parallel, normalizes metadata into typed models, writes `.nfo` and artwork alongside video files, and keeps sort and update behavior predictable through config-driven rules.
+JavS is built for repeatable library management. It searches enabled scrapers in parallel, normalizes metadata into typed models, writes `.nfo` and artwork alongside video files, and keeps sort and update behavior predictable through config-driven rules. The current platform foundation also records jobs, job items, events, and settings audit history in SQLite while keeping YAML as the source of truth for user-editable config.
 
 ## Who JavS Is For
 
@@ -19,6 +19,7 @@ JavS is built for repeatable library management. It searches enabled scrapers in
 - Refreshes already organized libraries in place with `update`.
 - Merges results from multiple enabled scrapers instead of relying on one source.
 - Supports config sync, CSV template setup, proxy testing, and Javlibrary credential helpers.
+- Keeps a shared platform layer for jobs, history, and settings audit without replacing the CLI.
 - Keeps the pipeline async-first and typed, which helps with speed and predictable behavior.
 
 ## What JavS Does Not Do
@@ -89,10 +90,12 @@ Legacy paths remain for continuity: `docs/USAGE.md` is the documentation index, 
 - File-name-driven ID detection, including multipart naming patterns.
 - `find`, `sort`, and `update` for lookup, organization, and in-place refreshes.
 - `config` subcommands for showing, editing, syncing, and initializing local settings.
+- `config save` for validated settings changes that also write a settings audit job.
 - `scrapers` for listing available scraper plugins.
 - Proxy and Javlibrary support helpers for environments that need them.
 - Optional translation support for metadata fields.
 - Typed configuration and model handling with `pydantic`.
+- Shared application, database, jobs, and thin API adapter layers for future CLI/API parity.
 
 ## Contributor and Verification Note
 
@@ -104,3 +107,5 @@ Use the repository virtual environment for installs, app commands, and tests. Be
 ```
 
 For a full local verification pass, you can also run `./scripts/verify_local.sh`.
+
+There is not a full UI yet. The CLI remains first-class, and the shared platform layers exist to keep a future API or UI on the same contracts without changing YAML ownership or the current CLI workflow.

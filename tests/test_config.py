@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 from javs.config import (
     JavsConfig,
@@ -23,6 +25,71 @@ class TestJavsConfig:
         assert config.throttle_limit == 1
         assert config.sleep == 2
         assert config.scrapers.enabled["r18dev"] is True
+
+    def test_database_config_defaults_are_loaded(self) -> None:
+        config = JavsConfig()
+
+        assert config.database.enabled is True
+        assert config.database.path == "~/.javs/platform.db"
+
+    def test_database_path_can_be_overridden(self, tmp_path: Path) -> None:
+        path = tmp_path / "database.yaml"
+        path.write_text(
+            yaml.dump({"database": {"path": "/tmp/custom-platform.db"}}),
+            encoding="utf-8",
+        )
+
+        config = load_config(path)
+
+        assert config.database.enabled is True
+        assert config.database.path == "/tmp/custom-platform.db"
+
+    def test_apply_settings_changes_merges_nested_values(self) -> None:
+        from javs.config.loader import apply_settings_changes
+
+        config = JavsConfig()
+
+        updated = apply_settings_changes(
+            config,
+            {
+                "proxy": {
+                    "enabled": True,
+                    "url": "http://127.0.0.1:8888",
+                },
+                "database": {"path": "/tmp/updated-platform.db"},
+            },
+        )
+
+        assert config.proxy.enabled is False
+        assert updated.proxy.enabled is True
+        assert updated.proxy.url == "http://127.0.0.1:8888"
+        assert updated.database.path == "/tmp/updated-platform.db"
+
+    def test_apply_settings_changes_revalidates_nested_models(self) -> None:
+        from javs.config.loader import apply_settings_changes
+
+        with pytest.raises(ValidationError):
+            apply_settings_changes(
+                JavsConfig(),
+                {
+                    "proxy": {
+                        "enabled": True,
+                    }
+                },
+            )
+
+    def test_resolve_database_path_expands_user(self, tmp_path: Path, monkeypatch) -> None:
+        from javs.database.connection import resolve_database_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        config = JavsConfig()
+        config.database.path = "~/.javs/platform.db"
+
+        resolved = resolve_database_path(config)
+
+        assert resolved == tmp_path / ".javs" / "platform.db"
+        assert isinstance(resolved, Path)
 
     def test_default_config_scrapers(self) -> None:
         config = JavsConfig()
@@ -284,7 +351,7 @@ class TestJavsConfig:
             "Original,Replacement"
         )
         assert result.thumb_csv_path.read_text(encoding="utf-8-sig").startswith(
-            "FullName,JapaneseName,ThumbUrl"
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases"
         )
 
         loaded = load_config(config_path)

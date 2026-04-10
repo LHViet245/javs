@@ -6,6 +6,7 @@ Replaces Javinizer's complex single-function CmdletBinding with clean subcommand
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -79,6 +80,48 @@ def _status_context(message: str):
     if is_interactive_terminal():
         return nullcontext()
     return console.status(message, spinner="dots")
+
+
+def _build_find_facade(cfg, config_path: Path):
+    return _build_platform_facade(cfg, config_path)
+
+
+def _build_platform_facade(cfg, config_path: Path):
+    from javs.application import PlatformFacade
+    from javs.core.engine import JavsEngine
+    from javs.database.connection import open_database, resolve_database_path
+    from javs.database.migrations import initialize_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.job_items import JobItemsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+    from javs.jobs import PlatformJobRunner
+
+    db_path = resolve_database_path(cfg)
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    job_items = JobItemsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
+
+    def engine_factory() -> JavsEngine:
+        return JavsEngine(
+            cfg,
+            cloudflare_recovery_handler=_build_javlibrary_recovery_handler(cfg, config_path),
+        )
+
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=job_items,
+        events=events,
+        settings_audit=settings_audit,
+        runner=PlatformJobRunner(jobs=jobs, events=events),
+        find_engine_factory=engine_factory,
+        sort_engine_factory=engine_factory,
+        update_engine_factory=engine_factory,
+    )
+    return facade, connection.close
 
 
 def _print_run_diagnostics(engine) -> None:
@@ -172,8 +215,8 @@ def sort(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """📂 Scan, scrape, and sort video files into an organized library."""
+    from javs.application import BatchJobError, SortJobRequest
     from javs.config import load_config
-    from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
     effective_cleanup_empty_source_dir = (
@@ -181,21 +224,42 @@ def sort(
         if cleanup_empty_source_dir is not None
         else cfg.sort.cleanup_empty_source_dir
     )
-    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
-        cfg, _resolve_config_path(config_path)
-    ))
+    resolved_config_path = _resolve_config_path(config_path)
+    facade, cleanup = _build_platform_facade(cfg, resolved_config_path)
 
-    with _status_context("[bold green]Sorting files..."):
-        results = asyncio.run(
-            engine.sort_path(
-                source,
-                dest,
-                recurse,
-                force,
-                preview,
-                cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
-            )
-        )
+    try:
+        try:
+            with _status_context("[bold green]Sorting files..."):
+                response = asyncio.run(
+                    facade.start_sort_job(
+                        SortJobRequest(
+                            source_path=str(source),
+                            destination_path=str(dest),
+                            recurse=recurse,
+                            force=force,
+                            preview=preview,
+                            cleanup_empty_source_dir=effective_cleanup_empty_source_dir,
+                        ),
+                        origin="cli",
+                    )
+                )
+        except BatchJobError as error:
+            _print_run_summary(facade)
+            _print_run_diagnostics(facade)
+            message = str(error.error.get("message", "Sort job failed."))
+            console.print(f"[red]Sort failed: {message}[/red]")
+            raise typer.Exit(1) from error
+    finally:
+        cleanup()
+
+    if response.job.status != "completed":
+        _print_run_summary(facade)
+        _print_run_diagnostics(facade)
+        message = str((response.job.error or {}).get("message", "Sort job failed."))
+        console.print(f"[red]Sort failed: {message}[/red]")
+        raise typer.Exit(1)
+
+    results = facade.last_run_results
 
     if results:
         table = Table(title=f"✅ Sorted {len(results)} files")
@@ -211,9 +275,9 @@ def sort(
         console.print("[yellow]No files were processed.[/yellow]")
 
     if preview:
-        _print_preview_plan(engine)
-    _print_run_summary(engine)
-    _print_run_diagnostics(engine)
+        _print_preview_plan(facade)
+    _print_run_summary(facade)
+    _print_run_diagnostics(facade)
 
 
 @app.command("update")
@@ -243,30 +307,48 @@ def update(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """♻️ Refresh metadata sidecars for an already-sorted library without moving files."""
+    from javs.application import BatchJobError, UpdateJobRequest
     from javs.config import load_config
-    from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(
-        cfg,
-        cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
-            cfg, _resolve_config_path(config_path)
-        ),
-    )
+    resolved_config_path = _resolve_config_path(config_path)
+    facade, cleanup = _build_platform_facade(cfg, resolved_config_path)
     scraper_list = scrapers.split(",") if scrapers else None
 
-    with _status_context("[bold green]Updating sorted library..."):
-        results = asyncio.run(
-            engine.update_path(
-                source,
-                recurse=recurse,
-                force=force,
-                preview=preview,
-                scraper_names=scraper_list,
-                refresh_images=refresh_images,
-                refresh_trailer=refresh_trailer,
-            )
-        )
+    try:
+        try:
+            with _status_context("[bold green]Updating sorted library..."):
+                response = asyncio.run(
+                    facade.start_update_job(
+                        UpdateJobRequest(
+                            source_path=str(source),
+                            recurse=recurse,
+                            force=force,
+                            preview=preview,
+                            scraper_names=scraper_list,
+                            refresh_images=refresh_images,
+                            refresh_trailer=refresh_trailer,
+                        ),
+                        origin="cli",
+                    )
+                )
+        except BatchJobError as error:
+            _print_run_summary(facade)
+            _print_run_diagnostics(facade)
+            message = str(error.error.get("message", "Update job failed."))
+            console.print(f"[red]Update failed: {message}[/red]")
+            raise typer.Exit(1) from error
+    finally:
+        cleanup()
+
+    if response.job.status != "completed":
+        _print_run_summary(facade)
+        _print_run_diagnostics(facade)
+        message = str((response.job.error or {}).get("message", "Update job failed."))
+        console.print(f"[red]Update failed: {message}[/red]")
+        raise typer.Exit(1)
+
+    results = facade.last_run_results
 
     if results:
         table = Table(title=f"♻️ Updated {len(results)} files")
@@ -282,9 +364,9 @@ def update(
         console.print("[yellow]No files were updated.[/yellow]")
 
     if preview:
-        _print_preview_plan(engine)
-    _print_run_summary(engine)
-    _print_run_diagnostics(engine)
+        _print_preview_plan(facade)
+    _print_run_summary(facade)
+    _print_run_diagnostics(facade)
 
 
 @app.command()
@@ -298,18 +380,32 @@ def find(
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
 ) -> None:
     """🔍 Look up metadata for a movie ID."""
+    from javs.application import FindMovieRequest
+    from javs.application.find import FindMovieError
     from javs.config import load_config
-    from javs.core.engine import JavsEngine
 
     cfg = load_config(config_path)
-    engine = JavsEngine(cfg, cloudflare_recovery_handler=_build_javlibrary_recovery_handler(
-        cfg, _resolve_config_path(config_path)
-    ))
-
+    resolved_config_path = _resolve_config_path(config_path)
+    facade, cleanup = _build_find_facade(cfg, resolved_config_path)
     scraper_list = scrapers.split(",") if scrapers else None
 
-    with _status_context("[bold cyan]Searching..."):
-        data = asyncio.run(engine.find_one(movie_id, scraper_names=scraper_list))
+    try:
+        with _status_context("[bold cyan]Searching..."):
+            try:
+                response = asyncio.run(
+                    facade.find_movie(
+                        FindMovieRequest(movie_id=movie_id, scraper_names=scraper_list),
+                        origin="cli",
+                    )
+                )
+            except FindMovieError as error:
+                message = str(error.error.get("message", "Find job failed."))
+                console.print(f"[red]Find failed for {movie_id}: {message}[/red]")
+                raise typer.Exit(1) from error
+    finally:
+        cleanup()
+
+    data = response.result
 
     if not data:
         console.print(f"[red]No results found for {movie_id}[/red]")
@@ -325,7 +421,7 @@ def find(
     else:
         _display_movie_data(data)
 
-    _print_run_diagnostics(engine)
+    _print_run_diagnostics(facade)
 
 
 @app.command()
@@ -333,11 +429,16 @@ def config(
     action: str = typer.Argument(
         "show",
         help=(
-            "Action: show, edit, create, path, sync, csv-paths, "
+            "Action: show, save, edit, create, path, sync, csv-paths, "
             "init-csv, javlibrary-cookie, javlibrary-test, proxy-test."
         ),
     ),
     config_path: Path | None = typer.Option(None, "--config", "-c", help="Path to config file."),
+    changes: str | None = typer.Option(
+        None,
+        "--changes",
+        help="JSON object of validated config updates for `config save`.",
+    ),
 ) -> None:
     """⚙️ Manage configuration."""
     from javs.config import create_default_config, load_config
@@ -356,6 +457,45 @@ def config(
 
         cfg = load_config(path)
         console.print_json(data=redact_config_for_display(cfg))
+
+    elif action == "save":
+        from javs.application import SaveSettingsRequest, SettingsSaveError
+
+        if not changes:
+            console.print("[red]`javs config save` requires --changes with a JSON object.[/red]")
+            raise typer.Exit(1)
+
+        try:
+            payload = json.loads(changes)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Invalid JSON for --changes:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+        if not isinstance(payload, dict):
+            console.print("[red]`--changes` must decode to a JSON object.[/red]")
+            raise typer.Exit(1)
+
+        cfg = load_config(path)
+        facade, cleanup = _build_platform_facade(cfg, path)
+        try:
+            try:
+                response = asyncio.run(
+                    facade.save_settings(
+                        SaveSettingsRequest(source_path=str(path), changes=payload),
+                        origin="cli",
+                    )
+                )
+            except SettingsSaveError as error:
+                message = str(error.error.get("message", "Settings save failed."))
+                console.print(f"[red]Config save failed: {message}[/red]")
+                raise typer.Exit(1) from error
+        finally:
+            cleanup()
+
+        console.print(
+            f"[green]Saved config at {response.settings.source_path}[/green] "
+            f"(job {response.job.id})"
+        )
 
     elif action == "create":
         create_default_config(path)

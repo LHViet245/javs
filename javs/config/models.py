@@ -256,6 +256,13 @@ class EmbyConfig(BaseModel):
     api_key: str = ""
 
 
+class DatabaseConfig(BaseModel):
+    """SQLite database settings."""
+
+    enabled: bool = True
+    path: str = "~/.javs/platform.db"
+
+
 class JavlibraryConfig(BaseModel):
     """Javlibrary-specific settings used by the runtime."""
 
@@ -301,6 +308,7 @@ class JavsConfig(BaseModel):
     # External services
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     emby: EmbyConfig = Field(default_factory=EmbyConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     # Source-specific
     javlibrary: JavlibraryConfig = Field(default_factory=JavlibraryConfig)

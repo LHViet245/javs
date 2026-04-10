@@ -182,6 +182,7 @@ Use `config` when you need to:
 - sync in new defaults after an upgrade
 - set up CSV templates
 - validate proxy or Javlibrary credentials
+- save validated settings changes and record a settings audit job
 
 ### Syntax
 
@@ -192,6 +193,7 @@ Use `config` when you need to:
 Supported actions:
 
 - `show`
+- `save`
 - `edit`
 - `create`
 - `path`
@@ -208,6 +210,7 @@ Supported actions:
 ./venv/bin/javs config path
 ./venv/bin/javs config create
 ./venv/bin/javs config show
+./venv/bin/javs config save --changes '{"proxy": {"enabled": true, "url": "http://127.0.0.1:8888"}}'
 ./venv/bin/javs config edit
 ./venv/bin/javs config sync
 ./venv/bin/javs config init-csv
@@ -222,6 +225,7 @@ Supported actions:
 - `path` prints the config path
 - `create` writes a default config file
 - `show` prints masked JSON
+- `save` writes the YAML config back to disk after validation and records a `save_settings` job plus a settings audit row
 - `edit` opens the file in `$EDITOR` or `$VISUAL`, defaulting to `nano`
 - `sync` merges your local config with the packaged template
 - `init-csv` creates local CSV templates and records their paths in config
@@ -231,6 +235,7 @@ Supported actions:
 ### Common Mistakes
 
 - assuming `show` proves a config file already exists; it can also display built-in defaults
+- assuming `save` can change `database.path`; that path remains managed through the YAML config and shared application rules
 - editing YAML by hand but never running `sync` after schema changes
 - running `proxy-test` while `proxy.enabled` is still `false`
 - setting Javlibrary fields manually without validating them

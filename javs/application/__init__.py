@@ -1,0 +1,63 @@
+"""Shared application contracts for CLI and future API adapters."""
+
+from javs.application.facade import (
+    ConfigLoader,
+    ConfigSaver,
+    JobEventsRepository,
+    PlatformFacade,
+    PlatformHistory,
+    PlatformRunner,
+    SettingsAuditRepository,
+)
+from javs.application.find import FindMovieError
+from javs.application.history import (
+    JobHistoryRepository,
+    JobItemsHistoryRepository,
+    build_job_detail,
+    build_job_item_summary,
+    build_job_summary,
+)
+from javs.application.models import (
+    BatchJobError,
+    FindMovieRequest,
+    FindMovieResponse,
+    JobDetail,
+    JobItemSummary,
+    JobStartResponse,
+    JobSummary,
+    SaveSettingsRequest,
+    SaveSettingsResponse,
+    SettingsResponse,
+    SettingsSaveError,
+    SortJobRequest,
+    UpdateJobRequest,
+)
+
+__all__ = [
+    "FindMovieRequest",
+    "FindMovieResponse",
+    "BatchJobError",
+    "ConfigLoader",
+    "ConfigSaver",
+    "FindMovieError",
+    "JobDetail",
+    "JobHistoryRepository",
+    "JobEventsRepository",
+    "JobItemSummary",
+    "JobItemsHistoryRepository",
+    "JobStartResponse",
+    "JobSummary",
+    "PlatformFacade",
+    "PlatformHistory",
+    "PlatformRunner",
+    "SaveSettingsRequest",
+    "SettingsSaveError",
+    "SaveSettingsResponse",
+    "SettingsAuditRepository",
+    "SettingsResponse",
+    "SortJobRequest",
+    "UpdateJobRequest",
+    "build_job_detail",
+    "build_job_item_summary",
+    "build_job_summary",
+]

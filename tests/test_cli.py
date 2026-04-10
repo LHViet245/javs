@@ -11,6 +11,15 @@ from typer.testing import CliRunner
 import javs.config as config_module
 import javs.core.engine as engine_module
 import javs.scrapers.registry as registry_module
+from javs.application import (
+    FindMovieResponse,
+    JobStartResponse,
+    JobSummary,
+    SaveSettingsResponse,
+    SettingsResponse,
+    SettingsSaveError,
+)
+from javs.application.find import FindMovieError
 from javs.cli import app
 from javs.config import JavsConfig
 from javs.models.movie import Actress, MovieData, Rating
@@ -29,6 +38,94 @@ def _movie_data() -> MovieData:
     )
 
 
+class _UnexpectedEngineUsage:
+    def __init__(self, *args, **kwargs) -> None:
+        raise AssertionError("CLI find should route through the platform facade.")
+
+
+def _patch_find_facade(
+    monkeypatch,
+    *,
+    movie: MovieData | None,
+    diagnostics: list[dict[str, str]] | None = None,
+    capture: dict[str, object] | None = None,
+    error: FindMovieError | None = None,
+) -> None:
+    class DummyFacade:
+        def __init__(self) -> None:
+            self.last_run_diagnostics = list(diagnostics or [])
+
+        async def find_movie(self, request, *, origin: str = "cli") -> FindMovieResponse:
+            if capture is not None:
+                capture["request"] = request
+                capture["origin"] = origin
+            if error is not None:
+                raise error
+            return FindMovieResponse(
+                job=JobSummary(id="job-1", kind="find", status="completed", origin=origin),
+                result=movie,
+            )
+
+    monkeypatch.setattr(engine_module, "JavsEngine", _UnexpectedEngineUsage)
+    monkeypatch.setattr(
+        "javs.cli._build_find_facade",
+        lambda cfg, config_path: (DummyFacade(), lambda: None),
+    )
+
+
+def _patch_batch_facade(
+    monkeypatch,
+    *,
+    movies: list[MovieData],
+    status: str = "completed",
+    summary: dict[str, int] | None = None,
+    diagnostics: list[dict[str, str]] | None = None,
+    preview_plan: list[dict[str, str]] | None = None,
+    error: dict[str, str] | None = None,
+    capture: dict[str, object] | None = None,
+) -> None:
+    class DummyFacade:
+        def __init__(self) -> None:
+            self.last_run_diagnostics = list(diagnostics or [])
+            self.last_run_summary = dict(summary or {})
+            self.last_preview_plan = [dict(item) for item in (preview_plan or [])]
+            self.last_run_results = list(movies)
+
+        async def start_sort_job(self, request, *, origin: str = "cli") -> JobStartResponse:
+            if capture is not None:
+                capture["request"] = request
+                capture["origin"] = origin
+            return JobStartResponse(
+                job=JobSummary(
+                    id="job-sort-1",
+                    kind="sort",
+                    status=status,
+                    origin=origin,
+                    error=error,
+                )
+            )
+
+        async def start_update_job(self, request, *, origin: str = "cli") -> JobStartResponse:
+            if capture is not None:
+                capture["request"] = request
+                capture["origin"] = origin
+            return JobStartResponse(
+                job=JobSummary(
+                    id="job-update-1",
+                    kind="update",
+                    status=status,
+                    origin=origin,
+                    error=error,
+                )
+            )
+
+    monkeypatch.setattr(engine_module, "JavsEngine", _UnexpectedEngineUsage)
+    monkeypatch.setattr(
+        "javs.cli._build_platform_facade",
+        lambda cfg, config_path: (DummyFacade(), lambda: None),
+    )
+
+
 class TestCliConfigCommand:
     """Test CLI config command contract."""
 
@@ -42,6 +139,7 @@ class TestCliConfigCommand:
         assert "javlibrary-cookie" in result.stdout
         assert "javlibrary-test" in result.stdout
         assert "proxy-test" in result.stdout
+        assert "save" in result.stdout
 
     def test_config_sync_supports_custom_config_path(self, tmp_path: Path) -> None:
         """config sync should work with an explicit --config path."""
@@ -249,24 +347,133 @@ class TestCliConfigCommand:
         assert "Proxy unreachable" in result.stdout
         assert "timed out" in result.stdout
 
+    def test_config_save_uses_platform_settings_flow(self, monkeypatch, tmp_path: Path) -> None:
+        target = tmp_path / "config.yaml"
+        captured: dict[str, object] = {}
+        updated = JavsConfig()
+        updated.proxy.enabled = True
+        updated.proxy.url = "http://127.0.0.1:8888"
+
+        class DummyFacade:
+            async def save_settings(self, request, *, origin: str = "cli") -> SaveSettingsResponse:
+                captured["request"] = request
+                captured["origin"] = origin
+                return SaveSettingsResponse(
+                    job=JobSummary(
+                        id="job-settings-1",
+                        kind="save_settings",
+                        status="completed",
+                        origin=origin,
+                    ),
+                    settings=SettingsResponse(
+                        config=updated,
+                        source_path=str(target),
+                        config_version=1,
+                    ),
+                )
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(
+            "javs.cli._build_platform_facade",
+            lambda cfg, config_path: (DummyFacade(), lambda: None),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "config",
+                "save",
+                "--config",
+                str(target),
+                "--changes",
+                '{"proxy":{"enabled":true,"url":"http://127.0.0.1:8888"}}',
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].source_path == str(target)
+        assert captured["request"].changes == {
+            "proxy": {
+                "enabled": True,
+                "url": "http://127.0.0.1:8888",
+            }
+        }
+        assert "Saved config at" in result.stdout
+        assert "job-settings-1" in result.stdout
+
+    def test_config_save_exits_nonzero_for_structured_settings_failure(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "config.yaml"
+
+        class DummyFacade:
+            async def save_settings(self, request, *, origin: str = "cli") -> SaveSettingsResponse:
+                raise SettingsSaveError(
+                    job_id="job-settings-2",
+                    error={
+                        "type": "SettingsValidationError",
+                        "message": (
+                            "Changing database.path through shared settings save "
+                            "is not supported yet."
+                        ),
+                    },
+                )
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        monkeypatch.setattr(
+            "javs.cli._build_platform_facade",
+            lambda cfg, config_path: (DummyFacade(), lambda: None),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "config",
+                "save",
+                "--config",
+                str(target),
+                "--changes",
+                '{"database":{"path":"/tmp/other-platform.db"}}',
+            ],
+        )
+
+        assert result.exit_code == 1
+        normalized_output = " ".join(result.stdout.split())
+        assert "Config save failed" in result.stdout
+        assert (
+            "Changing database.path through shared settings save is not supported yet."
+            in normalized_output
+        )
+        assert "Traceback" not in result.stdout
+
 
 class TestCliFindCommand:
     """Test `find` command output and exit behavior."""
 
+    def test_cli_find_uses_platform_facade(self, monkeypatch) -> None:
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            capture=captured,
+        )
+
+        result = runner.invoke(app, ["find", "abp420", "--json", "--scrapers", "dmm,r18dev"])
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].movie_id == "ABP-420"
+        assert captured["request"].scraper_names == ["dmm", "r18dev"]
+        assert '"id": "ABP-420"' in result.stdout
+
     def test_find_json_outputs_serialized_movie_data(self, monkeypatch) -> None:
         movie = _movie_data()
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                assert movie_id == "ABP-420"
-                assert scraper_names == ["dmm", "r18dev"]
-                return movie
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=movie)
 
         result = runner.invoke(app, ["find", "ABP-420", "--json", "--scrapers", "dmm,r18dev"])
 
@@ -283,37 +490,37 @@ class TestCliFindCommand:
             pass
 
     def test_find_exits_with_code_1_when_no_results(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return None
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=None)
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
         assert result.exit_code == 1
         assert "No results found for ABP-420" in result.stdout
 
-    def test_find_prints_proxy_failure_summary(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {"kind": "proxy_unreachable", "scraper": "dmm"}
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return _movie_data()
-
+    def test_find_exits_with_code_1_for_structured_find_failure(self, monkeypatch) -> None:
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(
+            monkeypatch,
+            movie=None,
+            error=FindMovieError(
+                job_id="job-1",
+                error={"type": "RuntimeError", "message": "boom"},
+            ),
+        )
+
+        result = runner.invoke(app, ["find", "ABP-420"])
+
+        assert result.exit_code == 1
+        assert "Find failed for ABP-420: boom" in result.stdout
+
+    def test_find_prints_proxy_failure_summary(self, monkeypatch) -> None:
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            diagnostics=[{"kind": "proxy_unreachable", "scraper": "dmm"}],
+        )
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -323,24 +530,18 @@ class TestCliFindCommand:
         assert "Next: run `javs config proxy-test`." in result.stdout
 
     def test_find_prints_translation_provider_warning(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {
-                        "kind": "translation_provider_unavailable",
-                        "scraper": "translate",
-                        "detail": "Install googletrans to enable translation.",
-                    }
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return _movie_data()
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            diagnostics=[
+                {
+                    "kind": "translation_provider_unavailable",
+                    "scraper": "translate",
+                    "detail": "Install googletrans to enable translation.",
+                }
+            ],
+        )
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -352,24 +553,18 @@ class TestCliFindCommand:
         assert '".[translate]"`.' in result.stdout
 
     def test_find_prints_translation_config_warning(self, monkeypatch) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {
-                        "kind": "translation_config_invalid",
-                        "scraper": "translate",
-                        "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
-                    }
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return _movie_data()
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(
+            monkeypatch,
+            movie=_movie_data(),
+            diagnostics=[
+                {
+                    "kind": "translation_config_invalid",
+                    "scraper": "translate",
+                    "detail": "DeepL language 'en' is ambiguous; use 'en-us' or 'en-gb'.",
+                }
+            ],
+        )
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -423,16 +618,8 @@ class TestCliFindCommand:
             },
         )
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return movie
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=movie)
 
         result = runner.invoke(app, ["find", "ABP-420"])
         normalized_output = " ".join(result.stdout.split())
@@ -478,16 +665,8 @@ class TestCliFindCommand:
             field_sources={"title": "dmm"},
         )
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-
-            async def find_one(self, movie_id: str, scraper_names=None):
-                return movie
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_find_facade(monkeypatch, movie=movie)
 
         result = runner.invoke(app, ["find", "ABP-420"])
 
@@ -505,44 +684,115 @@ class TestCliFindCommand:
 class TestCliSortAndScrapers:
     """Test sort command wiring and scraper listing output."""
 
-    def test_sort_passes_flags_to_engine_and_shows_result_table(self, monkeypatch, tmp_path: Path):
+    def test_cli_sort_uses_platform_facade(self, monkeypatch, tmp_path: Path) -> None:
         captured: dict[str, object] = {}
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            summary={"total": 1, "processed": 1, "skipped": 0, "failed": 0, "warnings": 0},
+            capture=captured,
+        )
 
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                captured.update(
-                    {
-                        "source": source,
-                        "dest": dest,
-                        "recurse": recurse,
-                        "force": force,
-                        "preview": preview,
-                        "cleanup_empty_source_dir": cleanup_empty_source_dir,
-                    }
-                )
-                return [_movie_data()]
+        result = runner.invoke(
+            app,
+            [
+                "sort",
+                str(tmp_path / "source"),
+                str(tmp_path / "dest"),
+                "--recurse",
+                "--force",
+                "--preview",
+                "--cleanup-empty-source-dir",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].source_path == str(tmp_path / "source")
+        assert captured["request"].destination_path == str(tmp_path / "dest")
+        assert captured["request"].recurse is True
+        assert captured["request"].force is True
+        assert captured["request"].preview is True
+        assert captured["request"].cleanup_empty_source_dir is True
+        assert "Sorted 1 files" in result.stdout
+
+    def test_cli_update_uses_platform_facade(self, monkeypatch, tmp_path: Path) -> None:
+        captured: dict[str, object] = {}
 
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            summary={"total": 1, "processed": 1, "skipped": 0, "failed": 0, "warnings": 0},
+            capture=captured,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "update",
+                str(tmp_path / "library"),
+                "--recurse",
+                "--force",
+                "--preview",
+                "--refresh-images",
+                "--refresh-trailer",
+                "--scrapers",
+                "javlibrary,dmm",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["origin"] == "cli"
+        assert captured["request"].source_path == str(tmp_path / "library")
+        assert captured["request"].recurse is True
+        assert captured["request"].force is True
+        assert captured["request"].preview is True
+        assert captured["request"].scraper_names == ["javlibrary", "dmm"]
+        assert captured["request"].refresh_images is True
+        assert captured["request"].refresh_trailer is True
+        assert "Updated 1 files" in result.stdout
+
+    def test_cli_sort_exits_nonzero_for_failed_platform_job(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[],
+            status="failed",
+            error={"type": "RuntimeError", "message": "sort exploded"},
+        )
+
+        result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
+
+        assert result.exit_code == 1
+        assert "sort exploded" in result.stdout
+        assert "No files were processed." not in result.stdout
+
+    def test_cli_update_exits_nonzero_for_failed_platform_job(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[],
+            status="failed",
+            error={"type": "RuntimeError", "message": "update exploded"},
+        )
+
+        result = runner.invoke(app, ["update", str(tmp_path / "library")])
+
+        assert result.exit_code == 1
+        assert "update exploded" in result.stdout
+        assert "No files were updated." not in result.stdout
+
+    def test_sort_passes_flags_to_engine_and_shows_result_table(self, monkeypatch, tmp_path: Path):
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
+        _patch_batch_facade(monkeypatch, movies=[_movie_data()], capture=captured)
         source = tmp_path / "source"
         dest = tmp_path / "dest"
 
@@ -552,14 +802,14 @@ class TestCliSortAndScrapers:
         )
 
         assert result.exit_code == 0
-        assert captured == {
-            "source": source,
-            "dest": dest,
-            "recurse": True,
-            "force": True,
-            "preview": True,
-            "cleanup_empty_source_dir": False,
-        }
+        assert captured["origin"] == "cli"
+        request = captured["request"]
+        assert request.source_path == str(source)
+        assert request.destination_path == str(dest)
+        assert request.recurse is True
+        assert request.force is True
+        assert request.preview is True
+        assert request.cleanup_empty_source_dir is False
         assert "Sorted 1 files" in result.stdout
         assert "ABP-420" in result.stdout
 
@@ -568,34 +818,10 @@ class TestCliSortAndScrapers:
     ) -> None:
         captured: dict[str, object] = {}
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
-                return [_movie_data()]
-
         cfg = JavsConfig()
         cfg.sort.cleanup_empty_source_dir = False
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(monkeypatch, movies=[_movie_data()], capture=captured)
         result = runner.invoke(
             app,
             [
@@ -607,41 +833,18 @@ class TestCliSortAndScrapers:
         )
 
         assert result.exit_code == 0
-        assert captured == {"cleanup_empty_source_dir": True}
+        assert captured["origin"] == "cli"
+        assert captured["request"].cleanup_empty_source_dir is True
 
     def test_sort_explicitly_disables_cleanup_for_one_run(
         self, monkeypatch, tmp_path: Path
     ) -> None:
         captured: dict[str, object] = {}
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
-                return [_movie_data()]
-
         cfg = JavsConfig()
         cfg.sort.cleanup_empty_source_dir = True
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(monkeypatch, movies=[_movie_data()], capture=captured)
         result = runner.invoke(
             app,
             [
@@ -653,76 +856,41 @@ class TestCliSortAndScrapers:
         )
 
         assert result.exit_code == 0
-        assert captured == {"cleanup_empty_source_dir": False}
+        assert captured["origin"] == "cli"
+        assert captured["request"].cleanup_empty_source_dir is False
 
     def test_sort_falls_back_to_config_cleanup_setting_when_flag_omitted(
         self, monkeypatch, tmp_path: Path
     ) -> None:
         captured: dict[str, object] = {}
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                captured["cleanup_empty_source_dir"] = cleanup_empty_source_dir
-                return [_movie_data()]
-
         cfg = JavsConfig()
         cfg.sort.cleanup_empty_source_dir = True
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: cfg)
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(monkeypatch, movies=[_movie_data()], capture=captured)
         result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
 
         assert result.exit_code == 0
-        assert captured == {"cleanup_empty_source_dir": True}
+        assert captured["origin"] == "cli"
+        assert captured["request"].cleanup_empty_source_dir is True
 
     def test_sort_prints_run_summary(self, monkeypatch, tmp_path: Path) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {"kind": "proxy_auth_failed", "scraper": "dmm"},
-                    {"kind": "cloudflare_blocked", "scraper": "javlibrary"},
-                ]
-                self.last_run_summary = {
-                    "total": 5,
-                    "processed": 1,
-                    "skipped": 3,
-                    "failed": 1,
-                    "warnings": 2,
-                }
-                self.last_preview_plan = []
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                return [_movie_data()]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            diagnostics=[
+                {"kind": "proxy_auth_failed", "scraper": "dmm"},
+                {"kind": "cloudflare_blocked", "scraper": "javlibrary"},
+            ],
+            summary={
+                "total": 5,
+                "processed": 1,
+                "skipped": 3,
+                "failed": 1,
+                "warnings": 2,
+            },
+        )
 
         result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
 
@@ -733,38 +901,18 @@ class TestCliSortAndScrapers:
         source = tmp_path / "source" / "ABP-420.mp4"
         target = tmp_path / "dest" / "ABP-420" / "ABP-420.mp4"
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
-                self.last_preview_plan = [
-                    {
-                        "source": str(source),
-                        "id": "ABP-420",
-                        "target": str(target),
-                    }
-                ]
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                return [_movie_data()]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            preview_plan=[
+                {
+                    "source": str(source),
+                    "id": "ABP-420",
+                    "target": str(target),
+                }
+            ],
+        )
 
         result = runner.invoke(
             app,
@@ -785,44 +933,8 @@ class TestCliSortAndScrapers:
     ) -> None:
         captured: dict[str, object] = {}
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
-                self.last_preview_plan = []
-
-            async def update_path(
-                self,
-                source: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                scraper_names=None,
-                refresh_images: bool = False,
-                refresh_trailer: bool = False,
-            ):
-                captured.update(
-                    {
-                        "source": source,
-                        "recurse": recurse,
-                        "force": force,
-                        "preview": preview,
-                        "scraper_names": scraper_names,
-                        "refresh_images": refresh_images,
-                        "refresh_trailer": refresh_trailer,
-                    }
-                )
-                return [_movie_data()]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(monkeypatch, movies=[_movie_data()], capture=captured)
         library = tmp_path / "library"
 
         result = runner.invoke(
@@ -841,45 +953,32 @@ class TestCliSortAndScrapers:
         )
 
         assert result.exit_code == 0
-        assert captured == {
-            "source": library,
-            "recurse": True,
-            "force": True,
-            "preview": True,
-            "scraper_names": ["javlibrary", "dmm"],
-            "refresh_images": True,
-            "refresh_trailer": True,
-        }
+        assert captured["origin"] == "cli"
+        request = captured["request"]
+        assert request.source_path == str(library)
+        assert request.recurse is True
+        assert request.force is True
+        assert request.preview is True
+        assert request.scraper_names == ["javlibrary", "dmm"]
+        assert request.refresh_images is True
+        assert request.refresh_trailer is True
         assert "Updated 1 files" in result.stdout
         assert "ABP-420" in result.stdout
 
     def test_update_prints_run_summary(self, monkeypatch, tmp_path: Path) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [{"kind": "proxy_unreachable", "scraper": "dmm"}]
-                self.last_run_summary = {
-                    "total": 4,
-                    "processed": 2,
-                    "skipped": 1,
-                    "failed": 1,
-                    "warnings": 1,
-                }
-
-            async def update_path(
-                self,
-                source: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                scraper_names=None,
-                refresh_images: bool = False,
-                refresh_trailer: bool = False,
-            ):
-                return [_movie_data(), _movie_data().model_copy(update={"id": "SSIS-001"})]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data(), _movie_data().model_copy(update={"id": "SSIS-001"})],
+            diagnostics=[{"kind": "proxy_unreachable", "scraper": "dmm"}],
+            summary={
+                "total": 4,
+                "processed": 2,
+                "skipped": 1,
+                "failed": 1,
+                "warnings": 1,
+            },
+        )
 
         result = runner.invoke(app, ["update", str(tmp_path / "library")])
 
@@ -890,39 +989,18 @@ class TestCliSortAndScrapers:
         source = tmp_path / "library" / "ABP-420" / "ABP-420.mp4"
         target = tmp_path / "library" / "ABP-420" / "ABP-420.nfo"
 
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = []
-                self.last_run_summary = {
-                    "total": 1,
-                    "processed": 1,
-                    "skipped": 0,
-                    "failed": 0,
-                    "warnings": 0,
-                }
-                self.last_preview_plan = [
-                    {
-                        "source": str(source),
-                        "id": "ABP-420",
-                        "target": str(target),
-                    }
-                ]
-
-            async def update_path(
-                self,
-                source: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                scraper_names=None,
-                refresh_images: bool = False,
-                refresh_trailer: bool = False,
-            ):
-                return [_movie_data()]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            preview_plan=[
+                {
+                    "source": str(source),
+                    "id": "ABP-420",
+                    "target": str(target),
+                }
+            ],
+        )
 
         result = runner.invoke(app, ["update", str(tmp_path / "library"), "--preview"])
 
@@ -950,29 +1028,15 @@ class TestCliSortAndScrapers:
         assert "javlibrary" in result.stdout
 
     def test_sort_prints_proxy_failure_summary(self, monkeypatch, tmp_path: Path) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {"kind": "proxy_auth_failed", "scraper": "dmm"},
-                    {"kind": "cloudflare_blocked", "scraper": "javlibrary"},
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                return [_movie_data()]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            diagnostics=[
+                {"kind": "proxy_auth_failed", "scraper": "dmm"},
+                {"kind": "cloudflare_blocked", "scraper": "javlibrary"},
+            ],
+        )
         source = tmp_path / "source"
         dest = tmp_path / "dest"
 
@@ -986,29 +1050,15 @@ class TestCliSortAndScrapers:
         assert "Next: run `javs config javlibrary-cookie`." in result.stdout
 
     def test_sort_deduplicates_repeated_diagnostic_hints(self, monkeypatch, tmp_path: Path) -> None:
-        class DummyEngine:
-            def __init__(self, cfg, cloudflare_recovery_handler=None) -> None:
-                self.cfg = cfg
-                self.last_run_diagnostics = [
-                    {"kind": "proxy_auth_failed", "scraper": "dmm"},
-                    {"kind": "proxy_unreachable", "scraper": "mgstageja"},
-                ]
-                self.last_run_summary = {}
-                self.last_preview_plan = []
-
-            async def sort_path(
-                self,
-                source: Path,
-                dest: Path,
-                recurse: bool,
-                force: bool,
-                preview: bool,
-                cleanup_empty_source_dir: bool = False,
-            ):
-                return [_movie_data()]
-
         monkeypatch.setattr(config_module, "load_config", lambda _path=None: JavsConfig())
-        monkeypatch.setattr(engine_module, "JavsEngine", DummyEngine)
+        _patch_batch_facade(
+            monkeypatch,
+            movies=[_movie_data()],
+            diagnostics=[
+                {"kind": "proxy_auth_failed", "scraper": "dmm"},
+                {"kind": "proxy_unreachable", "scraper": "mgstageja"},
+            ],
+        )
 
         result = runner.invoke(app, ["sort", str(tmp_path / "source"), str(tmp_path / "dest")])
 
