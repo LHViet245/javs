@@ -26,10 +26,12 @@
 - `javs/database/repositories/events.py`
 - `javs/database/repositories/settings_audit.py`
 - `javs/jobs/events.py`
+- `javs/jobs/runner.py`
 - `javs/api/app.py`
 - `javs/api/routes/__init__.py`
 - `javs/api/routes/jobs.py`
 - `javs/api/routes/settings.py`
+- `javs/cli.py`
 - `tests/test_application_platform.py`
 - `tests/test_database_platform.py`
 - `tests/test_api_platform.py`
@@ -45,9 +47,11 @@
 - `javs/database/repositories/events.py`: event history reads and helper methods needed by detail/realtime layers
 - `javs/database/repositories/settings_audit.py`: load one audit row for a `save_settings` job
 - `javs/jobs/events.py`: add shared in-process event hub and publish helpers
+- `javs/jobs/runner.py`: accept and pass through the shared live event hub during real job execution
 - `javs/api/routes/jobs.py`: HTTP handlers for `GET /jobs`, `GET /jobs/{id}`, and SSE entrypoint helpers
 - `javs/api/routes/realtime.py`: WebSocket subscribe/fanout helpers
 - `javs/api/app.py`: route HTTP and WebSocket scopes to the thin handlers
+- `javs/cli.py`: bootstrap the platform facade with the same hub used by real job runs
 - `tests/test_database_platform.py`: repository-level coverage for list/detail/cursor/search/event queries
 - `tests/test_application_platform.py`: facade-level coverage for read contracts and realtime hub behavior
 - `tests/test_api_platform.py`: API route coverage for list/detail/settings/SSE/WebSocket
@@ -118,6 +122,7 @@ Also add explicit typed models for:
 
 - `JobListPage`
 - `SettingsView`
+- `JobEventSummary`
 - a normalized summary payload model or helper that guarantees stable `total`, `processed`, `skipped`, `failed`, and `warnings` keys for job list consumers
 
 Update `javs/application/__init__.py` so the new read contracts are importable through the same package surface already used by tests and API adapters.
@@ -372,6 +377,8 @@ git commit -m "feat: add history read api routes"
 
 **Files:**
 - Modify: `javs/jobs/events.py`
+- Modify: `javs/jobs/runner.py`
+- Modify: `javs/cli.py`
 - Modify: `tests/test_application_platform.py`
 
 - [ ] **Step 1: Write the failing event hub tests**
@@ -392,6 +399,12 @@ async def test_platform_job_events_publish_to_hub_after_persistence(fake_event_r
     await events.emit("job.started", payload={"kind": "find"})
     live_event = await fake_event_repos.subscriber.get()
     assert live_event.job_id == "job-1"
+
+
+async def test_platform_runner_publishes_real_job_events_to_shared_hub(platform_runtime) -> None:
+    job_id = await platform_runtime.facade.find_movie(FindMovieRequest(movie_id="ABP-420"), origin="cli")
+    live_event = await platform_runtime.hub_subscriber.get()
+    assert live_event.job_id == job_id.job.id
 ```
 
 - [ ] **Step 2: Run the targeted tests to verify they fail**
@@ -413,6 +426,11 @@ class EventHub:
 ```
 
 Wire the existing persistence path so `PlatformJobEvents.emit(...)` publishes to the hub immediately after persisting a stored event row. Update `PlatformJobRunner` construction or its collaborators so real job execution paths can inject and reuse one shared hub.
+
+Make the integration points explicit:
+
+- `PlatformJobRunner` should accept the shared hub and pass it into per-job event helpers
+- the CLI/runtime bootstrap path should construct one shared hub and thread it into the facade/runner stack used for real command execution
 
 - [ ] **Step 4: Run the targeted tests to verify they pass**
 
