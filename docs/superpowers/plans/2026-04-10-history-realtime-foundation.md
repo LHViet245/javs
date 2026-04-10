@@ -69,6 +69,11 @@ def test_job_list_query_defaults_limit_and_normalizes_filters() -> None:
     assert query.cursor is None
 
 
+def test_job_list_page_uses_typed_summary_items() -> None:
+    page = JobListPage(items=[], next_cursor=None)
+    assert page.items == []
+
+
 def test_job_detail_allows_optional_settings_audit() -> None:
     detail = JobDetail(job=JobSummary(id="job-1", kind="sort", status="completed", origin="cli"))
     assert detail.settings_audit is None
@@ -99,6 +104,12 @@ class RealtimeEvent(BaseModel):
     job_id: str
     event: JobEventSummary
 ```
+
+Also add explicit typed models for:
+
+- `JobListPage`
+- `SettingsView`
+- a normalized summary payload model or helper that guarantees stable `total`, `processed`, `skipped`, `failed`, and `warnings` keys for job list consumers
 
 Extend `JobDetail` to include:
 
@@ -158,9 +169,12 @@ Add:
 - cursor encoding and decoding helpers
 - `list_jobs_page(query: JobListQuery) -> JobListPageRecord`
 - stable ordering by `created_at DESC, id DESC`
+- `limit <= 100` enforcement
+- cursor rejection when the filter/search envelope does not match the query that produced it
 - unique parent job results under `job_items` search matches
 - `list_for_job(job_id)` in events repository
 - `get_for_job(job_id)` in settings audit repository
+- search coverage for `jobs.id`, `job_items.movie_id`, `job_items.source_path`, and `job_items.dest_path`
 
 Keep SQL focused and explicit:
 
@@ -267,6 +281,8 @@ Add route tests for:
 - `GET /jobs/{id}`
 - `GET /settings`
 - `404` detail behavior for unknown job ids
+- `500` settings behavior when config loading or validation fails
+- max page size and search coverage for `job_id` and `dest_path`
 
 ```python
 @pytest.mark.asyncio
@@ -301,7 +317,12 @@ def handle_get_job_detail(facade, job_id: str) -> JobDetail | None:
     return facade.get_job(job_id)
 ```
 
-Extend `JavsAPIApp` request routing so `/jobs/{id}` and `/jobs` both reach these handlers and preserve the existing error translation style.
+Extend `JavsAPIApp` request routing so:
+
+- `/jobs/{id}` and `/jobs` both reach these handlers
+- `/settings` continues to use the shared facade read path with typed response serialization
+- invalid config or validation failures in `GET /settings` produce the spec-required `500`
+- list responses serialize typed `JobListPage` data rather than raw repository dicts
 
 - [ ] **Step 4: Run API tests to verify they pass**
 
