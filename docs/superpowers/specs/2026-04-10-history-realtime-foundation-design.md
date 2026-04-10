@@ -133,6 +133,12 @@ Query parameters:
 - `origin`
 - `q`
 
+Pagination rules:
+
+- default `limit` should be `20`
+- maximum `limit` should be `100`
+- a cursor is only valid when reused with the same filter and search parameters that produced it
+
 Response shape:
 
 ```json
@@ -217,6 +223,12 @@ Rules:
 - `events` should be newest-last so detail views can render a natural timeline
 - `items` should be stable and deterministic for the same stored job state
 
+Error behavior:
+
+- return `404` when the requested job id does not exist
+- return `200` with empty `items` and `events` arrays when the job exists but has no item or event rows
+- return `200` with `settings_audit: null` for non-`save_settings` jobs or for `save_settings` jobs that produced no audit row
+
 ### `GET /settings`
 
 Purpose:
@@ -235,6 +247,11 @@ Response shape:
 ```
 
 This endpoint reads current settings from the YAML-backed configuration path, not from a separate SQLite settings table.
+
+Error behavior:
+
+- return `500` if the active config file cannot be loaded or validated into the current settings view model
+- do not silently fall back to a stale SQLite snapshot for live settings reads
 
 ### `GET /events/stream`
 
@@ -276,7 +293,20 @@ The WebSocket route may accept subscription messages such as:
 }
 ```
 
-The transport may differ, but the logical event model must match the SSE stream.
+Global subscription may be represented as:
+
+```json
+{
+  "action": "subscribe"
+}
+```
+
+Rules:
+
+- omitting `job_id` subscribes the client to the global stream
+- providing `job_id` subscribes the client to one job-scoped stream
+- the transport may differ, but the logical event model must match the SSE stream
+- server acknowledgements, if present, should remain transport-specific metadata and must not change the shared live event payload
 
 ## Query Design
 
