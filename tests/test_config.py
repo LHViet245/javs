@@ -351,7 +351,7 @@ class TestJavsConfig:
             "Original,Replacement"
         )
         assert result.thumb_csv_path.read_text(encoding="utf-8-sig").startswith(
-            "FullName,JapaneseName,ThumbUrl"
+            "CanonicalKey,FullName,JapaneseName,ThumbUrl,Aliases"
         )
 
         loaded = load_config(config_path)
