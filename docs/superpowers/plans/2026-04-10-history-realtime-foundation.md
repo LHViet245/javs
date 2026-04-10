@@ -181,6 +181,24 @@ def test_jobs_repository_search_matches_job_item_paths_and_movie_ids(tmp_path: P
     job_id = seed_job_with_item(context, source_path="/incoming/ABP-420.mkv", movie_id="ABP-420")
     page = context.jobs.list_jobs_page(JobListQuery(q="ABP-420"))
     assert [item["id"] for item in page.items] == [job_id]
+
+
+def test_jobs_repository_filters_by_status_and_origin(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="find", status="completed", origin="cli")
+    target = seed_job(context.jobs, kind="sort", status="running", origin="api")
+    page = context.jobs.list_jobs_page(JobListQuery(status="running", origin="api"))
+    assert [item["id"] for item in page.items] == [target]
+
+
+def test_jobs_repository_rejects_cursor_when_query_envelope_changes(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    with pytest.raises(ValueError, match="cursor"):
+        context.jobs.list_jobs_page(
+            JobListQuery(limit=1, cursor=first_page.next_cursor, status="completed")
+        )
 ```
 
 - [ ] **Step 2: Run repository tests to verify they fail**
@@ -421,7 +439,7 @@ class EventHub:
     def subscribe(self) -> asyncio.Queue[RealtimeEvent]:
         ...
 
-    async def publish(self, event: RealtimeEvent) -> None:
+    def publish_nowait(self, event: RealtimeEvent) -> None:
         ...
 ```
 
@@ -431,6 +449,9 @@ Make the integration points explicit:
 
 - `PlatformJobRunner` should accept the shared hub and pass it into per-job event helpers
 - the CLI/runtime bootstrap path should construct one shared hub and thread it into the facade/runner stack used for real command execution
+- `PlatformJobEvents.emit(...)` should remain synchronous; do not convert the existing event writer path to an async signature just to support live fanout
+- hub fanout should happen through a synchronous helper such as `publish_nowait(...)` so existing sort/update/find executor code paths keep their current call shape
+- no changes are planned for `javs/jobs/executor.py`, `javs/application/sort_jobs.py`, or `javs/application/update_jobs.py` unless implementation discovers an emit site that bypasses the runner-owned `PlatformJobEvents`
 
 - [ ] **Step 4: Run the targeted tests to verify they pass**
 
