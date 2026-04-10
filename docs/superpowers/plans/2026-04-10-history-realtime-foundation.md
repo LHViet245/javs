@@ -18,6 +18,7 @@
 
 ### Existing files to modify
 
+- `javs/application/__init__.py`
 - `javs/application/history.py`
 - `javs/application/models.py`
 - `javs/application/facade.py`
@@ -54,6 +55,7 @@
 ## Task 1: Add Typed History Query, Detail, And Realtime Models
 
 **Files:**
+- Modify: `javs/application/__init__.py`
 - Modify: `javs/application/history.py`
 - Modify: `javs/application/models.py`
 - Test: `tests/test_application_platform.py`
@@ -72,6 +74,13 @@ def test_job_list_query_defaults_limit_and_normalizes_filters() -> None:
 def test_job_list_page_uses_typed_summary_items() -> None:
     page = JobListPage(items=[], next_cursor=None)
     assert page.items == []
+
+
+def test_history_contracts_are_reexported_from_application_package() -> None:
+    from javs.application import JobListPage, JobListQuery, RealtimeEvent
+    assert JobListQuery is not None
+    assert JobListPage is not None
+    assert RealtimeEvent is not None
 
 
 def test_job_detail_allows_optional_settings_audit() -> None:
@@ -111,6 +120,8 @@ Also add explicit typed models for:
 - `SettingsView`
 - a normalized summary payload model or helper that guarantees stable `total`, `processed`, `skipped`, `failed`, and `warnings` keys for job list consumers
 
+Update `javs/application/__init__.py` so the new read contracts are importable through the same package surface already used by tests and API adapters.
+
 Extend `JobDetail` to include:
 
 - `events`
@@ -148,6 +159,16 @@ def test_jobs_repository_lists_filtered_jobs_with_cursor(tmp_path: Path) -> None
     page = repo.list_jobs_page(JobListQuery(limit=1))
     assert [item["id"] for item in page.items] == [second_id]
     assert page.next_cursor is not None
+
+
+def test_jobs_repository_cursor_is_stable_for_created_at_desc_id_desc_order(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    newest = seed_job(context.jobs, kind="sort", created_at="2026-04-10T10:00:00Z", job_id="job-b")
+    older_same_time = seed_job(context.jobs, kind="sort", created_at="2026-04-10T10:00:00Z", job_id="job-a")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1))
+    second_page = context.jobs.list_jobs_page(JobListQuery(limit=1, cursor=first_page.next_cursor))
+    assert [item["id"] for item in first_page.items] == [newest]
+    assert [item["id"] for item in second_page.items] == [older_same_time]
 
 
 def test_jobs_repository_search_matches_job_item_paths_and_movie_ids(tmp_path: Path) -> None:
@@ -283,6 +304,8 @@ Add route tests for:
 - `404` detail behavior for unknown job ids
 - `500` settings behavior when config loading or validation fails
 - max page size and search coverage for `job_id` and `dest_path`
+- exact list-item `summary` counters in `GET /jobs`
+- exact detail `result`, `items`, and empty-array behavior in `GET /jobs/{id}`
 
 ```python
 @pytest.mark.asyncio
@@ -290,6 +313,13 @@ async def test_get_jobs_returns_filtered_page(api_app) -> None:
     response = await client.get("/jobs?kind=sort&limit=1")
     assert response.status_code == 200
     assert response.json()["items"][0]["kind"] == "sort"
+    assert response.json()["items"][0]["summary"] == {
+        "total": 1,
+        "processed": 1,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -297,6 +327,8 @@ async def test_get_job_detail_returns_events_and_settings_audit(api_app) -> None
     response = await client.get("/jobs/job-save-1")
     assert response.status_code == 200
     assert response.json()["settings_audit"] is not None
+    assert response.json()["items"] == []
+    assert response.json()["events"] == []
 ```
 
 - [ ] **Step 2: Run API tests to verify they fail**
@@ -353,6 +385,13 @@ async def test_event_hub_broadcasts_live_events_to_multiple_subscribers() -> Non
     second = hub.subscribe()
     await hub.publish(RealtimeEvent(type="job.updated", job_id="job-1", event=event))
     assert await first.get() == await second.get()
+
+
+async def test_platform_job_events_publish_to_hub_after_persistence(fake_event_repos) -> None:
+    events = PlatformJobEvents(repository=fake_event_repos.repository, job_id="job-1", hub=fake_event_repos.hub)
+    await events.emit("job.started", payload={"kind": "find"})
+    live_event = await fake_event_repos.subscriber.get()
+    assert live_event.job_id == "job-1"
 ```
 
 - [ ] **Step 2: Run the targeted tests to verify they fail**
@@ -373,7 +412,7 @@ class EventHub:
         ...
 ```
 
-Add a publish helper near job event persistence so future transports use one source.
+Wire the existing persistence path so `PlatformJobEvents.emit(...)` publishes to the hub immediately after persisting a stored event row. Update `PlatformJobRunner` construction or its collaborators so real job execution paths can inject and reuse one shared hub.
 
 - [ ] **Step 4: Run the targeted tests to verify they pass**
 
