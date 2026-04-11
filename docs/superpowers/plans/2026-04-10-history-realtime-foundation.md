@@ -35,6 +35,7 @@
 - `tests/test_application_platform.py`
 - `tests/test_database_platform.py`
 - `tests/test_api_platform.py`
+- `tests/conftest.py`
 - `docs/commands.md`
 - `docs/contributor-guide.md`
 
@@ -50,11 +51,12 @@
 - `javs/jobs/runner.py`: accept and pass through the shared live event hub during real job execution
 - `javs/api/routes/jobs.py`: HTTP handlers for `GET /jobs`, `GET /jobs/{id}`, and SSE entrypoint helpers
 - `javs/api/routes/realtime.py`: WebSocket subscribe/fanout helpers
-- `javs/api/app.py`: route HTTP and WebSocket scopes to the thin handlers
+- `javs/api/app.py`: own the API-visible hub reference and route HTTP/WebSocket scopes to thin handlers using that same shared instance
 - `javs/cli.py`: bootstrap the platform facade with the same hub used by real job runs
 - `tests/test_database_platform.py`: repository-level coverage for list/detail/cursor/search/event queries
 - `tests/test_application_platform.py`: facade-level coverage for read contracts and realtime hub behavior
 - `tests/test_api_platform.py`: API route coverage for list/detail/settings/SSE/WebSocket
+- `tests/conftest.py`: shared fixtures and helpers for runtime, app, hub, SSE publish, and WebSocket session setup
 
 ## Task 1: Add Typed History Query, Detail, And Realtime Models
 
@@ -404,6 +406,7 @@ git commit -m "feat: add history read api routes"
 - Modify: `javs/jobs/events.py`
 - Modify: `javs/jobs/runner.py`
 - Modify: `javs/cli.py`
+- Modify: `tests/conftest.py`
 - Modify: `tests/test_application_platform.py`
 
 - [ ] **Step 1: Write the failing event hub tests**
@@ -456,9 +459,18 @@ Make the integration points explicit:
 
 - `PlatformJobRunner` should accept the shared hub and pass it into per-job event helpers
 - the CLI/runtime bootstrap path should construct one shared hub and thread it into the facade/runner stack used for real command execution
+- `create_app(...)` should receive that same shared hub instance instead of constructing a private one
+- `JavsAPIApp` should keep a reference to the shared hub it exposes to SSE and WebSocket handlers
 - `PlatformJobEvents.emit(...)` should remain synchronous; do not convert the existing event writer path to an async signature just to support live fanout
 - hub fanout should happen through a synchronous helper such as `publish_nowait(...)` so existing sort/update/find executor code paths keep their current call shape
 - no changes are planned for `javs/jobs/executor.py`, `javs/application/sort_jobs.py`, or `javs/application/update_jobs.py` unless implementation discovers an emit site that bypasses the runner-owned `PlatformJobEvents`
+
+Use `tests/conftest.py` to define and own shared realtime fixtures/helpers such as:
+
+- `platform_runtime`
+- `api_app_with_hub`
+- `fake_event_repos`
+- `publish_test_event`
 
 - [ ] **Step 4: Run the targeted tests to verify they pass**
 
@@ -477,6 +489,7 @@ git commit -m "feat: add shared platform event hub"
 **Files:**
 - Modify: `javs/api/routes/jobs.py`
 - Modify: `javs/api/app.py`
+- Modify: `tests/conftest.py`
 - Modify: `tests/test_api_platform.py`
 
 - [ ] **Step 1: Write the failing SSE tests**
@@ -534,6 +547,7 @@ git commit -m "feat: add platform sse event stream"
 - Create: `javs/api/routes/realtime.py`
 - Modify: `javs/api/routes/__init__.py`
 - Modify: `javs/api/app.py`
+- Modify: `tests/conftest.py`
 - Modify: `tests/test_api_platform.py`
 
 - [ ] **Step 1: Write the failing WebSocket tests**
@@ -543,6 +557,8 @@ Add tests for:
 - global subscribe with no `job_id`
 - job-scoped subscribe with `job_id`
 - shared event payload shape matching SSE semantics
+
+Use a reusable WebSocket test helper from `tests/conftest.py`, backed by one explicit ASGI-capable test utility such as `asgiref.testing.ApplicationCommunicator`, instead of inventing per-test transport code or relying on `httpx` for WebSocket coverage.
 
 ```python
 @pytest.mark.asyncio
