@@ -4,7 +4,7 @@
 
 **Goal:** Add the first history read path and realtime backend foundation for JavS so a future dashboard can list jobs, inspect job detail, read active settings, and receive live job updates over both SSE and WebSocket.
 
-**Architecture:** Extend the existing platform foundation rather than reopening execution flows. Add typed read models in `javs/application/history.py`, extend SQLite repositories with cursor-based list/detail queries, wire `PlatformFacade` read methods, then add thin API adapters and a shared in-process event hub that fans out one logical event model to SSE and WebSocket.
+**Architecture:** Extend the existing platform foundation rather than reopening execution flows. Add typed read models and canonical read use cases in `javs/application/history.py`, extend SQLite repositories with cursor-based list/detail queries, wire `PlatformFacade` read methods, then add thin API adapters and a shared in-process event hub that fans out one logical event model to SSE and WebSocket.
 
 **Tech Stack:** Python 3, asyncio, sqlite3, Pydantic, ASGI, httpx, pytest, Ruff
 
@@ -40,7 +40,7 @@
 
 ### Responsibilities
 
-- `javs/application/history.py`: shared query models, detail/page models, realtime event model, and mapper helpers
+- `javs/application/history.py`: shared query models, detail/page models, realtime event model, mapper helpers, and canonical read use cases
 - `javs/application/models.py`: expose history-facing response types from the main application contract surface
 - `javs/application/facade.py`: implement `list_jobs()`, `get_job()`, and keep `get_settings()` aligned with read contracts
 - `javs/database/repositories/jobs.py`: cursor pagination, filtering, search, and job detail query helpers
@@ -124,6 +124,12 @@ Also add explicit typed models for:
 - `SettingsView`
 - `JobEventSummary`
 - a normalized summary payload model or helper that guarantees stable `total`, `processed`, `skipped`, `failed`, and `warnings` keys for job list consumers
+
+Add canonical read entrypoints in `javs/application/history.py` so facade and API code do not assemble history payloads themselves:
+
+- `list_jobs(...)`
+- `get_job_detail(...)`
+- `get_settings_view(...)`
 
 Update `javs/application/__init__.py` so the new read contracts are importable through the same package surface already used by tests and API adapters.
 
@@ -282,8 +288,8 @@ Expected: FAIL because the facade methods still raise `NotImplementedError`.
 Update `PlatformFacade` to:
 
 - accept history query objects
-- call repository-backed history helpers
-- map rows through `build_job_summary()`, `build_job_detail()`, and new event/audit mappers
+- delegate to the canonical read use cases in `javs/application/history.py`
+- keep facade methods thin rather than rebuilding history payloads inline
 
 Keep method shapes narrow:
 
@@ -377,6 +383,7 @@ Extend `JavsAPIApp` request routing so:
 - `/jobs/{id}` and `/jobs` both reach these handlers
 - `/settings` continues to use the shared facade read path with typed response serialization
 - invalid config or validation failures in `GET /settings` produce the spec-required `500`
+- `GET /settings` uses a read-specific exception branch instead of the existing global `SettingsValidationError -> 409` mapping used by write flows
 - list responses serialize typed `JobListPage` data rather than raw repository dicts
 
 - [ ] **Step 4: Run API tests to verify they pass**
