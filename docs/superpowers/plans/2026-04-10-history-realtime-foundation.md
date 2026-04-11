@@ -20,7 +20,6 @@
 
 - `javs/application/__init__.py`
 - `javs/application/history.py`
-- `javs/application/models.py`
 - `javs/application/facade.py`
 - `javs/database/repositories/jobs.py`
 - `javs/database/repositories/events.py`
@@ -42,7 +41,6 @@
 ### Responsibilities
 
 - `javs/application/history.py`: shared query models, detail/page models, realtime event model, mapper helpers, and canonical read use cases
-- `javs/application/models.py`: expose history-facing response types from the main application contract surface
 - `javs/application/facade.py`: implement `list_jobs()`, `get_job()`, and keep `get_settings()` aligned with read contracts
 - `javs/database/repositories/jobs.py`: cursor pagination, filtering, search, and job detail query helpers
 - `javs/database/repositories/events.py`: event history reads and helper methods needed by detail/realtime layers
@@ -63,7 +61,6 @@
 **Files:**
 - Modify: `javs/application/__init__.py`
 - Modify: `javs/application/history.py`
-- Modify: `javs/application/models.py`
 - Test: `tests/test_application_platform.py`
 
 - [ ] **Step 1: Write the failing application model tests**
@@ -102,7 +99,7 @@ Expected: FAIL because the new contracts do not exist yet.
 
 - [ ] **Step 3: Add the minimal shared history contracts**
 
-Implement typed models in `javs/application/history.py` and re-export as needed from `javs/application/models.py`:
+Implement typed models in `javs/application/history.py`:
 
 ```python
 class JobListQuery(BaseModel):
@@ -133,6 +130,12 @@ Add canonical read entrypoints in `javs/application/history.py` so facade and AP
 - `get_job_detail(...)`
 - `get_settings_view(...)`
 
+Keep the dependency direction explicit:
+
+- `javs/application/history.py` owns the history/realtime contracts
+- `javs/application/models.py` stays focused on the pre-existing command/write-side models
+- `javs/application/__init__.py` may re-export history contracts for external consumers, but `history.py` must not depend on those re-exports
+
 Update `javs/application/__init__.py` so the new read contracts are importable through the same package surface already used by tests and API adapters.
 
 Extend `JobDetail` to include:
@@ -148,7 +151,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add javs/application/history.py javs/application/models.py tests/test_application_platform.py
+git add javs/application/__init__.py javs/application/history.py tests/test_application_platform.py
 git commit -m "feat: add history and realtime application contracts"
 ```
 
@@ -558,7 +561,7 @@ Add tests for:
 - job-scoped subscribe with `job_id`
 - shared event payload shape matching SSE semantics
 
-Use a reusable WebSocket test helper from `tests/conftest.py`, backed by one explicit ASGI-capable test utility such as `asgiref.testing.ApplicationCommunicator`, instead of inventing per-test transport code or relying on `httpx` for WebSocket coverage.
+Use a reusable WebSocket test helper from `tests/conftest.py`, implemented in-repo against the ASGI interface already under test, instead of inventing per-test transport code or adding a new dependency just for WebSocket coverage.
 
 ```python
 @pytest.mark.asyncio
