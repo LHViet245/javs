@@ -39,3 +39,13 @@ class JobEventsRepository:
             (job_id,),
         ).fetchall()
         return [row_to_dict(row, json_fields=JOB_EVENT_JSON_FIELDS) for row in rows]
+
+    def get_for_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return the newest event for a job, or None when no match exists."""
+        row = self.connection.execute(
+            "SELECT * FROM job_events WHERE job_id = ? ORDER BY rowid DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row_to_dict(row, json_fields=JOB_EVENT_JSON_FIELDS)

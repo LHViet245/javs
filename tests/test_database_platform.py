@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 from javs.database.connection import open_database
 from javs.database.migrations import apply_migrations, initialize_database
@@ -16,6 +19,28 @@ from javs.database.schema import (
     INITIAL_SCHEMA_STATEMENTS,
     INITIAL_SCHEMA_VERSION,
 )
+
+
+@dataclass(slots=True)
+class JobListQuery:
+    """Test-only stand-in for the history list query contract."""
+
+    limit: int | None = None
+    cursor: str | None = None
+    kind: str | None = None
+    status: str | None = None
+    origin: str | None = None
+    q: str | None = None
+
+
+@dataclass(slots=True)
+class HistoryContext:
+    """Grouped repositories for cursor and detail history tests."""
+
+    jobs: JobsRepository
+    items: JobItemsRepository
+    events: JobEventsRepository
+    settings_audit: SettingsAuditRepository
 
 
 def fetch_table_names(path: Path) -> set[str]:
@@ -50,7 +75,7 @@ def test_initialize_platform_schema_records_migration_version(tmp_path: Path) ->
     with open_database(db_path) as connection:
         rows = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall()
+    ).fetchall()
 
     assert [row["version"] for row in rows] == [
         "0001_platform_foundation",
@@ -134,6 +159,152 @@ def test_job_repository_can_create_get_list_and_update_jobs(tmp_path: Path) -> N
     assert [job["id"] for job in all_jobs] == [second_job_id, first_job_id]
     assert all_jobs[0]["status"] == "failed"
     assert all_jobs[0]["error_json"] == {"message": "boom"}
+
+
+def make_job_repo(tmp_path: Path) -> JobsRepository:
+    """Return a jobs repository backed by a fresh platform database."""
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    return JobsRepository(connection)
+
+
+def make_history_context(tmp_path: Path) -> HistoryContext:
+    """Return repositories backed by a fresh shared platform database."""
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    return HistoryContext(
+        jobs=JobsRepository(connection),
+        items=JobItemsRepository(connection),
+        events=JobEventsRepository(connection),
+        settings_audit=SettingsAuditRepository(connection),
+    )
+
+
+def seed_job(
+    repo: JobsRepository,
+    *,
+    kind: str,
+    status: str = "pending",
+    origin: str = "cli",
+    created_at: str | None = None,
+    job_id: str | None = None,
+    request_json: object | None = None,
+) -> str:
+    """Insert a job row with optional deterministic ID and timestamp."""
+    import uuid
+
+    active_job_id = job_id or str(uuid.uuid4())
+    if created_at is None:
+        repo.connection.execute(
+            """
+            INSERT INTO jobs (id, kind, status, origin, request_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (active_job_id, kind, status, origin, request_json),
+        )
+    else:
+        repo.connection.execute(
+            """
+            INSERT INTO jobs (id, kind, status, origin, request_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (active_job_id, kind, status, origin, request_json, created_at),
+        )
+    return active_job_id
+
+
+def seed_job_with_item(
+    context: HistoryContext,
+    *,
+    source_path: str | None = None,
+    dest_path: str | None = None,
+    movie_id: str | None = None,
+    job_id: str | None = None,
+) -> str:
+    """Create a job with one persisted item for history search tests."""
+    active_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id=job_id)
+    context.items.create_item(
+        job_id=active_job_id,
+        item_key="item-1",
+        status="completed",
+        source_path=source_path,
+        dest_path=dest_path,
+        movie_id=movie_id,
+    )
+    return active_job_id
+
+
+def test_jobs_repository_lists_filtered_jobs_with_cursor(tmp_path: Path) -> None:
+    repo = make_job_repo(tmp_path)
+    seed_job(repo, kind="find", status="completed", origin="cli", created_at="2026-04-10T10:00:00Z")
+    second_id = seed_job(
+        repo,
+        kind="sort",
+        status="running",
+        origin="api",
+        created_at="2026-04-10T10:00:01Z",
+    )
+    page = repo.list_jobs_page(JobListQuery(limit=1))
+    assert [item["id"] for item in page.items] == [second_id]
+    assert page.next_cursor is not None
+
+
+def test_jobs_repository_cursor_is_stable_for_created_at_desc_id_desc_order(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    newest = seed_job(
+        context.jobs,
+        kind="sort",
+        created_at="2026-04-10T10:00:00Z",
+        job_id="job-b",
+    )
+    older_same_time = seed_job(
+        context.jobs,
+        kind="sort",
+        created_at="2026-04-10T10:00:00Z",
+        job_id="job-a",
+    )
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1))
+    second_page = context.jobs.list_jobs_page(JobListQuery(limit=1, cursor=first_page.next_cursor))
+    assert [item["id"] for item in first_page.items] == [newest]
+    assert [item["id"] for item in second_page.items] == [older_same_time]
+
+
+def test_jobs_repository_search_matches_job_item_paths_and_movie_ids(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    job_id = seed_job_with_item(
+        context,
+        source_path="/incoming/ABP-420.mkv",
+        movie_id="ABP-420",
+    )
+    page = context.jobs.list_jobs_page(JobListQuery(q="ABP-420"))
+    assert [item["id"] for item in page.items] == [job_id]
+
+
+def test_jobs_repository_filters_by_status_and_origin(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="find", status="completed", origin="cli")
+    target = seed_job(context.jobs, kind="sort", status="running", origin="api")
+    page = context.jobs.list_jobs_page(JobListQuery(status="running", origin="api"))
+    assert [item["id"] for item in page.items] == [target]
+
+
+def test_jobs_repository_rejects_cursor_when_query_envelope_changes(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    with pytest.raises(ValueError, match="cursor"):
+        context.jobs.list_jobs_page(
+            JobListQuery(limit=1, cursor=first_page.next_cursor, status="completed")
+        )
 
 
 def test_supporting_repositories_store_basic_rows(tmp_path: Path) -> None:
@@ -225,6 +396,84 @@ def test_supporting_repositories_store_basic_rows(tmp_path: Path) -> None:
             "created_at": stored_audits[0]["created_at"],
         }
     ]
+
+
+def test_job_events_repository_lists_events_for_one_job(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    first_job_id = seed_job(context.jobs, kind="sort", status="completed")
+    second_job_id = seed_job(context.jobs, kind="sort", status="completed")
+    first_item_id = context.items.create_item(
+        job_id=first_job_id,
+        item_key="item-1",
+        status="completed",
+    )
+    second_item_id = context.items.create_item(
+        job_id=second_job_id,
+        item_key="item-2",
+        status="completed",
+    )
+    first_event_id = context.events.add_event(
+        job_id=first_job_id,
+        job_item_id=first_item_id,
+        event_type="item.created",
+    )
+    context.events.add_event(
+        job_id=second_job_id,
+        job_item_id=second_item_id,
+        event_type="item.created",
+    )
+
+    stored_events = context.events.list_for_job(first_job_id)
+
+    assert [row["id"] for row in stored_events] == [first_event_id]
+    assert [row["job_id"] for row in stored_events] == [first_job_id]
+
+
+def test_job_events_repository_gets_latest_event_for_job(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    job_id = seed_job(context.jobs, kind="sort", status="completed")
+    context.items.create_item(job_id=job_id, item_key="item-1", status="completed")
+    context.events.add_event(
+        job_id=job_id,
+        event_type="item.created",
+    )
+    latest_event_id = context.events.add_event(
+        job_id=job_id,
+        event_type="item.completed",
+    )
+
+    stored_event = context.events.get_for_job(job_id)
+
+    assert stored_event is not None
+    assert stored_event["id"] == latest_event_id
+    assert stored_event["event_type"] == "item.completed"
+    assert stored_event["job_id"] == job_id
+
+
+def test_settings_audit_repository_gets_latest_entry_for_job(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    job_id = seed_job(context.jobs, kind="sort", status="completed")
+    context.settings_audit.create_entry(
+        job_id=job_id,
+        source_path="/tmp/older.yaml",
+        config_version=1,
+    )
+    latest_audit_id = context.settings_audit.create_entry(
+        job_id=job_id,
+        source_path="/tmp/latest.yaml",
+        config_version=2,
+        before_json={"database": {"enabled": True}},
+        after_json={"database": {"enabled": False}},
+    )
+
+    stored_entry = context.settings_audit.get_for_job(job_id)
+
+    assert stored_entry is not None
+    assert stored_entry["id"] == latest_audit_id
+    assert stored_entry["job_id"] == job_id
+    assert stored_entry["source_path"] == "/tmp/latest.yaml"
+    assert stored_entry["before_json"] == {"database": {"enabled": True}}
+    assert stored_entry["after_json"] == {"database": {"enabled": False}}
 
 
 def test_job_items_enforce_parent_job_foreign_key(tmp_path: Path) -> None:
