@@ -151,7 +151,7 @@ def test_job_detail_allows_optional_settings_audit() -> None:
         job=JobSummary(id="job-1", kind="sort", status="completed", origin="cli")
     )
 
-    assert detail.settings_audit == []
+    assert detail.settings_audit is None
     assert detail.events == []
 
 
@@ -225,8 +225,15 @@ def test_list_jobs_rejects_advanced_query_fields_until_repository_support_exists
         def list_jobs(self, *, limit: int | None = None) -> list[dict[str, object]]:
             raise AssertionError("list_jobs should not be called for unsupported queries")
 
-    with pytest.raises(NotImplementedError):
-        list_jobs(RejectingHistoryRepository(), JobListQuery(cursor="missing"))
+    for field, value in [
+        ("cursor", "missing"),
+        ("kind", "sort"),
+        ("status", "completed"),
+        ("origin", "cli"),
+        ("q", "search"),
+    ]:
+        with pytest.raises(NotImplementedError):
+            list_jobs(RejectingHistoryRepository(), JobListQuery(**{field: value}))
 
 
 def test_get_job_detail_returns_events_and_settings_audit() -> None:
@@ -267,19 +274,22 @@ def test_get_job_detail_returns_events_and_settings_audit() -> None:
             ]
 
     class StubSettingsAuditRepository:
+        def get_for_job(self, job_id: str) -> dict[str, object] | None:
+            if job_id != "job-1":
+                return None
+            return {
+                "id": 11,
+                "job_id": "job-1",
+                "source_path": "/tmp/config.yaml",
+                "config_version": 1,
+                "before_json": {"proxy": {"enabled": False}},
+                "after_json": {"proxy": {"enabled": True}},
+                "change_summary_json": {"changed": ["proxy.enabled"]},
+                "created_at": "2026-04-08T00:03:00Z",
+            }
+
         def list_entries(self) -> list[dict[str, object]]:
-            return [
-                {
-                    "id": 11,
-                    "job_id": "job-1",
-                    "source_path": "/tmp/config.yaml",
-                    "config_version": 1,
-                    "before_json": {"proxy": {"enabled": False}},
-                    "after_json": {"proxy": {"enabled": True}},
-                    "change_summary_json": {"changed": ["proxy.enabled"]},
-                    "created_at": "2026-04-08T00:03:00Z",
-                }
-            ]
+            return []
 
     detail = get_job_detail(
         StubHistoryRepository(),
@@ -320,18 +330,16 @@ def test_get_job_detail_returns_events_and_settings_audit() -> None:
                 created_at="2026-04-08T00:02:00Z",
             )
         ],
-        settings_audit=[
-            SettingsAuditEntry(
-                id=11,
-                job_id="job-1",
-                source_path="/tmp/config.yaml",
-                config_version=1,
-                before={"proxy": {"enabled": False}},
-                after={"proxy": {"enabled": True}},
-                change_summary={"changed": ["proxy.enabled"]},
-                created_at="2026-04-08T00:03:00Z",
-            )
-        ],
+        settings_audit=SettingsAuditEntry(
+            id=11,
+            job_id="job-1",
+            source_path="/tmp/config.yaml",
+            config_version=1,
+            before={"proxy": {"enabled": False}},
+            after={"proxy": {"enabled": True}},
+            change_summary={"changed": ["proxy.enabled"]},
+            created_at="2026-04-08T00:03:00Z",
+        ),
     )
 
 
@@ -341,36 +349,12 @@ def test_get_settings_view_returns_typed_audit_rows() -> None:
         config=config,
         source_path="/tmp/config.yaml",
         config_version=1,
-        settings_audit=[
-            {
-                "id": 11,
-                "job_id": "job-1",
-                "source_path": "/tmp/config.yaml",
-                "config_version": 1,
-                "before_json": {"proxy": {"enabled": False}},
-                "after_json": {"proxy": {"enabled": True}},
-                "change_summary_json": {"changed": ["proxy.enabled"]},
-                "created_at": "2026-04-08T00:03:00Z",
-            }
-        ],
     )
 
     assert view == SettingsView(
         config=config,
         source_path="/tmp/config.yaml",
         config_version=1,
-        settings_audit=[
-            SettingsAuditEntry(
-                id=11,
-                job_id="job-1",
-                source_path="/tmp/config.yaml",
-                config_version=1,
-                before={"proxy": {"enabled": False}},
-                after={"proxy": {"enabled": True}},
-                change_summary={"changed": ["proxy.enabled"]},
-                created_at="2026-04-08T00:03:00Z",
-            )
-        ],
     )
 
 
@@ -478,6 +462,9 @@ class StubJobEventsRepository:
 class StubSettingsAuditRepository:
     def create_entry(self, **kwargs: object) -> int:
         return 1
+
+    def get_for_job(self, job_id: str) -> dict[str, object] | None:
+        return None
 
     def list_entries(self) -> list[dict[str, object]]:
         return []

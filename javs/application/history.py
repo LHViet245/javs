@@ -58,8 +58,8 @@ class JobEventsHistoryRepository(Protocol):
 class SettingsAuditHistoryRepository(Protocol):
     """Read-side settings audit repository contract used by the application layer."""
 
-    def list_entries(self) -> list[dict[str, Any]]:
-        """Return all stored audit rows."""
+    def get_for_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return the stored audit row for a job, if present."""
 
 
 class JobListQuery(BaseModel):
@@ -152,7 +152,7 @@ class JobDetail(LegacyJobDetail):
     result: dict[str, Any] | None = None
     items: list[JobItemSummary] = Field(default_factory=list)
     events: list[JobEventSummary] = Field(default_factory=list)
-    settings_audit: list[SettingsAuditEntry] = Field(default_factory=list)
+    settings_audit: SettingsAuditEntry | None = None
 
 
 class JobListPage(BaseModel):
@@ -168,7 +168,6 @@ class SettingsView(BaseModel):
     config: JavsConfig
     source_path: str
     config_version: int
-    settings_audit: list[SettingsAuditEntry] = Field(default_factory=list)
 
 
 class RealtimeEvent(BaseModel):
@@ -273,7 +272,7 @@ def build_job_detail(
     job_record: Mapping[str, Any],
     item_records: Sequence[Mapping[str, Any]] = (),
     event_records: Sequence[Mapping[str, Any]] = (),
-    settings_audit_records: Sequence[Mapping[str, Any]] = (),
+    settings_audit_record: Mapping[str, Any] | None = None,
 ) -> JobDetail:
     """Convert stored history records into a shared detail response."""
     return JobDetail(
@@ -281,9 +280,11 @@ def build_job_detail(
         result=job_record.get("result_json"),
         items=[build_job_item_summary(record) for record in item_records],
         events=[build_job_event_summary(record) for record in event_records],
-        settings_audit=[
-            build_settings_audit_entry(record) for record in settings_audit_records
-        ],
+        settings_audit=(
+            build_settings_audit_entry(settings_audit_record)
+            if settings_audit_record is not None
+            else None
+        ),
     )
 
 
@@ -329,15 +330,9 @@ def get_job_detail(
 
     item_records = job_items.list_for_job(job_id) if job_items is not None else ()
     event_records = events.list_for_job(job_id) if events is not None else ()
-    audit_records: Sequence[Mapping[str, Any]] = ()
-    if settings_audit is not None:
-        audit_records = [
-            record
-            for record in settings_audit.list_entries()
-            if str(record.get("job_id")) == job_id
-        ]
+    audit_record = settings_audit.get_for_job(job_id) if settings_audit is not None else None
 
-    return build_job_detail(job_record, item_records, event_records, audit_records)
+    return build_job_detail(job_record, item_records, event_records, audit_record)
 
 
 def get_settings_view(
@@ -345,14 +340,12 @@ def get_settings_view(
     config: JavsConfig,
     source_path: str,
     config_version: int,
-    settings_audit: Sequence[Mapping[str, Any]] = (),
 ) -> SettingsView:
     """Return a typed settings snapshot for read-side consumers."""
     return SettingsView(
         config=config,
         source_path=source_path,
         config_version=config_version,
-        settings_audit=[build_settings_audit_entry(record) for record in settings_audit],
     )
 
 
