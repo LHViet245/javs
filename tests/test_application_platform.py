@@ -34,6 +34,7 @@ from javs.application import (
     get_job_detail,
     get_settings_view,
     list_jobs,
+    normalize_job_summary_payload,
 )
 from javs.config import JavsConfig
 
@@ -135,6 +136,16 @@ def test_job_summary_and_settings_response_expose_expected_fields() -> None:
     assert settings.config.database.path == "~/.javs/platform.db"
 
 
+def test_job_summary_payload_normalizes_missing_summary_shape() -> None:
+    assert normalize_job_summary_payload(None) == {
+        "total": 0,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": [],
+    }
+
+
 def test_job_detail_allows_optional_settings_audit() -> None:
     detail = JobDetail(
         job=JobSummary(id="job-1", kind="sort", status="completed", origin="cli")
@@ -142,6 +153,25 @@ def test_job_detail_allows_optional_settings_audit() -> None:
 
     assert detail.settings_audit == []
     assert detail.events == []
+
+
+def test_build_job_detail_normalizes_missing_summary_shape() -> None:
+    detail = build_job_detail(
+        {
+            "id": "job-1",
+            "kind": "sort",
+            "status": "completed",
+            "origin": "cli",
+        }
+    )
+
+    assert detail.job.summary == {
+        "total": 0,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": [],
+    }
 
 
 def test_list_jobs_returns_typed_page_with_normalized_summary_payload() -> None:
@@ -255,7 +285,13 @@ def test_get_job_detail_returns_events_and_settings_audit() -> None:
             kind="sort",
             status="completed",
             origin="cli",
-            summary={"processed": 1},
+            summary={
+                "total": 0,
+                "processed": 1,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": [],
+            },
         ),
         result={"destination": "/sorted"},
         items=[
@@ -389,7 +425,23 @@ def test_history_helpers_map_repository_records_to_contract_models() -> None:
         finished_at="2026-04-08T00:01:20Z",
     )
     assert detail == JobDetail(
-        job=summary,
+        job=JobSummary(
+            id="job-1",
+            kind="sort",
+            status="completed",
+            origin="cli",
+            created_at="2026-04-08T00:00:00Z",
+            started_at="2026-04-08T00:01:00Z",
+            finished_at="2026-04-08T00:02:00Z",
+            summary={
+                "total": 0,
+                "processed": 2,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": [],
+            },
+            error=None,
+        ),
         result={"destination": "/library/sorted"},
         items=[item_summary],
     )

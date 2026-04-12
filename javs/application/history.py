@@ -179,10 +179,10 @@ class RealtimeEvent(BaseModel):
     event: JobEventSummary
 
 
-def normalize_job_summary_payload(value: object | None) -> dict[str, Any] | None:
+def normalize_job_summary_payload(value: object | None) -> dict[str, Any]:
     """Return a stable summary payload shape with default consumer keys."""
     if value is None:
-        return None
+        return JobSummaryPayload().model_dump(mode="python")
 
     payload = JobSummaryPayload.model_validate(value)
     return payload.model_dump(mode="python")
@@ -277,7 +277,7 @@ def build_job_detail(
 ) -> JobDetail:
     """Convert stored history records into a shared detail response."""
     return JobDetail(
-        job=build_job_summary(job_record),
+        job=build_job_summary(job_record, normalize_summary=True),
         result=job_record.get("result_json"),
         items=[build_job_item_summary(record) for record in item_records],
         events=[build_job_event_summary(record) for record in event_records],
