@@ -287,76 +287,30 @@ def build_job_detail(
     )
 
 
-def _job_matches_query(record: Mapping[str, Any], query: JobListQuery) -> bool:
-    """Return ``True`` when a record matches the normalized list query."""
-    for field in ("kind", "status", "origin"):
-        expected = getattr(query, field)
-        if expected is None:
-            continue
-        if str(record.get(field, "")).strip().lower() != expected:
-            return False
-
-    if query.q is not None:
-        haystack_parts = [
-            str(record.get("id", "")),
-            str(record.get("kind", "")),
-            str(record.get("status", "")),
-            str(record.get("origin", "")),
-            str(record.get("summary_json", "")),
-            str(record.get("result_json", "")),
-            str(record.get("error_json", "")),
-        ]
-        haystack = " ".join(haystack_parts).lower()
-        if query.q.lower() not in haystack:
-            return False
-
-    return True
-
-
-def _apply_cursor(
-    records: Sequence[Mapping[str, Any]],
-    cursor: str | None,
-) -> list[Mapping[str, Any]]:
-    """Return records that appear after the matching cursor row."""
-    if cursor is None:
-        return list(records)
-
-    for index, record in enumerate(records):
-        if str(record.get("id")) == cursor:
-            return list(records[index + 1 :])
-    return list(records)
-
-
 def list_jobs(
     jobs: JobHistoryRepository,
     query: JobListQuery | None = None,
 ) -> JobListPage:
     """Return a typed page of jobs for history consumers."""
     active_query = query or JobListQuery()
-    should_fetch_all = any(
-        value is not None
-        for value in (
-            active_query.cursor,
-            active_query.kind,
-            active_query.status,
-            active_query.origin,
-            active_query.q,
+    unsupported_fields = [
+        field
+        for field in ("cursor", "kind", "status", "origin", "q")
+        if getattr(active_query, field) is not None
+    ]
+    if unsupported_fields:
+        raise NotImplementedError(
+            "Job list filtering and cursor pagination are implemented in the repository layer."
         )
-    )
-    raw_jobs = jobs.list_jobs(limit=None if should_fetch_all else active_query.limit)
-    filtered_jobs = [record for record in raw_jobs if _job_matches_query(record, active_query)]
-    paged_jobs = _apply_cursor(filtered_jobs, active_query.cursor)
-    page_items = paged_jobs[: active_query.limit]
-    next_cursor = None
-    if len(paged_jobs) > len(page_items) and page_items:
-        next_cursor = str(page_items[-1]["id"])
+
+    page_items = jobs.list_jobs(limit=active_query.limit)
 
     return JobListPage(
         items=[
             build_job_summary(record, normalize_summary=True)
             for record in page_items
         ],
-        next_cursor=next_cursor,
+        next_cursor=None,
     )
 
 

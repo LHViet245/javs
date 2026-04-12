@@ -177,7 +177,7 @@ def test_build_job_detail_normalizes_missing_summary_shape() -> None:
 def test_list_jobs_returns_typed_page_with_normalized_summary_payload() -> None:
     class StubHistoryRepository:
         def list_jobs(self, *, limit: int | None = None) -> list[dict[str, object]]:
-            return [
+            jobs = [
                 {
                     "id": "job-1",
                     "kind": "sort",
@@ -195,6 +195,7 @@ def test_list_jobs_returns_typed_page_with_normalized_summary_payload() -> None:
                     "summary_json": {"failed": 1},
                 },
             ]
+            return jobs if limit is None else jobs[:limit]
 
     page = list_jobs(StubHistoryRepository(), JobListQuery(limit=1))
 
@@ -215,8 +216,17 @@ def test_list_jobs_returns_typed_page_with_normalized_summary_payload() -> None:
                 },
             )
         ],
-        next_cursor="job-1",
+        next_cursor=None,
     )
+
+
+def test_list_jobs_rejects_advanced_query_fields_until_repository_support_exists() -> None:
+    class RejectingHistoryRepository:
+        def list_jobs(self, *, limit: int | None = None) -> list[dict[str, object]]:
+            raise AssertionError("list_jobs should not be called for unsupported queries")
+
+    with pytest.raises(NotImplementedError):
+        list_jobs(RejectingHistoryRepository(), JobListQuery(cursor="missing"))
 
 
 def test_get_job_detail_returns_events_and_settings_audit() -> None:
