@@ -15,7 +15,7 @@ from javs.database.connection import open_database
 from javs.database.migrations import apply_migrations, initialize_database
 from javs.database.repositories.events import JobEventsRepository
 from javs.database.repositories.job_items import JobItemsRepository
-from javs.database.repositories.jobs import JobsRepository
+from javs.database.repositories.jobs import JobsRepository, _decode_cursor
 from javs.database.repositories.settings_audit import SettingsAuditRepository
 from javs.database.schema import (
     CREATE_SCHEMA_MIGRATIONS_TABLE_SQL,
@@ -372,9 +372,7 @@ def test_jobs_repository_rejects_tampered_cursor_payload_structure(
     )
 
     with pytest.raises(ValueError, match=match):
-        context.jobs.list_jobs_page(
-            JobListQuery(limit=1, cursor=tampered_cursor, status="running")
-        )
+        _decode_cursor(tampered_cursor)
 
 
 def test_jobs_repository_rejects_limit_greater_than_100(tmp_path: Path) -> None:

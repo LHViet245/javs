@@ -16,6 +16,7 @@ _UNSET = object()
 _MAX_JOB_LIST_LIMIT = 100
 _DEFAULT_JOB_LIST_LIMIT = 20
 _CURSOR_JSON_FIELDS = ("created_at", "id", "query")
+_CURSOR_QUERY_JSON_FIELDS = ("kind", "status", "origin", "q")
 
 
 @dataclass(slots=True)
@@ -256,7 +257,7 @@ def _decode_cursor(cursor: str) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         raise ValueError("cursor is invalid")
-    if set(payload) != set(_CURSOR_JSON_FIELDS):
+    if set(payload.keys()) != set(_CURSOR_JSON_FIELDS):
         raise ValueError("cursor is invalid")
     if type(payload["created_at"]) is not str or type(payload["id"]) is not str:
         raise ValueError("cursor is invalid")
@@ -264,7 +265,7 @@ def _decode_cursor(cursor: str) -> dict[str, Any]:
     query = payload["query"]
     if not isinstance(query, dict):
         raise ValueError("cursor is invalid")
-    if set(query) != {"kind", "status", "origin", "q"}:
+    if set(query.keys()) != set(_CURSOR_QUERY_JSON_FIELDS):
         raise ValueError("cursor is invalid")
 
     normalized_query: dict[str, str | None] = {}
