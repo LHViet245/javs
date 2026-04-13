@@ -361,6 +361,27 @@ def test_jobs_repository_rejects_cursor_when_query_envelope_changes(
         )
 
 
+def test_jobs_repository_rejects_cursor_when_anchor_row_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    assert first_page.next_cursor is not None
+    tampered_cursor = encode_cursor_payload(
+        {
+            **decode_cursor_payload(first_page.next_cursor),
+            "id": "missing-job",
+        }
+    )
+
+    with pytest.raises(ValueError, match="cursor anchor"):
+        context.jobs.list_jobs_page(
+            JobListQuery(limit=1, cursor=tampered_cursor, status="running")
+        )
+
+
 @pytest.mark.parametrize(
     ("mutate_payload", "match"),
     [
@@ -489,6 +510,91 @@ def test_supporting_repositories_store_basic_rows(tmp_path: Path) -> None:
             "created_at": stored_audits[0]["created_at"],
         }
     ]
+
+
+def test_job_events_repository_get_for_job_returns_newest_row_and_isolated_rows(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    first_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-a")
+    second_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-b")
+    context.events.add_event(
+        job_id=first_job_id,
+        event_type="item.created",
+        payload_json={"step": 1},
+    )
+    newest_event_id = context.events.add_event(
+        job_id=first_job_id,
+        event_type="item.completed",
+        payload_json={"step": 2},
+    )
+    cross_job_event_id = context.events.add_event(
+        job_id=second_job_id,
+        event_type="item.created",
+        payload_json={"step": 3},
+    )
+
+    newest_event = context.events.get_for_job(first_job_id)
+    second_event = context.events.get_for_job(second_job_id)
+
+    assert newest_event is not None
+    assert newest_event["id"] == newest_event_id
+    assert newest_event["job_id"] == first_job_id
+    assert newest_event["event_type"] == "item.completed"
+    assert newest_event["payload_json"] == {"step": 2}
+    assert context.events.get_for_job("missing-job") is None
+    assert second_event is not None
+    assert second_event["id"] == cross_job_event_id
+    assert second_event["job_id"] == second_job_id
+    assert second_event["event_type"] == "item.created"
+    assert second_event["payload_json"] == {"step": 3}
+
+
+def test_settings_audit_repository_get_for_job_returns_newest_row_and_isolated_rows(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    first_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-a")
+    second_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-b")
+    context.settings_audit.create_entry(
+        job_id=first_job_id,
+        source_path="/tmp/older.yaml",
+        config_version=1,
+        before_json={"database": {"enabled": True}},
+    )
+    newest_audit_id = context.settings_audit.create_entry(
+        job_id=first_job_id,
+        source_path="/tmp/newest.yaml",
+        config_version=2,
+        before_json={"database": {"enabled": False}},
+        after_json={"database": {"enabled": True}},
+    )
+    cross_job_audit_id = context.settings_audit.create_entry(
+        job_id=second_job_id,
+        source_path="/tmp/other.yaml",
+        config_version=1,
+        change_summary_json={"changed": ["proxy.enabled"]},
+    )
+
+    newest_audit = context.settings_audit.get_for_job(first_job_id)
+    second_audit = context.settings_audit.get_for_job(second_job_id)
+
+    assert newest_audit is not None
+    assert newest_audit["id"] == newest_audit_id
+    assert newest_audit["job_id"] == first_job_id
+    assert newest_audit["source_path"] == "/tmp/newest.yaml"
+    assert newest_audit["config_version"] == 2
+    assert newest_audit["before_json"] == {"database": {"enabled": False}}
+    assert newest_audit["after_json"] == {"database": {"enabled": True}}
+    assert context.settings_audit.get_for_job("missing-job") is None
+    assert second_audit is not None
+    assert second_audit["id"] == cross_job_audit_id
+    assert second_audit["job_id"] == second_job_id
+    assert second_audit["source_path"] == "/tmp/other.yaml"
+    assert second_audit["config_version"] == 1
+    assert second_audit["before_json"] is None
+    assert second_audit["after_json"] is None
+    assert second_audit["change_summary_json"] == {"changed": ["proxy.enabled"]}
 
 
 def test_job_items_enforce_parent_job_foreign_key(tmp_path: Path) -> None:

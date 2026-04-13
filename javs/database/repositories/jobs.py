@@ -123,6 +123,36 @@ class JobsRepository:
             )
             parameters.extend([search_term, search_term, search_term, search_term])
 
+        base_statement = [
+            "SELECT DISTINCT jobs.id, jobs.created_at",
+            "FROM jobs",
+            "LEFT JOIN job_items ON job_items.job_id = jobs.id",
+        ]
+        if where_clauses:
+            base_statement.append("WHERE " + " AND ".join(where_clauses))
+
+        if cursor_payload is not None:
+            anchor_parameters = list(parameters)
+            anchor_parameters.extend(
+                [
+                    cursor_payload["created_at"],
+                    cursor_payload["id"],
+                ]
+            )
+            anchor_statement = [
+                *base_statement,
+                "AND" if where_clauses else "WHERE",
+                "jobs.created_at = ?",
+                "AND jobs.id = ?",
+                "LIMIT 1",
+            ]
+            anchor_row = self.connection.execute(
+                " ".join(anchor_statement),
+                anchor_parameters,
+            ).fetchone()
+            if anchor_row is None:
+                raise ValueError("cursor anchor is invalid for the active query")
+
         if cursor_payload is not None:
             where_clauses.append(
                 "(jobs.created_at < ? OR (jobs.created_at = ? AND jobs.id < ?))"
