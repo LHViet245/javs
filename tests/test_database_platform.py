@@ -294,22 +294,32 @@ def test_jobs_repository_cursor_is_stable_for_created_at_desc_id_desc_order(
     assert [item["id"] for item in second_page.items] == [older_same_time]
 
 
-def test_jobs_repository_search_matches_job_id_and_item_dest_path(
+@pytest.mark.parametrize(
+    ("search_value", "item_kwargs"),
+    [
+        ("job-search-001", {"job_id": "job-search-001"}),
+        ("ABP-420", {"movie_id": "ABP-420"}),
+        ("/library/incoming/ABP-420.mp4", {"source_path": "/library/incoming/ABP-420.mp4"}),
+        ("/library/sorted/ABP-420.mp4", {"dest_path": "/library/sorted/ABP-420.mp4"}),
+    ],
+)
+def test_jobs_repository_search_matches_job_and_item_fields(
     tmp_path: Path,
+    search_value: str,
+    item_kwargs: dict[str, str],
 ) -> None:
     context = make_history_context(tmp_path)
     job_id = seed_job_with_item(
         context,
-        dest_path="/library/sorted/ABP-420.mp4",
-        movie_id="ABP-420",
-        job_id="job-search-001",
+        job_id=item_kwargs.get("job_id", "job-search-001"),
+        source_path=item_kwargs.get("source_path"),
+        dest_path=item_kwargs.get("dest_path"),
+        movie_id=item_kwargs.get("movie_id"),
     )
 
-    job_page = context.jobs.list_jobs_page(JobListQuery(q="job-search"))
-    path_page = context.jobs.list_jobs_page(JobListQuery(q="sorted/ABP-420"))
+    page = context.jobs.list_jobs_page(JobListQuery(q=search_value))
 
-    assert [item["id"] for item in job_page.items] == [job_id]
-    assert [item["id"] for item in path_page.items] == [job_id]
+    assert [item["id"] for item in page.items] == [job_id]
 
 
 def test_jobs_repository_filters_by_status_and_origin(tmp_path: Path) -> None:
