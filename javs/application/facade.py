@@ -7,13 +7,21 @@ from pathlib import Path
 from typing import Protocol
 
 from javs.application.find import FindMovieEngineFactory, FindMovieUseCase
-from javs.application.history import JobHistoryRepository, JobItemsHistoryRepository
+from javs.application.history import (
+    JobHistoryRepository,
+    JobItemsHistoryRepository,
+    JobListPage,
+    JobListQuery,
+    get_job_detail,
+)
+from javs.application.history import (
+    list_jobs as read_jobs,
+)
 from javs.application.models import (
     FindMovieRequest,
     FindMovieResponse,
     JobDetail,
     JobStartResponse,
-    JobSummary,
     SaveSettingsRequest,
     SaveSettingsResponse,
     SettingsResponse,
@@ -59,7 +67,7 @@ class PlatformHistory(Protocol):
     def get_job(self, job_id: str) -> JobDetail | None:
         """Return a mapped job detail for a single job."""
 
-    def list_jobs(self, *, limit: int | None = None) -> list[JobSummary]:
+    def list_jobs(self, query: JobListQuery | None = None) -> JobListPage:
         """Return mapped job summaries."""
 
 
@@ -214,12 +222,18 @@ class PlatformFacade:
         return response
 
     def get_job(self, job_id: str) -> JobDetail | None:
-        """Return job detail once history reads are wired through the facade."""
-        raise NotImplementedError("PlatformFacade.get_job is implemented in a later task.")
+        """Return a stored job detail through the shared history read path."""
+        return get_job_detail(
+            self.jobs,
+            job_id,
+            job_items=self.job_items,
+            events=self.events,
+            settings_audit=self.settings_audit,
+        )
 
-    def list_jobs(self, *, limit: int | None = None) -> list[JobSummary]:
-        """Return job summaries once history reads are wired through the facade."""
-        raise NotImplementedError("PlatformFacade.list_jobs is implemented in a later task.")
+    def list_jobs(self, query: JobListQuery | None = None) -> JobListPage:
+        """Return a typed job page through the shared history read path."""
+        return read_jobs(self.jobs, query)
 
     def get_settings(self, source_path: Path) -> SettingsResponse:
         """Return active settings through the shared application use case."""

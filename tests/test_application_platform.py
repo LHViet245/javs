@@ -619,6 +619,139 @@ def test_facade_get_settings_returns_shared_settings_response(tmp_path: Path) ->
     )
 
 
+def build_history_facade(tmp_path: Path) -> tuple[PlatformFacade, Any, Any, Any, Any]:
+    from javs.config import load_config, save_config
+    from javs.database.connection import open_database
+    from javs.database.migrations import initialize_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+
+    db_path = tmp_path / "history.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=settings_audit,
+        history=StubPlatformHistory(),
+        runner=StubPlatformRunner(),
+        config_loader=load_config,
+        config_saver=save_config,
+    )
+    return facade, connection, jobs, events, settings_audit
+
+
+def test_facade_list_jobs_returns_typed_paginated_results(tmp_path: Path) -> None:
+    facade, connection, jobs, _, _ = build_history_facade(tmp_path)
+
+    try:
+        first_job_id = jobs.create_job(kind="find", origin="cli")
+        second_job_id = jobs.create_job(kind="sort", origin="api")
+        jobs.update_job(first_job_id, summary_json={"processed": 1})
+        jobs.update_job(second_job_id, summary_json={"processed": 2})
+
+        page = facade.list_jobs(JobListQuery(limit=1))
+    finally:
+        connection.close()
+
+    assert isinstance(page, JobListPage)
+    assert page.next_cursor is None
+    assert page.items == [
+        JobSummary(
+            id=second_job_id,
+            kind="sort",
+            status="pending",
+            origin="api",
+            created_at=page.items[0].created_at,
+            summary={
+                "total": 0,
+                "processed": 2,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": [],
+            },
+        )
+    ]
+
+
+def test_facade_get_job_returns_detail_with_events_and_settings_audit(
+    tmp_path: Path,
+) -> None:
+    facade, connection, jobs, events, settings_audit = build_history_facade(tmp_path)
+
+    try:
+        job_id = jobs.create_job(kind="save_settings", origin="cli")
+        jobs.update_job(
+            job_id,
+            result_json={
+                "config_version": 1,
+                "source_path": "/tmp/config.yaml",
+            },
+        )
+        events.add_event(
+            job_id=job_id,
+            event_type="job.completed",
+            payload_json={"summary": {"saved": 1}},
+        )
+        settings_audit.create_entry(
+            job_id=job_id,
+            source_path="/tmp/config.yaml",
+            config_version=1,
+            before_json={"proxy": {"enabled": False}},
+            after_json={"proxy": {"enabled": True}},
+            change_summary_json={"changed": ["proxy.enabled"]},
+        )
+
+        detail = facade.get_job(job_id)
+    finally:
+        connection.close()
+
+    assert detail is not None
+    assert detail.job == JobSummary(
+        id=job_id,
+        kind="save_settings",
+        status="pending",
+        origin="cli",
+        created_at=detail.job.created_at,
+        summary={
+            "total": 0,
+            "processed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "warnings": [],
+        },
+    )
+    assert detail.result == {
+        "config_version": 1,
+        "source_path": "/tmp/config.yaml",
+    }
+    assert detail.items == []
+    assert detail.events == [
+        JobEventSummary(
+            id=detail.events[0].id,
+            job_id=job_id,
+            event_type="job.completed",
+            payload={"summary": {"saved": 1}},
+            created_at=detail.events[0].created_at,
+        )
+    ]
+    assert detail.settings_audit == SettingsAuditEntry(
+        id=detail.settings_audit.id,
+        job_id=job_id,
+        source_path="/tmp/config.yaml",
+        config_version=1,
+        before={"proxy": {"enabled": False}},
+        after={"proxy": {"enabled": True}},
+        change_summary={"changed": ["proxy.enabled"]},
+        created_at=detail.settings_audit.created_at,
+    )
+
+
 @pytest.mark.asyncio
 async def test_save_settings_writes_yaml_and_settings_audit_rows(tmp_path: Path) -> None:
     from javs.config import load_config, save_config
