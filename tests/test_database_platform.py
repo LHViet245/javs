@@ -295,18 +295,27 @@ def test_jobs_repository_cursor_is_stable_for_created_at_desc_id_desc_order(
 
 
 @pytest.mark.parametrize(
-    ("search_value", "item_kwargs"),
+    ("search_value", "item_kwargs", "duplicate_matching_item"),
     [
-        ("job-search-001", {"job_id": "job-search-001"}),
-        ("ABP-420", {"movie_id": "ABP-420"}),
-        ("/library/incoming/ABP-420.mp4", {"source_path": "/library/incoming/ABP-420.mp4"}),
-        ("/library/sorted/ABP-420.mp4", {"dest_path": "/library/sorted/ABP-420.mp4"}),
+        ("job-search-001", {"job_id": "job-search-001"}, False),
+        ("ABP-420", {"movie_id": "ABP-420"}, True),
+        (
+            "/library/incoming/ABP-420.mp4",
+            {"source_path": "/library/incoming/ABP-420.mp4"},
+            True,
+        ),
+        (
+            "/library/sorted/ABP-420.mp4",
+            {"dest_path": "/library/sorted/ABP-420.mp4"},
+            True,
+        ),
     ],
 )
 def test_jobs_repository_search_matches_job_and_item_fields(
     tmp_path: Path,
     search_value: str,
     item_kwargs: dict[str, str],
+    duplicate_matching_item: bool,
 ) -> None:
     context = make_history_context(tmp_path)
     job_id = seed_job_with_item(
@@ -316,6 +325,15 @@ def test_jobs_repository_search_matches_job_and_item_fields(
         dest_path=item_kwargs.get("dest_path"),
         movie_id=item_kwargs.get("movie_id"),
     )
+    if duplicate_matching_item:
+        context.items.create_item(
+            job_id=job_id,
+            item_key="item-2",
+            status="completed",
+            source_path=item_kwargs.get("source_path"),
+            dest_path=item_kwargs.get("dest_path"),
+            movie_id=item_kwargs.get("movie_id"),
+        )
 
     page = context.jobs.list_jobs_page(JobListQuery(q=search_value))
 
