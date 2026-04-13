@@ -54,3 +54,13 @@ class SettingsAuditRepository:
             "SELECT * FROM settings_audit ORDER BY rowid DESC"
         ).fetchall()
         return [row_to_dict(row, json_fields=SETTINGS_AUDIT_JSON_FIELDS) for row in rows]
+
+    def get_for_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return the newest audit row for a job, or None when no match exists."""
+        row = self.connection.execute(
+            "SELECT * FROM settings_audit WHERE job_id = ? ORDER BY rowid DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row_to_dict(row, json_fields=SETTINGS_AUDIT_JSON_FIELDS)

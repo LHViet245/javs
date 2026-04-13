@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from javs.database.connection import open_database
 from javs.database.migrations import apply_migrations, initialize_database
@@ -16,6 +22,28 @@ from javs.database.schema import (
     INITIAL_SCHEMA_STATEMENTS,
     INITIAL_SCHEMA_VERSION,
 )
+
+
+@dataclass(slots=True)
+class JobListQuery:
+    """Test-only stand-in for the history list query contract."""
+
+    limit: int | None = None
+    cursor: str | None = None
+    kind: str | None = None
+    status: str | None = None
+    origin: str | None = None
+    q: str | None = None
+
+
+@dataclass(slots=True)
+class HistoryContext:
+    """Grouped repositories for cursor and detail history tests."""
+
+    jobs: JobsRepository
+    items: JobItemsRepository
+    events: JobEventsRepository
+    settings_audit: SettingsAuditRepository
 
 
 def fetch_table_names(path: Path) -> set[str]:
@@ -134,6 +162,216 @@ def test_job_repository_can_create_get_list_and_update_jobs(tmp_path: Path) -> N
     assert [job["id"] for job in all_jobs] == [second_job_id, first_job_id]
     assert all_jobs[0]["status"] == "failed"
     assert all_jobs[0]["error_json"] == {"message": "boom"}
+
+
+def make_job_repo(tmp_path: Path) -> JobsRepository:
+    """Return a jobs repository backed by a fresh platform database."""
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    return JobsRepository(connection)
+
+
+def make_history_context(tmp_path: Path) -> HistoryContext:
+    """Return repositories backed by a fresh shared platform database."""
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    return HistoryContext(
+        jobs=JobsRepository(connection),
+        items=JobItemsRepository(connection),
+        events=JobEventsRepository(connection),
+        settings_audit=SettingsAuditRepository(connection),
+    )
+
+
+def seed_job(
+    repo: JobsRepository,
+    *,
+    kind: str,
+    status: str = "pending",
+    origin: str = "cli",
+    created_at: str | None = None,
+    job_id: str | None = None,
+    request_json: object | None = None,
+) -> str:
+    """Insert a job row with optional deterministic ID and timestamp."""
+    import uuid
+
+    active_job_id = job_id or str(uuid.uuid4())
+    if created_at is None:
+        repo.connection.execute(
+            """
+            INSERT INTO jobs (id, kind, status, origin, request_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (active_job_id, kind, status, origin, request_json),
+        )
+    else:
+        repo.connection.execute(
+            """
+            INSERT INTO jobs (id, kind, status, origin, request_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (active_job_id, kind, status, origin, request_json, created_at),
+        )
+    return active_job_id
+
+
+def seed_job_with_item(
+    context: HistoryContext,
+    *,
+    source_path: str | None = None,
+    dest_path: str | None = None,
+    movie_id: str | None = None,
+    job_id: str | None = None,
+) -> str:
+    """Create a job with one persisted item for history search tests."""
+    active_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id=job_id)
+    context.items.create_item(
+        job_id=active_job_id,
+        item_key="item-1",
+        status="completed",
+        source_path=source_path,
+        dest_path=dest_path,
+        movie_id=movie_id,
+    )
+    return active_job_id
+
+
+def decode_cursor_payload(cursor: str) -> dict[str, Any]:
+    """Decode a repository cursor into the JSON payload used in tests."""
+    padded = cursor + "=" * (-len(cursor) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+
+
+def encode_cursor_payload(payload: dict[str, Any]) -> str:
+    """Encode a tampered cursor payload for negative-path tests."""
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def test_jobs_repository_lists_filtered_jobs_with_cursor(tmp_path: Path) -> None:
+    repo = make_job_repo(tmp_path)
+    seed_job(
+        repo,
+        kind="find",
+        status="completed",
+        origin="cli",
+        created_at="2026-04-10T10:00:00Z",
+    )
+    second_id = seed_job(
+        repo,
+        kind="sort",
+        status="running",
+        origin="api",
+        created_at="2026-04-10T10:00:01Z",
+    )
+    page = repo.list_jobs_page(JobListQuery(limit=1))
+    assert [item["id"] for item in page.items] == [second_id]
+    assert page.next_cursor is not None
+
+
+def test_jobs_repository_cursor_is_stable_for_created_at_desc_id_desc_order(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    newest = seed_job(
+        context.jobs,
+        kind="sort",
+        created_at="2026-04-10T10:00:00Z",
+        job_id="job-b",
+    )
+    older_same_time = seed_job(
+        context.jobs,
+        kind="sort",
+        created_at="2026-04-10T10:00:00Z",
+        job_id="job-a",
+    )
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1))
+    second_page = context.jobs.list_jobs_page(JobListQuery(limit=1, cursor=first_page.next_cursor))
+    assert [item["id"] for item in first_page.items] == [newest]
+    assert [item["id"] for item in second_page.items] == [older_same_time]
+
+
+def test_jobs_repository_search_matches_job_id_and_item_dest_path(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    job_id = seed_job_with_item(
+        context,
+        dest_path="/library/sorted/ABP-420.mp4",
+        movie_id="ABP-420",
+        job_id="job-search-001",
+    )
+
+    job_page = context.jobs.list_jobs_page(JobListQuery(q="job-search"))
+    path_page = context.jobs.list_jobs_page(JobListQuery(q="sorted/ABP-420"))
+
+    assert [item["id"] for item in job_page.items] == [job_id]
+    assert [item["id"] for item in path_page.items] == [job_id]
+
+
+def test_jobs_repository_filters_by_status_and_origin(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="find", status="completed", origin="cli")
+    target = seed_job(context.jobs, kind="sort", status="running", origin="api")
+    page = context.jobs.list_jobs_page(JobListQuery(status="running", origin="api"))
+    assert [item["id"] for item in page.items] == [target]
+
+
+def test_jobs_repository_rejects_cursor_when_query_envelope_changes(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    with pytest.raises(ValueError, match="cursor"):
+        context.jobs.list_jobs_page(
+            JobListQuery(limit=1, cursor=first_page.next_cursor, status="completed")
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate_payload", "match"),
+    [
+        (lambda payload: {**payload, "unexpected": "field"}, "cursor"),
+        (
+            lambda payload: {
+                **payload,
+                "query": {**payload["query"], "unexpected": "field"},
+            },
+            "cursor",
+        ),
+        (lambda payload: {**payload, "id": 123}, "cursor"),
+    ],
+)
+def test_jobs_repository_rejects_tampered_cursor_payload_structure(
+    tmp_path: Path,
+    mutate_payload: Any,
+    match: str,
+) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    assert first_page.next_cursor is not None
+    tampered_cursor = encode_cursor_payload(
+        mutate_payload(decode_cursor_payload(first_page.next_cursor))
+    )
+
+    with pytest.raises(ValueError, match=match):
+        context.jobs.list_jobs_page(
+            JobListQuery(limit=1, cursor=tampered_cursor, status="running")
+        )
+
+
+def test_jobs_repository_rejects_limit_greater_than_100(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+
+    with pytest.raises(ValueError, match="limit"):
+        context.jobs.list_jobs_page(JobListQuery(limit=101))
 
 
 def test_supporting_repositories_store_basic_rows(tmp_path: Path) -> None:
