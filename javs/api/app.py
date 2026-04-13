@@ -10,7 +10,9 @@ from urllib.parse import parse_qs
 
 from javs.api.routes import (
     handle_find_job,
+    handle_get_job,
     handle_get_settings,
+    handle_list_jobs,
     handle_save_settings,
     handle_sort_job,
     handle_update_job,
@@ -45,11 +47,33 @@ class JavsAPIApp:
         path = scope["path"]
 
         try:
-            if method == "GET" and path == "/settings":
-                source_path = self._query_param(scope, "source_path")
-                payload = handle_get_settings(self.facade, source_path)
-                await self._send_json(send, 200, self._to_json_payload(payload))
-                return
+            if method == "GET":
+                if path == "/jobs":
+                    payload = handle_list_jobs(self.facade, self._query_params(scope))
+                    await self._send_json(send, 200, self._to_json_payload(payload))
+                    return
+
+                if path.startswith("/jobs/"):
+                    job_id = path.removeprefix("/jobs/")
+                    if not job_id or "/" in job_id:
+                        await self._send_json(send, 404, {"detail": "Not found."})
+                        return
+                    payload = handle_get_job(self.facade, job_id)
+                    if payload is None:
+                        await self._send_json(send, 404, {"detail": "Not found."})
+                        return
+                    await self._send_json(send, 200, self._to_json_payload(payload))
+                    return
+
+                if path == "/settings":
+                    source_path = self._query_param(scope, "source_path")
+                    try:
+                        payload = handle_get_settings(self.facade, source_path)
+                    except Exception as error:
+                        await self._send_json(send, 500, {"detail": str(error)})
+                        return
+                    await self._send_json(send, 200, self._to_json_payload(payload))
+                    return
 
             if method == "POST" and path in _JOB_POST_PATHS:
                 body = await self._read_json_body(receive)
@@ -131,6 +155,12 @@ class JavsAPIApp:
         if not values:
             return None
         return values[0] or None
+
+    @staticmethod
+    def _query_params(scope: Scope) -> dict[str, str]:
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        query = parse_qs(query_string, keep_blank_values=True)
+        return {key: values[0] for key, values in query.items() if values}
 
     @staticmethod
     def _build_application_error_payload(

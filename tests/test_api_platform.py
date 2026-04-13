@@ -11,10 +11,16 @@ from javs.api.app import create_app
 from javs.application import (
     BatchJobError,
     FindMovieResponse,
+    JobDetail,
+    JobEventSummary,
+    JobItemSummary,
+    JobListPage,
+    JobListQuery,
     JobStartResponse,
     JobSummary,
     SaveSettingsRequest,
     SaveSettingsResponse,
+    SettingsAuditEntry,
     SettingsResponse,
     SettingsSaveError,
     SortJobRequest,
@@ -30,6 +36,109 @@ class StubFacade:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, str]] = []
         self.settings_path: Path | None = None
+        self.job_list_page = JobListPage(
+            items=[
+                JobSummary(
+                    id="job-list-1",
+                    kind="sort",
+                    status="completed",
+                    origin="api",
+                    created_at="2026-04-10T09:00:00Z",
+                    started_at="2026-04-10T09:00:01Z",
+                    finished_at="2026-04-10T09:00:02Z",
+                    summary={
+                        "total": 3,
+                        "processed": 2,
+                        "skipped": 1,
+                        "failed": 0,
+                        "warnings": ["slow path"],
+                    },
+                    error=None,
+                )
+            ],
+            next_cursor="next-cursor",
+        )
+        self.jobs_by_id: dict[str, JobDetail] = {
+            "job-detail-1": JobDetail(
+                job=JobSummary(
+                    id="job-detail-1",
+                    kind="save_settings",
+                    status="completed",
+                    origin="api",
+                    created_at="2026-04-10T09:00:00Z",
+                    started_at="2026-04-10T09:00:01Z",
+                    finished_at="2026-04-10T09:00:02Z",
+                    summary={
+                        "total": 1,
+                        "processed": 1,
+                        "skipped": 0,
+                        "failed": 0,
+                        "warnings": [],
+                    },
+                    error=None,
+                ),
+                result={
+                    "source_path": "/tmp/config.yaml",
+                    "config_version": 1,
+                },
+                items=[
+                    JobItemSummary(
+                        id=7,
+                        item_key="config.yaml",
+                        status="completed",
+                        source_path="/tmp/config.yaml",
+                        dest_path=None,
+                        movie_id=None,
+                        step="save_settings",
+                        message="Saved settings",
+                        metadata={"source": "api"},
+                        error=None,
+                        created_at="2026-04-10T09:00:01Z",
+                        started_at="2026-04-10T09:00:01Z",
+                        finished_at="2026-04-10T09:00:02Z",
+                    )
+                ],
+                events=[
+                    JobEventSummary(
+                        id=11,
+                        job_id="job-detail-1",
+                        event_type="job.started",
+                        payload={},
+                        created_at="2026-04-10T09:00:01Z",
+                    )
+                ],
+                settings_audit=SettingsAuditEntry(
+                    id=3,
+                    job_id="job-detail-1",
+                    source_path="~/.javs/config.yaml",
+                    config_version=1,
+                    before={},
+                    after={},
+                    change_summary={},
+                    created_at="2026-04-10T09:00:02Z",
+                ),
+            ),
+            "job-empty-1": JobDetail(
+                job=JobSummary(
+                    id="job-empty-1",
+                    kind="save_settings",
+                    status="completed",
+                    origin="api",
+                    created_at="2026-04-10T09:05:00Z",
+                    summary={
+                        "total": 1,
+                        "processed": 1,
+                        "skipped": 0,
+                        "failed": 0,
+                        "warnings": [],
+                    },
+                ),
+                result={"saved": 1},
+                items=[],
+                events=[],
+                settings_audit=None,
+            ),
+        }
 
     async def find_movie(self, request, *, origin: str = "cli") -> FindMovieResponse:
         self.calls.append(("find_movie", request, origin))
@@ -64,6 +173,16 @@ class StubFacade:
                 origin=origin,
             )
         )
+
+    def list_jobs(self, query: JobListQuery | None = None) -> JobListPage:
+        self.calls.append(("list_jobs", query, "api"))
+        if query is not None and query.limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        return self.job_list_page
+
+    def get_job(self, job_id: str) -> JobDetail | None:
+        self.calls.append(("get_job", job_id, "api"))
+        return self.jobs_by_id.get(job_id)
 
     def get_settings(self, source_path: Path) -> SettingsResponse:
         self.calls.append(("get_settings", source_path, "api"))
@@ -253,6 +372,172 @@ async def test_get_and_post_settings_route_through_facade(
     assert save_request.changes == {
         "proxy": {"enabled": True, "url": "http://127.0.0.1:8888"}
     }
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_routes_through_facade_and_serializes_typed_page(
+    api_app: tuple[object, StubFacade],
+) -> None:
+    app, facade = api_app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/jobs",
+            params={
+                "limit": 1,
+                "kind": "sort",
+                "status": "completed",
+                "origin": "api",
+                "q": "job-detail-1",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == facade.job_list_page.model_dump(mode="json")
+    assert len(facade.calls) == 1
+    call_name, query, origin = facade.calls[0]
+    assert call_name == "list_jobs"
+    assert origin == "api"
+    assert isinstance(query, JobListQuery)
+    assert query.limit == 1
+    assert query.kind == "sort"
+    assert query.status == "completed"
+    assert query.origin == "api"
+    assert query.q == "job-detail-1"
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_rejects_page_sizes_over_the_maximum(
+    api_app: tuple[object, StubFacade],
+) -> None:
+    app, facade = api_app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/jobs", params={"limit": 101})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "limit must be between 1 and 100"}
+    assert len(facade.calls) == 1
+    call_name, query, origin = facade.calls[0]
+    assert call_name == "list_jobs"
+    assert origin == "api"
+    assert isinstance(query, JobListQuery)
+    assert query.limit == 101
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_forwards_job_id_and_dest_path_search_queries(
+    api_app: tuple[object, StubFacade],
+) -> None:
+    app, facade = api_app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first_response = await client.get("/jobs", params={"q": "job-detail-1"})
+        second_response = await client.get(
+            "/jobs",
+            params={"q": "/library/sorted/ABP-420.nfo"},
+        )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert [call[0] for call in facade.calls] == ["list_jobs", "list_jobs"]
+    assert isinstance(facade.calls[0][1], JobListQuery)
+    assert isinstance(facade.calls[1][1], JobListQuery)
+    assert facade.calls[0][1].q == "job-detail-1"
+    assert facade.calls[1][1].q == "/library/sorted/ABP-420.nfo"
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_routes_through_facade_and_serializes_typed_detail(
+    api_app: tuple[object, StubFacade],
+) -> None:
+    app, facade = api_app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/jobs/job-detail-1")
+
+    assert response.status_code == 200
+    assert response.json() == facade.jobs_by_id["job-detail-1"].model_dump(mode="json")
+    assert len(facade.calls) == 1
+    call_name, job_id, origin = facade.calls[0]
+    assert call_name == "get_job"
+    assert origin == "api"
+    assert job_id == "job-detail-1"
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_returns_empty_arrays_when_job_has_no_history(
+    api_app: tuple[object, StubFacade],
+) -> None:
+    app, facade = api_app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/jobs/job-empty-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == facade.jobs_by_id["job-empty-1"].model_dump(mode="json")
+    assert payload["items"] == []
+    assert payload["events"] == []
+    assert payload["settings_audit"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_job_detail_returns_404_for_unknown_job_id(
+    api_app: tuple[object, StubFacade],
+) -> None:
+    app, facade = api_app
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/jobs/job-missing")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not found."}
+    assert len(facade.calls) == 1
+    call_name, job_id, origin = facade.calls[0]
+    assert call_name == "get_job"
+    assert origin == "api"
+    assert job_id == "job-missing"
+
+
+@pytest.mark.asyncio
+async def test_get_settings_returns_500_when_loading_fails() -> None:
+    class FailingFacade(StubFacade):
+        def get_settings(self, source_path: Path) -> SettingsResponse:
+            self.calls.append(("get_settings", source_path, "api"))
+            raise ValueError("config load failed")
+
+    app = create_app(FailingFacade())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/settings")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "config load failed"}
+
+
+@pytest.mark.asyncio
+async def test_get_settings_returns_500_when_validation_fails() -> None:
+    class FailingFacade(StubFacade):
+        def get_settings(self, source_path: Path) -> SettingsResponse:
+            self.calls.append(("get_settings", source_path, "api"))
+            raise RuntimeError("config validation failed")
+
+    app = create_app(FailingFacade())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/settings")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "config validation failed"}
 
 
 @pytest.mark.asyncio
