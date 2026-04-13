@@ -60,6 +60,9 @@ class SettingsAuditRepository(Protocol):
     def list_entries(self) -> list[dict[str, object]]:
         """Return persisted settings audit rows."""
 
+    def get_for_job(self, job_id: str) -> dict[str, object] | None:
+        """Return the newest persisted settings audit row for a job."""
+
 
 class PlatformHistory(Protocol):
     """Minimal history service contract exposed to the facade."""

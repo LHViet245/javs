@@ -40,6 +40,9 @@ class JobHistoryRepository(Protocol):
     def list_jobs(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         """Return stored job rows in newest-first order."""
 
+    def list_jobs_page(self, query: JobListQuery) -> object:
+        """Return a cursor-paginated page of stored job rows."""
+
 
 class JobItemsHistoryRepository(Protocol):
     """Read-side job item repository contract used by the application layer."""
@@ -294,6 +297,17 @@ def list_jobs(
 ) -> JobListPage:
     """Return a typed page of jobs for history consumers."""
     active_query = query or JobListQuery()
+    list_jobs_page = getattr(jobs, "list_jobs_page", None)
+    if callable(list_jobs_page):
+        page = list_jobs_page(active_query)
+        return JobListPage(
+            items=[
+                build_job_summary(record, normalize_summary=True)
+                for record in page.items
+            ],
+            next_cursor=page.next_cursor,
+        )
+
     unsupported_fields = [
         field
         for field in ("cursor", "kind", "status", "origin", "q")

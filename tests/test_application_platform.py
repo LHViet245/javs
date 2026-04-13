@@ -23,6 +23,7 @@ from javs.application import (
     SaveSettingsRequest,
     SaveSettingsResponse,
     SettingsAuditEntry,
+    SettingsAuditRepository,
     SettingsResponse,
     SettingsSaveError,
     SettingsView,
@@ -656,14 +657,39 @@ def test_facade_list_jobs_returns_typed_paginated_results(tmp_path: Path) -> Non
         jobs.update_job(second_job_id, summary_json={"processed": 2})
 
         page = facade.list_jobs(JobListQuery(limit=1))
+        next_page = facade.list_jobs(JobListQuery(limit=1, cursor=page.next_cursor))
     finally:
         connection.close()
 
     assert isinstance(page, JobListPage)
+    assert page.next_cursor is not None
+    assert len(page.items) == 1
+    assert len(next_page.items) == 1
+    assert {page.items[0].id, next_page.items[0].id} == {
+        first_job_id,
+        second_job_id,
+    }
+    assert page.items[0].summary["processed"] in {1, 2}
+    assert next_page.items[0].summary["processed"] in {1, 2}
+    assert page.items[0].summary != next_page.items[0].summary
+
+
+def test_facade_list_jobs_forwards_filters_and_cursor_queries(tmp_path: Path) -> None:
+    facade, connection, jobs, _, _ = build_history_facade(tmp_path)
+
+    try:
+        jobs.create_job(kind="find", origin="cli")
+        sort_job_id = jobs.create_job(kind="sort", origin="api")
+        jobs.update_job(sort_job_id, summary_json={"processed": 2})
+
+        page = facade.list_jobs(JobListQuery(limit=10, kind="sort"))
+    finally:
+        connection.close()
+
     assert page.next_cursor is None
     assert page.items == [
         JobSummary(
-            id=second_job_id,
+            id=sort_job_id,
             kind="sort",
             status="pending",
             origin="api",
@@ -677,6 +703,10 @@ def test_facade_list_jobs_returns_typed_paginated_results(tmp_path: Path) -> Non
             },
         )
     ]
+
+
+def test_settings_audit_facade_protocol_exposes_get_for_job() -> None:
+    assert hasattr(SettingsAuditRepository, "get_for_job")
 
 
 def test_facade_get_job_returns_detail_with_events_and_settings_audit(
