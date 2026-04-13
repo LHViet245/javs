@@ -340,6 +340,30 @@ def test_jobs_repository_search_matches_job_and_item_fields(
     assert [item["id"] for item in page.items] == [job_id]
 
 
+def test_jobs_repository_search_treats_like_metacharacters_as_literals(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    percent_job_id = seed_job_with_item(
+        context,
+        job_id="job-percent",
+        source_path="/incoming/100%.mkv",
+        movie_id="100%",
+    )
+    underscore_job_id = seed_job_with_item(
+        context,
+        job_id="job-underscore",
+        source_path="/incoming/ABC_123.mkv",
+        movie_id="ABC_123",
+    )
+
+    percent_page = context.jobs.list_jobs_page(JobListQuery(q="%"))
+    underscore_page = context.jobs.list_jobs_page(JobListQuery(q="_"))
+
+    assert [item["id"] for item in percent_page.items] == [percent_job_id]
+    assert [item["id"] for item in underscore_page.items] == [underscore_job_id]
+
+
 def test_jobs_repository_filters_by_status_and_origin(tmp_path: Path) -> None:
     context = make_history_context(tmp_path)
     seed_job(context.jobs, kind="find", status="completed", origin="cli")

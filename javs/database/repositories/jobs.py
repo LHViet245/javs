@@ -17,6 +17,7 @@ _MAX_JOB_LIST_LIMIT = 100
 _DEFAULT_JOB_LIST_LIMIT = 20
 _CURSOR_JSON_FIELDS = ("created_at", "id", "query")
 _CURSOR_QUERY_JSON_FIELDS = ("kind", "status", "origin", "q")
+_LIKE_ESCAPE_CHAR = "\\"
 
 
 @dataclass(slots=True)
@@ -112,13 +113,13 @@ class JobsRepository:
             parameters.append(value)
 
         if query.q is not None and query.q != "":
-            search_term = f"%{query.q}%"
+            search_term = f"%{_escape_like_term(query.q)}%"
             where_clauses.append(
                 "("
-                "jobs.id LIKE ? COLLATE NOCASE OR "
-                "job_items.movie_id LIKE ? COLLATE NOCASE OR "
-                "job_items.source_path LIKE ? COLLATE NOCASE OR "
-                "job_items.dest_path LIKE ? COLLATE NOCASE"
+                "jobs.id LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+                "job_items.movie_id LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+                "job_items.source_path LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+                "job_items.dest_path LIKE ? COLLATE NOCASE ESCAPE '\\'"
                 ")"
             )
             parameters.extend([search_term, search_term, search_term, search_term])
@@ -256,6 +257,14 @@ def _normalize_limit(limit: int | None) -> int:
     if limit < 1 or limit > _MAX_JOB_LIST_LIMIT:
         raise ValueError("limit must be between 1 and 100")
     return limit
+
+
+def _escape_like_term(term: str) -> str:
+    return (
+        term.replace(_LIKE_ESCAPE_CHAR, _LIKE_ESCAPE_CHAR * 2)
+        .replace("%", f"{_LIKE_ESCAPE_CHAR}%")
+        .replace("_", f"{_LIKE_ESCAPE_CHAR}_")
+    )
 
 
 def _query_envelope(query: JobListQuery) -> dict[str, str | None]:
