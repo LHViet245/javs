@@ -2,10 +2,40 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
 from javs.jobs.executor import serialize_job_value
+
+
+@dataclass(slots=True, frozen=True)
+class RealtimeEvent:
+    """In-process event published after a job event is stored."""
+
+    id: int
+    job_id: str
+    event_type: str
+    job_item_id: int | None
+    payload: object | None
+
+
+class EventHub:
+    """Shared in-process hub for realtime job event fanout."""
+
+    def __init__(self) -> None:
+        self._subscribers: list[asyncio.Queue[RealtimeEvent]] = []
+
+    def subscribe(self) -> asyncio.Queue[RealtimeEvent]:
+        """Register a queue that receives live events in publish order."""
+        queue: asyncio.Queue[RealtimeEvent] = asyncio.Queue()
+        self._subscribers.append(queue)
+        return queue
+
+    def publish_nowait(self, event: RealtimeEvent) -> None:
+        """Fan out an event to all current subscribers without awaiting."""
+        for queue in list(self._subscribers):
+            queue.put_nowait(event)
 
 
 class JobEventRepository(Protocol):
@@ -28,6 +58,7 @@ class PlatformJobEvents:
 
     repository: JobEventRepository
     job_id: str
+    hub: EventHub | None = None
 
     def emit(
         self,
@@ -37,12 +68,23 @@ class PlatformJobEvents:
         job_item_id: int | None = None,
     ) -> int:
         """Persist a raw event for the active job."""
-        return self.repository.add_event(
+        event_id = self.repository.add_event(
             job_id=self.job_id,
             job_item_id=job_item_id,
             event_type=event_type,
             payload_json=serialize_job_value(payload),
         )
+        if self.hub is not None:
+            self.hub.publish_nowait(
+                RealtimeEvent(
+                    id=event_id,
+                    job_id=self.job_id,
+                    event_type=event_type,
+                    job_item_id=job_item_id,
+                    payload=serialize_job_value(payload),
+                )
+            )
+        return event_id
 
     def emit_job_created(self, *, kind: str, origin: str, request: object | None = None) -> int:
         """Persist the initial job-created event."""

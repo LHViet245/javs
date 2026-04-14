@@ -559,6 +559,128 @@ def build_platform_runner(tmp_path: Path):
     )
 
 
+def test_cli_platform_facade_threads_shared_event_hub(tmp_path: Path) -> None:
+    from javs.application import FindMovieRequest
+    from javs.cli import _build_platform_facade
+    from javs.jobs import JobExecutionContext, JobExecutionResult
+
+    cfg = JavsConfig()
+    cfg.database.path = str(tmp_path / "cli-platform.db")
+
+    facade, cleanup = _build_platform_facade(cfg, tmp_path / "config.yaml")
+
+    async def run_job() -> tuple[str, list[object]]:
+        subscriber = facade.runner.hub.subscribe()
+
+        async def successful_executor(
+            context: JobExecutionContext[FindMovieRequest],
+        ) -> JobExecutionResult:
+            assert context.job_id
+            return JobExecutionResult(result={"movie_id": context.request.movie_id})
+
+        job_id = await facade.runner.run_job(
+            kind="find",
+            origin="cli",
+            request=FindMovieRequest(movie_id="ABP-420"),
+            executor=successful_executor,
+        )
+        queued_events = [
+            await asyncio.wait_for(subscriber.get(), timeout=1),
+            await asyncio.wait_for(subscriber.get(), timeout=1),
+            await asyncio.wait_for(subscriber.get(), timeout=1),
+        ]
+        return job_id, queued_events
+
+    try:
+        job_id, queued_events = asyncio.run(run_job())
+    finally:
+        cleanup()
+
+    assert job_id
+    assert [event.event_type for event in queued_events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_platform_job_events_emit_publishes_to_shared_hub(platform_runtime) -> None:
+    from javs.jobs.events import PlatformJobEvents, RealtimeEvent
+
+    job_id = platform_runtime.jobs.create_job(
+        kind="find",
+        origin="cli",
+        request_json={"movie_id": "ABP-420"},
+    )
+    subscriber = platform_runtime.hub.subscribe()
+
+    job_events = PlatformJobEvents(
+        repository=platform_runtime.events,
+        job_id=job_id,
+        hub=platform_runtime.hub,
+    )
+
+    event_id = job_events.emit(
+        "job.started",
+        payload={"kind": "find", "origin": "cli"},
+    )
+
+    queued_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+
+    assert isinstance(queued_event, RealtimeEvent)
+    assert queued_event.id == event_id
+    assert queued_event.job_id == job_id
+    assert queued_event.event_type == "job.started"
+    assert queued_event.job_item_id is None
+    assert queued_event.payload == {"kind": "find", "origin": "cli"}
+    assert platform_runtime.events.list_for_job(job_id)[0]["event_type"] == "job.started"
+
+
+@pytest.mark.asyncio
+async def test_platform_runner_publishes_live_events_to_shared_hub(platform_runtime) -> None:
+    from javs.application import FindMovieRequest
+    from javs.jobs import JobExecutionContext, JobExecutionResult
+    from javs.jobs.events import RealtimeEvent
+
+    subscriber = platform_runtime.hub.subscribe()
+
+    async def successful_executor(
+        context: JobExecutionContext[FindMovieRequest],
+    ) -> JobExecutionResult:
+        assert context.job_id
+        assert context.events is not None
+        return JobExecutionResult(
+            result={"movie_id": context.request.movie_id},
+            summary={"matched": 1},
+        )
+
+    job_id = await platform_runtime.runner.run_job(
+        kind="find",
+        origin="cli",
+        request=FindMovieRequest(movie_id="ABP-420"),
+        executor=successful_executor,
+    )
+
+    queued_events = [
+        await asyncio.wait_for(subscriber.get(), timeout=1),
+        await asyncio.wait_for(subscriber.get(), timeout=1),
+        await asyncio.wait_for(subscriber.get(), timeout=1),
+    ]
+
+    assert job_id
+    assert [event.event_type for event in queued_events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+    assert all(isinstance(event, RealtimeEvent) for event in queued_events)
+    assert queued_events[-1].payload == {
+        "result": {"movie_id": "ABP-420"},
+        "summary": {"matched": 1},
+    }
+
+
 def load_persisted_job_state(
     db_path: Path,
     job_id: str,

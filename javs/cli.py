@@ -96,6 +96,7 @@ def _build_platform_facade(cfg, config_path: Path):
     from javs.database.repositories.jobs import JobsRepository
     from javs.database.repositories.settings_audit import SettingsAuditRepository
     from javs.jobs import PlatformJobRunner
+    from javs.jobs.events import EventHub
 
     db_path = resolve_database_path(cfg)
     initialize_database(db_path)
@@ -104,6 +105,7 @@ def _build_platform_facade(cfg, config_path: Path):
     events = JobEventsRepository(connection)
     job_items = JobItemsRepository(connection)
     settings_audit = SettingsAuditRepository(connection)
+    realtime_hub = EventHub()
 
     def engine_factory() -> JavsEngine:
         return JavsEngine(
@@ -116,7 +118,7 @@ def _build_platform_facade(cfg, config_path: Path):
         job_items=job_items,
         events=events,
         settings_audit=settings_audit,
-        runner=PlatformJobRunner(jobs=jobs, events=events),
+        runner=PlatformJobRunner(jobs=jobs, events=events, hub=realtime_hub),
         find_engine_factory=engine_factory,
         sort_engine_factory=engine_factory,
         update_engine_factory=engine_factory,

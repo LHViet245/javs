@@ -1,6 +1,21 @@
 """Test configuration for pytest."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
 import pytest
+
+
+@dataclass(slots=True)
+class PlatformRuntime:
+    db_path: Path
+    connection: object
+    hub: object
+    jobs: object
+    events: object
+    runner: object
 
 
 @pytest.fixture
@@ -41,3 +56,38 @@ def sample_movie_data():
         cover_url="https://example.com/cover.jpg",
         source="test",
     )
+
+
+@pytest.fixture
+def realtime_event_hub():
+    from javs.jobs.events import EventHub
+
+    return EventHub()
+
+
+@pytest.fixture
+def platform_runtime(tmp_path: Path, realtime_event_hub):
+    from javs.database.connection import open_database
+    from javs.database.migrations import initialize_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.jobs import PlatformJobRunner
+
+    db_path = tmp_path / "platform.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+
+    runtime = PlatformRuntime(
+        db_path=db_path,
+        connection=connection,
+        hub=realtime_event_hub,
+        jobs=jobs,
+        events=events,
+        runner=PlatformJobRunner(jobs=jobs, events=events, hub=realtime_event_hub),
+    )
+    try:
+        yield runtime
+    finally:
+        connection.close()
