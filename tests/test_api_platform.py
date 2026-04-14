@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -33,9 +36,10 @@ from javs.models.movie import MovieData
 
 
 class StubFacade:
-    def __init__(self) -> None:
+    def __init__(self, hub=None) -> None:
         self.calls: list[tuple[str, object, str]] = []
         self.settings_path: Path | None = None
+        self.runner = SimpleNamespace(hub=hub)
         self.job_list_page = JobListPage(
             items=[
                 JobSummary(
@@ -218,8 +222,8 @@ class StubFacade:
 
 
 @pytest.fixture
-def api_app() -> tuple[object, StubFacade]:
-    facade = StubFacade()
+def api_app(realtime_event_hub) -> tuple[object, StubFacade]:
+    facade = StubFacade(hub=realtime_event_hub)
     return create_app(facade), facade
 
 
@@ -504,6 +508,176 @@ async def test_get_job_detail_returns_404_for_unknown_job_id(
     assert call_name == "get_job"
     assert origin == "api"
     assert job_id == "job-missing"
+
+
+@pytest.mark.asyncio
+async def test_get_events_stream_broadcasts_shared_realtime_events(
+    api_app_with_hub: tuple[object, StubFacade, object],
+    publish_test_event,
+) -> None:
+    app, facade, hub = api_app_with_hub
+
+    stream = await _open_sse_stream(app)
+    try:
+        start = await asyncio.wait_for(stream.messages.get(), timeout=1)
+        assert start["type"] == "http.response.start"
+        headers = {name: value for name, value in start["headers"]}
+        assert headers[b"content-type"].startswith(b"text/event-stream")
+
+        publish_test_event(
+            hub,
+            event_id=12,
+            job_id="job-stream-1",
+            event_type="job.started",
+            payload={"kind": "find", "origin": "api"},
+        )
+
+        event_lines = await _read_next_sse_frame(stream.messages)
+    finally:
+        await _cancel_stream(stream.task)
+
+    assert len(facade.calls) == 0
+    assert event_lines == _expected_sse_frame(
+        event_type="job.started",
+        event_id=12,
+        job_id="job-stream-1",
+        payload={"kind": "find", "origin": "api"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_events_stream_filters_by_job_id(
+    api_app_with_hub: tuple[object, StubFacade, object],
+    publish_test_event,
+) -> None:
+    app, facade, hub = api_app_with_hub
+
+    stream = await _open_sse_stream(app, query_string=b"job_id=job-stream-2")
+    try:
+        start = await asyncio.wait_for(stream.messages.get(), timeout=1)
+        assert start["type"] == "http.response.start"
+
+        publish_test_event(
+            hub,
+            event_id=13,
+            job_id="job-stream-1",
+            event_type="job.started",
+            payload={"kind": "find"},
+        )
+        publish_test_event(
+            hub,
+            event_id=14,
+            job_id="job-stream-2",
+            event_type="job.completed",
+            payload={"result": {"movie_id": "ABP-420"}},
+        )
+
+        event_lines = await _read_next_sse_frame(stream.messages)
+    finally:
+        await _cancel_stream(stream.task)
+
+    assert len(facade.calls) == 0
+    assert event_lines == _expected_sse_frame(
+        event_type="job.completed",
+        event_id=14,
+        job_id="job-stream-2",
+        payload={"result": {"movie_id": "ABP-420"}},
+    )
+
+
+class _ASGIStream:
+    def __init__(
+        self,
+        task: asyncio.Task[None],
+        messages: asyncio.Queue[dict[str, object]],
+    ) -> None:
+        self.task = task
+        self.messages = messages
+
+
+async def _open_sse_stream(app, *, query_string: bytes = b"") -> _ASGIStream:
+    messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    request_sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": b"",
+                "more_body": False,
+            }
+        await asyncio.Future()
+
+    async def send(message: dict[str, object]) -> None:
+        await messages.put(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/events/stream",
+        "raw_path": b"/events/stream",
+        "query_string": query_string,
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    }
+    task = asyncio.create_task(app(scope, receive, send))
+    return _ASGIStream(task, messages)
+
+
+async def _cancel_stream(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _read_next_sse_frame(messages: asyncio.Queue[dict[str, object]]) -> list[str]:
+    lines: list[str] = []
+    while True:
+        message = await asyncio.wait_for(messages.get(), timeout=1)
+        if message["type"] != "http.response.body":
+            continue
+        body = message.get("body", b"")
+        if not body:
+            continue
+        for line in body.decode("utf-8").splitlines():
+            if line:
+                lines.append(line)
+        if lines:
+            return lines
+    raise AssertionError("SSE stream closed before a complete event frame arrived.")
+
+
+def _expected_sse_frame(
+    *,
+    event_type: str,
+    event_id: int,
+    job_id: str,
+    payload: object | None,
+) -> list[str]:
+    frame = {
+        "event": {
+            "created_at": None,
+            "event_type": event_type,
+            "id": event_id,
+            "job_id": job_id,
+            "job_item_id": None,
+            "payload": payload,
+        },
+        "job_id": job_id,
+        "type": event_type,
+    }
+    return [
+        f"event: {event_type}",
+        f"data: {json.dumps(frame, ensure_ascii=False, separators=(',', ':'), sort_keys=True)}",
+    ]
 
 
 @pytest.mark.asyncio

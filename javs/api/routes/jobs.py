@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -9,11 +10,14 @@ from javs.application import (
     FindMovieRequest,
     FindMovieResponse,
     JobDetail,
+    JobEventSummary,
     JobListPage,
     JobListQuery,
+    RealtimeEvent,
     SortJobRequest,
     UpdateJobRequest,
 )
+from javs.jobs.events import RealtimeEvent as HubRealtimeEvent
 
 
 async def handle_find_job(facade, payload: Mapping[str, Any]) -> FindMovieResponse:
@@ -43,3 +47,29 @@ def handle_list_jobs(facade, query_params: Mapping[str, Any] | None = None) -> J
 def handle_get_job(facade, job_id: str) -> JobDetail | None:
     """Return a typed job detail through the shared facade."""
     return facade.get_job(job_id)
+
+
+def build_realtime_event(event: HubRealtimeEvent) -> RealtimeEvent:
+    """Adapt a hub event into the shared realtime response model."""
+    return RealtimeEvent(
+        type=event.event_type,
+        job_id=event.job_id,
+        event=JobEventSummary(
+            id=event.id,
+            job_id=event.job_id,
+            event_type=event.event_type,
+            job_item_id=event.job_item_id,
+            payload=event.payload,
+            created_at=None,
+        ),
+    )
+
+
+def serialize_realtime_event(event: RealtimeEvent) -> str:
+    """Serialize the shared realtime event model for transport."""
+    return json.dumps(
+        event.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )

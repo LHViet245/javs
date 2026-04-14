@@ -66,6 +66,37 @@ def realtime_event_hub():
 
 
 @pytest.fixture
+def publish_test_event():
+    from javs.jobs.events import RealtimeEvent
+
+    def _publish(
+        hub,
+        *,
+        event_id: int = 1,
+        job_id: str = "job-1",
+        event_type: str = "job.started",
+        job_item_id: int | None = None,
+        payload: object | None = None,
+    ) -> RealtimeEvent:
+        event = RealtimeEvent(
+            id=event_id,
+            job_id=job_id,
+            event_type=event_type,
+            job_item_id=job_item_id,
+            payload=payload,
+        )
+        hub.publish_nowait(event)
+        return event
+
+    return _publish
+
+
+@pytest.fixture
+def api_app_with_hub(api_app, realtime_event_hub):
+    return api_app[0], api_app[1], realtime_event_hub
+
+
+@pytest.fixture
 def platform_runtime(tmp_path: Path, realtime_event_hub):
     from javs.database.connection import open_database
     from javs.database.migrations import initialize_database

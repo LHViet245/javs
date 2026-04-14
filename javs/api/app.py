@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs
 
-from javs.api.routes import (
+from javs.api.routes.jobs import (
+    build_realtime_event,
     handle_find_job,
     handle_get_job,
-    handle_get_settings,
     handle_list_jobs,
-    handle_save_settings,
     handle_sort_job,
     handle_update_job,
+    serialize_realtime_event,
 )
+from javs.api.routes.settings import handle_get_settings, handle_save_settings
 from javs.application import BatchJobError, SettingsSaveError
 from javs.application.find import FindMovieError
 from javs.application.settings import SettingsValidationError
@@ -26,6 +28,13 @@ Receive = Callable[[], Awaitable[dict[str, Any]]]
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 _JOB_POST_PATHS = {"/jobs/find", "/jobs/sort", "/jobs/update", "/settings"}
+_SSE_HEADERS = [
+    (b"content-type", b"text/event-stream; charset=utf-8"),
+    (b"cache-control", b"no-cache"),
+    (b"connection", b"keep-alive"),
+    (b"x-accel-buffering", b"no"),
+]
+_SSE_DISCONNECT_MESSAGE = {"type": "http.disconnect"}
 
 
 @dataclass(slots=True)
@@ -73,6 +82,10 @@ class JavsAPIApp:
                         await self._send_json(send, 500, {"detail": str(error)})
                         return
                     await self._send_json(send, 200, self._to_json_payload(payload))
+                    return
+
+                if path == "/events/stream":
+                    await self._stream_events(scope, receive, send)
                     return
 
             if method == "POST" and path in _JOB_POST_PATHS:
@@ -141,6 +154,32 @@ class JavsAPIApp:
         await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
+    async def _stream_events(self, scope: Scope, receive: Receive, send: Send) -> None:
+        hub = self._event_hub()
+        if hub is None:
+            await self._send_json(send, 503, {"detail": "Realtime stream is unavailable."})
+            return
+
+        queue = hub.subscribe()
+        job_id = self._query_param(scope, "job_id")
+
+        try:
+            await send({"type": "http.response.start", "status": 200, "headers": _SSE_HEADERS})
+            await send({"type": "http.response.body", "body": b"", "more_body": True})
+            while True:
+                event = await queue.get()
+                if job_id is not None and event.job_id != job_id:
+                    continue
+
+                shared_event = build_realtime_event(event)
+                frame = serialize_realtime_event(shared_event)
+                body = f"event: {shared_event.type}\ndata: {frame}\n\n".encode()
+                await send({"type": "http.response.body", "body": body, "more_body": True})
+        except asyncio.CancelledError:
+            raise
+        finally:
+            hub.close(queue)
+
     @staticmethod
     def _to_json_payload(payload: Any) -> Any:
         if hasattr(payload, "model_dump"):
@@ -161,6 +200,10 @@ class JavsAPIApp:
         query_string = scope.get("query_string", b"").decode("utf-8")
         query = parse_qs(query_string, keep_blank_values=True)
         return {key: values[0] for key, values in query.items() if values}
+
+    def _event_hub(self) -> object | None:
+        runner = getattr(self.facade, "runner", None)
+        return getattr(runner, "hub", None)
 
     @staticmethod
     def _build_application_error_payload(
