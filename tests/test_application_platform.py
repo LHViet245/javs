@@ -638,6 +638,27 @@ async def test_platform_job_events_emit_publishes_to_shared_hub(platform_runtime
 
 
 @pytest.mark.asyncio
+async def test_event_hub_broadcasts_to_multiple_subscribers() -> None:
+    from javs.jobs.events import EventHub, RealtimeEvent
+
+    hub = EventHub()
+    first = hub.subscribe()
+    second = hub.subscribe()
+    event = RealtimeEvent(
+        id=1,
+        job_id="job-1",
+        event_type="job.started",
+        job_item_id=None,
+        payload={"kind": "find"},
+    )
+
+    hub.publish_nowait(event)
+
+    assert await asyncio.wait_for(first.get(), timeout=1) == event
+    assert await asyncio.wait_for(second.get(), timeout=1) == event
+
+
+@pytest.mark.asyncio
 async def test_platform_runner_publishes_live_events_to_shared_hub(platform_runtime) -> None:
     from javs.application import FindMovieRequest
     from javs.jobs import JobExecutionContext, JobExecutionResult
