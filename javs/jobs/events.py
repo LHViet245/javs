@@ -32,6 +32,17 @@ class EventHub:
         self._subscribers.append(queue)
         return queue
 
+    def unsubscribe(self, queue: asyncio.Queue[RealtimeEvent]) -> None:
+        """Remove a previously subscribed queue from the hub."""
+        try:
+            self._subscribers.remove(queue)
+        except ValueError:
+            pass
+
+    def close(self, queue: asyncio.Queue[RealtimeEvent]) -> None:
+        """Alias for unsubscribe to support explicit subscriber teardown."""
+        self.unsubscribe(queue)
+
     def publish_nowait(self, event: RealtimeEvent) -> None:
         """Fan out an event to all current subscribers without awaiting."""
         for queue in list(self._subscribers):

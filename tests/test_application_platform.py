@@ -659,6 +659,37 @@ async def test_event_hub_broadcasts_to_multiple_subscribers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_hub_unsubscribe_stops_future_broadcasts() -> None:
+    from javs.jobs.events import EventHub, RealtimeEvent
+
+    hub = EventHub()
+    subscriber = hub.subscribe()
+    first_event = RealtimeEvent(
+        id=1,
+        job_id="job-1",
+        event_type="job.started",
+        job_item_id=None,
+        payload=None,
+    )
+    second_event = RealtimeEvent(
+        id=2,
+        job_id="job-1",
+        event_type="job.completed",
+        job_item_id=None,
+        payload=None,
+    )
+
+    hub.publish_nowait(first_event)
+    assert await asyncio.wait_for(subscriber.get(), timeout=1) == first_event
+
+    hub.unsubscribe(subscriber)
+    hub.publish_nowait(second_event)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(subscriber.get(), timeout=0.1)
+
+
+@pytest.mark.asyncio
 async def test_platform_runner_publishes_live_events_to_shared_hub(platform_runtime) -> None:
     from javs.application import FindMovieRequest
     from javs.jobs import JobExecutionContext, JobExecutionResult
