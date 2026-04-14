@@ -626,6 +626,11 @@ async def test_platform_job_events_emit_publishes_to_shared_hub(platform_runtime
         payload={"kind": "find", "origin": "cli"},
     )
 
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(subscriber.get(), timeout=0.1)
+
+    job_events.flush_live_events()
+
     queued_event = await asyncio.wait_for(subscriber.get(), timeout=1)
 
     assert isinstance(queued_event, RealtimeEvent)

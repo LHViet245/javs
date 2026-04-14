@@ -57,6 +57,7 @@ class PlatformJobRunner:
         self.jobs.mark_started(job_id)
         job_events.emit_job_started(kind=kind, origin=origin)
         self.connection.commit()
+        job_events.flush_live_events()
 
         context = JobExecutionContext(
             job_id=job_id,
@@ -78,6 +79,7 @@ class PlatformJobRunner:
                 summary=execution.summary,
             )
             self.connection.commit()
+            job_events.flush_live_events()
         except asyncio.CancelledError:
             self._mark_cancelled(job_id, job_events)
             raise
@@ -168,6 +170,7 @@ class PlatformJobRunner:
         )
         job_events.emit_job_failed(error=failure)
         self.connection.commit()
+        job_events.flush_live_events()
 
     def _mark_cancelled(
         self,
@@ -189,3 +192,4 @@ class PlatformJobRunner:
         )
         job_events.emit_job_cancelled(error=cancellation)
         self.connection.commit()
+        job_events.flush_live_events()

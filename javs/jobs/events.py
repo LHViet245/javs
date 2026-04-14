@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from javs.jobs.executor import serialize_job_value
@@ -70,6 +70,7 @@ class PlatformJobEvents:
     repository: JobEventRepository
     job_id: str
     hub: EventHub | None = None
+    _pending_live_events: list[RealtimeEvent] = field(default_factory=list)
 
     def emit(
         self,
@@ -86,7 +87,7 @@ class PlatformJobEvents:
             payload_json=serialize_job_value(payload),
         )
         if self.hub is not None:
-            self.hub.publish_nowait(
+            self._pending_live_events.append(
                 RealtimeEvent(
                     id=event_id,
                     job_id=self.job_id,
@@ -96,6 +97,15 @@ class PlatformJobEvents:
                 )
             )
         return event_id
+
+    def flush_live_events(self) -> None:
+        """Publish buffered live events after the surrounding commit succeeds."""
+        if self.hub is None or not self._pending_live_events:
+            return
+
+        for event in self._pending_live_events:
+            self.hub.publish_nowait(event)
+        self._pending_live_events.clear()
 
     def emit_job_created(self, *, kind: str, origin: str, request: object | None = None) -> int:
         """Persist the initial job-created event."""
