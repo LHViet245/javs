@@ -709,6 +709,28 @@ async def test_websocket_stream_uses_shared_event_payload_shape(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_frame",
+    [
+        {"type": "websocket.receive", "text": "{"},
+        {"type": "websocket.receive", "bytes": b"\xff"},
+    ],
+)
+async def test_websocket_stream_closes_cleanly_for_malformed_initial_subscribe_frame(
+    api_app_with_hub: tuple[object, StubFacade, object],
+    websocket_session,
+    raw_frame,
+) -> None:
+    app, _, _ = api_app_with_hub
+
+    async with websocket_session(app, "/ws/jobs") as ws:
+        await ws._receive_messages.put(raw_frame)
+        close_message = await asyncio.wait_for(ws._messages.get(), timeout=1)
+
+    assert close_message == {"type": "websocket.close", "code": 1003}
+
+
 class _ASGIStream:
     def __init__(
         self,

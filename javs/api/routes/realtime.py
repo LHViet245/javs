@@ -108,10 +108,12 @@ async def _receive_subscription(receive) -> RealtimeSubscription | None:
         raw_value = raw_text if raw_text is not None else raw_bytes
         if raw_value is None:
             return None
-        if isinstance(raw_value, bytes):
-            raw_value = raw_value.decode("utf-8")
-
-        payload = json.loads(raw_value)
+        try:
+            if isinstance(raw_value, bytes):
+                raw_value = raw_value.decode("utf-8")
+            payload = json.loads(raw_value)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return None
         if not isinstance(payload, dict) or payload.get("action") != "subscribe":
             return None
 
