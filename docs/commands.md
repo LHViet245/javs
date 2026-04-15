@@ -271,3 +271,69 @@ Use `scrapers` when you want to confirm the built-in scraper names before settin
 
 - assuming `scrapers` shows which sources are enabled in your config; it lists registered plugins, not your current config state
 - using scraper names in `--scrapers` that do not appear in this list
+
+## History And Realtime Backend Surface
+
+JavS now exposes a small backend read surface for history and live job updates. It is intended for future dashboard and automation clients, not as a completed dashboard product.
+
+### `GET /jobs`
+
+Purpose:
+
+- list recent jobs from the stored history database
+- support future UI and API clients that need cursor-based browsing
+
+Query parameters:
+
+- `limit`
+- `cursor`
+- `kind`
+- `status`
+- `origin`
+- `q`
+
+Notes:
+
+- results are ordered newest-first
+- the cursor is opaque and should be reused with the same filter and search parameters that produced it
+- search matches `job_id`, `job_items.movie_id`, `job_items.source_path`, and `job_items.dest_path`
+- list items include progress counters such as `processed`, `skipped`, `failed`, and `warnings`
+
+### `GET /jobs/{id}`
+
+Purpose:
+
+- load one stored job with its detail payload
+- support future detail or side-panel views
+
+Response includes:
+
+- the job summary row
+- result payload
+- job items
+- stored events in timeline order
+- settings audit data when the job is `save_settings`
+
+### `GET /settings`
+
+Purpose:
+
+- read the active settings view
+
+Important:
+
+- YAML remains the editable source of truth for settings
+- SQLite stores jobs, events, and settings audit history, but it is not the live settings source
+
+### Realtime Feeds
+
+JavS exposes two realtime transports over the same logical job event model:
+
+- `GET /events/stream` for SSE
+- `/ws/jobs` for WebSocket subscriptions
+
+Subscription notes:
+
+- omit `job_id` to subscribe to the global stream
+- provide `job_id` to subscribe to one job
+- both transports publish the same live event content
