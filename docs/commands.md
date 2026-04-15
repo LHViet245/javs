@@ -294,7 +294,9 @@ Query parameters:
 
 Notes:
 
-- results are ordered newest-first
+- default `limit` is `20`
+- maximum `limit` is `100`
+- results are ordered newest-first by `created_at DESC, id DESC`
 - the cursor is opaque and should be reused with the same filter and search parameters that produced it
 - search matches `job_id`, `job_items.movie_id`, `job_items.source_path`, and `job_items.dest_path`
 - list items include progress counters such as `processed`, `skipped`, `failed`, and `warnings`
@@ -334,6 +336,8 @@ JavS exposes two realtime transports over the same logical job event model:
 
 Subscription notes:
 
+- `{"action":"subscribe"}`
+- `{"action":"subscribe","job_id":"..."}`
 - omit `job_id` to subscribe to the global stream
 - provide `job_id` to subscribe to one job
 - both transports publish the same live event content
