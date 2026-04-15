@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -585,30 +586,52 @@ async def test_get_events_stream_filters_by_job_id(
     )
 
 
+@pytest.mark.asyncio
+async def test_get_events_stream_unregisters_subscriber_on_disconnect(
+    api_app_with_hub: tuple[object, StubFacade, object],
+) -> None:
+    app, _, hub = api_app_with_hub
+
+    stream = await _open_sse_stream(app)
+    start = await asyncio.wait_for(stream.messages.get(), timeout=1)
+    assert start["type"] == "http.response.start"
+    assert len(hub._subscribers) == 1
+
+    await stream.disconnect()
+    await asyncio.wait_for(stream.task, timeout=1)
+
+    assert stream.task.done()
+    assert len(hub._subscribers) == 0
+
+
 class _ASGIStream:
     def __init__(
         self,
         task: asyncio.Task[None],
         messages: asyncio.Queue[dict[str, object]],
+        disconnect: Callable[[], Awaitable[None]],
     ) -> None:
         self.task = task
         self.messages = messages
+        self.disconnect = disconnect
 
 
 async def _open_sse_stream(app, *, query_string: bytes = b"") -> _ASGIStream:
     messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-    request_sent = False
+    receive_messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    await receive_messages.put(
+        {
+            "type": "http.request",
+            "body": b"",
+            "more_body": False,
+        }
+    )
 
     async def receive() -> dict[str, object]:
-        nonlocal request_sent
-        if not request_sent:
-            request_sent = True
-            return {
-                "type": "http.request",
-                "body": b"",
-                "more_body": False,
-            }
-        await asyncio.Future()
+        return await receive_messages.get()
+
+    async def disconnect() -> None:
+        await receive_messages.put({"type": "http.disconnect"})
 
     async def send(message: dict[str, object]) -> None:
         await messages.put(message)
@@ -627,7 +650,7 @@ async def _open_sse_stream(app, *, query_string: bytes = b"") -> _ASGIStream:
         "server": ("test", 80),
     }
     task = asyncio.create_task(app(scope, receive, send))
-    return _ASGIStream(task, messages)
+    return _ASGIStream(task, messages, disconnect)
 
 
 async def _cancel_stream(task: asyncio.Task[None]) -> None:

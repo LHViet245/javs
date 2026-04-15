@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs
@@ -162,12 +163,38 @@ class JavsAPIApp:
 
         queue = hub.subscribe()
         job_id = self._query_param(scope, "job_id")
+        disconnect_task: asyncio.Task[Any] | None = None
+        event_task: asyncio.Task[Any] | None = None
 
         try:
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                if message["type"] == "http.request" and not message.get("more_body", False):
+                    break
+
             await send({"type": "http.response.start", "status": 200, "headers": _SSE_HEADERS})
             await send({"type": "http.response.body", "body": b"", "more_body": True})
+            disconnect_task = asyncio.create_task(receive())
             while True:
-                event = await queue.get()
+                event_task = asyncio.create_task(queue.get())
+                done, _pending = await asyncio.wait(
+                    {disconnect_task, event_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if disconnect_task is not None and disconnect_task in done:
+                    message = disconnect_task.result()
+                    event_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await event_task
+                    if message["type"] == "http.disconnect":
+                        break
+                    disconnect_task = asyncio.create_task(receive())
+                    continue
+
+                event = event_task.result()
+                event_task = None
                 if job_id is not None and event.job_id != job_id:
                     continue
 
@@ -178,6 +205,15 @@ class JavsAPIApp:
         except asyncio.CancelledError:
             raise
         finally:
+            if event_task is not None and not event_task.done():
+                event_task.cancel()
+            if disconnect_task is not None and not disconnect_task.done():
+                disconnect_task.cancel()
+            for task in (event_task, disconnect_task):
+                if task is None:
+                    continue
+                with suppress(asyncio.CancelledError):
+                    await task
             hub.close(queue)
 
     @staticmethod
