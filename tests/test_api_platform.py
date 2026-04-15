@@ -604,6 +604,111 @@ async def test_get_events_stream_unregisters_subscriber_on_disconnect(
     assert len(hub._subscribers) == 0
 
 
+@pytest.mark.asyncio
+async def test_websocket_stream_receives_global_events(
+    api_app_with_hub: tuple[object, StubFacade, object],
+    publish_test_event,
+    websocket_session,
+) -> None:
+    app, facade, hub = api_app_with_hub
+
+    async with websocket_session(app, "/ws/jobs") as ws:
+        await ws.send_json({"action": "subscribe"})
+        assert await ws.receive_json() == {"type": "subscribed", "job_id": None}
+
+        publish_test_event(
+            hub,
+            event_id=21,
+            job_id="job-stream-3",
+            event_type="job.started",
+            payload={"kind": "find", "origin": "api"},
+        )
+
+        message = await ws.receive_json()
+
+    assert len(facade.calls) == 0
+    assert message == _expected_realtime_event_message(
+        event_type="job.started",
+        event_id=21,
+        job_id="job-stream-3",
+        payload={"kind": "find", "origin": "api"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_stream_filters_by_job_id(
+    api_app_with_hub: tuple[object, StubFacade, object],
+    publish_test_event,
+    websocket_session,
+) -> None:
+    app, facade, hub = api_app_with_hub
+
+    async with websocket_session(app, "/ws/jobs") as ws:
+        await ws.send_json({"action": "subscribe", "job_id": "job-stream-4"})
+        assert await ws.receive_json() == {"type": "subscribed", "job_id": "job-stream-4"}
+
+        publish_test_event(
+            hub,
+            event_id=22,
+            job_id="job-stream-3",
+            event_type="job.started",
+            payload={"kind": "find"},
+        )
+        publish_test_event(
+            hub,
+            event_id=23,
+            job_id="job-stream-4",
+            event_type="job.completed",
+            payload={"result": {"movie_id": "ABP-420"}},
+        )
+
+        message = await ws.receive_json()
+
+    assert len(facade.calls) == 0
+    assert message == _expected_realtime_event_message(
+        event_type="job.completed",
+        event_id=23,
+        job_id="job-stream-4",
+        payload={"result": {"movie_id": "ABP-420"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_stream_uses_shared_event_payload_shape(
+    api_app_with_hub: tuple[object, StubFacade, object],
+    publish_test_event,
+    websocket_session,
+) -> None:
+    app, _, hub = api_app_with_hub
+
+    async with websocket_session(app, "/ws/jobs") as ws:
+        await ws.send_json({"action": "subscribe"})
+        assert await ws.receive_json() == {"type": "subscribed", "job_id": None}
+
+        publish_test_event(
+            hub,
+            event_id=24,
+            job_id="job-stream-5",
+            event_type="job.updated",
+            payload={
+                "result": {"movie_id": "ABP-420"},
+                "summary": {"processed": 1, "failed": 0},
+            },
+        )
+
+        message = await ws.receive_json()
+
+    assert message == _expected_realtime_event_message(
+        event_type="job.updated",
+        event_id=24,
+        job_id="job-stream-5",
+        payload={
+            "result": {"movie_id": "ABP-420"},
+            "summary": {"processed": 1, "failed": 0},
+        },
+    )
+
+
 class _ASGIStream:
     def __init__(
         self,
@@ -685,7 +790,26 @@ def _expected_sse_frame(
     job_id: str,
     payload: object | None,
 ) -> list[str]:
-    frame = {
+    frame = _expected_realtime_event_message(
+        event_type=event_type,
+        event_id=event_id,
+        job_id=job_id,
+        payload=payload,
+    )
+    return [
+        f"event: {event_type}",
+        f"data: {json.dumps(frame, ensure_ascii=False, separators=(',', ':'), sort_keys=True)}",
+    ]
+
+
+def _expected_realtime_event_message(
+    *,
+    event_type: str,
+    event_id: int,
+    job_id: str,
+    payload: object | None,
+) -> dict[str, object]:
+    return {
         "event": {
             "created_at": None,
             "event_type": event_type,
@@ -697,10 +821,6 @@ def _expected_sse_frame(
         "job_id": job_id,
         "type": event_type,
     }
-    return [
-        f"event: {event_type}",
-        f"data: {json.dumps(frame, ensure_ascii=False, separators=(',', ':'), sort_keys=True)}",
-    ]
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from javs.api.routes.jobs import (
     handle_update_job,
     serialize_realtime_event,
 )
+from javs.api.routes.realtime import handle_websocket_job_stream
 from javs.api.routes.settings import handle_get_settings, handle_save_settings
 from javs.application import BatchJobError, SettingsSaveError
 from javs.application.find import FindMovieError
@@ -47,6 +48,15 @@ class JavsAPIApp:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
             await self._handle_lifespan(receive, send)
+            return
+
+        if scope["type"] == "websocket":
+            if scope["path"] == "/ws/jobs":
+                await handle_websocket_job_stream(self.facade, receive, send)
+                return
+            message = await receive()
+            if message["type"] == "websocket.connect":
+                await send({"type": "websocket.close", "code": 1000})
             return
 
         if scope["type"] != "http":

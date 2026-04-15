@@ -7,6 +7,7 @@ from javs.api.routes.jobs import (
     handle_sort_job,
     handle_update_job,
 )
+from javs.api.routes.realtime import handle_websocket_job_stream
 from javs.api.routes.settings import handle_get_settings, handle_save_settings
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "handle_save_settings",
     "handle_sort_job",
     "handle_update_job",
+    "handle_websocket_job_stream",
 ]
