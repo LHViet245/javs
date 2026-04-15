@@ -2,10 +2,51 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from javs.jobs.executor import serialize_job_value
+
+
+@dataclass(slots=True, frozen=True)
+class RealtimeEvent:
+    """In-process event published after a job event is stored."""
+
+    id: int
+    job_id: str
+    event_type: str
+    job_item_id: int | None
+    payload: object | None
+
+
+class EventHub:
+    """Shared in-process hub for realtime job event fanout."""
+
+    def __init__(self) -> None:
+        self._subscribers: list[asyncio.Queue[RealtimeEvent]] = []
+
+    def subscribe(self) -> asyncio.Queue[RealtimeEvent]:
+        """Register a queue that receives live events in publish order."""
+        queue: asyncio.Queue[RealtimeEvent] = asyncio.Queue()
+        self._subscribers.append(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[RealtimeEvent]) -> None:
+        """Remove a previously subscribed queue from the hub."""
+        try:
+            self._subscribers.remove(queue)
+        except ValueError:
+            pass
+
+    def close(self, queue: asyncio.Queue[RealtimeEvent]) -> None:
+        """Alias for unsubscribe to support explicit subscriber teardown."""
+        self.unsubscribe(queue)
+
+    def publish_nowait(self, event: RealtimeEvent) -> None:
+        """Fan out an event to all current subscribers without awaiting."""
+        for queue in list(self._subscribers):
+            queue.put_nowait(event)
 
 
 class JobEventRepository(Protocol):
@@ -28,6 +69,8 @@ class PlatformJobEvents:
 
     repository: JobEventRepository
     job_id: str
+    hub: EventHub | None = None
+    _pending_live_events: list[RealtimeEvent] = field(default_factory=list)
 
     def emit(
         self,
@@ -37,12 +80,32 @@ class PlatformJobEvents:
         job_item_id: int | None = None,
     ) -> int:
         """Persist a raw event for the active job."""
-        return self.repository.add_event(
+        event_id = self.repository.add_event(
             job_id=self.job_id,
             job_item_id=job_item_id,
             event_type=event_type,
             payload_json=serialize_job_value(payload),
         )
+        if self.hub is not None:
+            self._pending_live_events.append(
+                RealtimeEvent(
+                    id=event_id,
+                    job_id=self.job_id,
+                    event_type=event_type,
+                    job_item_id=job_item_id,
+                    payload=serialize_job_value(payload),
+                )
+            )
+        return event_id
+
+    def flush_live_events(self) -> None:
+        """Publish buffered live events after the surrounding commit succeeds."""
+        if self.hub is None or not self._pending_live_events:
+            return
+
+        for event in self._pending_live_events:
+            self.hub.publish_nowait(event)
+        self._pending_live_events.clear()
 
     def emit_job_created(self, *, kind: str, origin: str, request: object | None = None) -> int:
         """Persist the initial job-created event."""

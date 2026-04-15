@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,7 +15,7 @@ from javs.database.connection import open_database
 from javs.database.migrations import apply_migrations, initialize_database
 from javs.database.repositories.events import JobEventsRepository
 from javs.database.repositories.job_items import JobItemsRepository
-from javs.database.repositories.jobs import JobsRepository
+from javs.database.repositories.jobs import JobsRepository, _decode_cursor
 from javs.database.repositories.settings_audit import SettingsAuditRepository
 from javs.database.schema import (
     CREATE_SCHEMA_MIGRATIONS_TABLE_SQL,
@@ -75,7 +78,7 @@ def test_initialize_platform_schema_records_migration_version(tmp_path: Path) ->
     with open_database(db_path) as connection:
         rows = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-    ).fetchall()
+        ).fetchall()
 
     assert [row["version"] for row in rows] == [
         "0001_platform_foundation",
@@ -236,9 +239,27 @@ def seed_job_with_item(
     return active_job_id
 
 
+def decode_cursor_payload(cursor: str) -> dict[str, Any]:
+    """Decode a repository cursor into the JSON payload used in tests."""
+    padded = cursor + "=" * (-len(cursor) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+
+
+def encode_cursor_payload(payload: dict[str, Any]) -> str:
+    """Encode a tampered cursor payload for negative-path tests."""
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
 def test_jobs_repository_lists_filtered_jobs_with_cursor(tmp_path: Path) -> None:
     repo = make_job_repo(tmp_path)
-    seed_job(repo, kind="find", status="completed", origin="cli", created_at="2026-04-10T10:00:00Z")
+    seed_job(
+        repo,
+        kind="find",
+        status="completed",
+        origin="cli",
+        created_at="2026-04-10T10:00:00Z",
+    )
     second_id = seed_job(
         repo,
         kind="sort",
@@ -273,17 +294,74 @@ def test_jobs_repository_cursor_is_stable_for_created_at_desc_id_desc_order(
     assert [item["id"] for item in second_page.items] == [older_same_time]
 
 
-def test_jobs_repository_search_matches_job_item_paths_and_movie_ids(
+@pytest.mark.parametrize(
+    ("search_value", "item_kwargs", "duplicate_matching_item"),
+    [
+        ("job-search-001", {"job_id": "job-search-001"}, False),
+        ("ABP-420", {"movie_id": "ABP-420"}, True),
+        (
+            "/library/incoming/ABP-420.mp4",
+            {"source_path": "/library/incoming/ABP-420.mp4"},
+            True,
+        ),
+        (
+            "/library/sorted/ABP-420.mp4",
+            {"dest_path": "/library/sorted/ABP-420.mp4"},
+            True,
+        ),
+    ],
+)
+def test_jobs_repository_search_matches_job_and_item_fields(
     tmp_path: Path,
+    search_value: str,
+    item_kwargs: dict[str, str],
+    duplicate_matching_item: bool,
 ) -> None:
     context = make_history_context(tmp_path)
     job_id = seed_job_with_item(
         context,
-        source_path="/incoming/ABP-420.mkv",
-        movie_id="ABP-420",
+        job_id=item_kwargs.get("job_id", "job-search-001"),
+        source_path=item_kwargs.get("source_path"),
+        dest_path=item_kwargs.get("dest_path"),
+        movie_id=item_kwargs.get("movie_id"),
     )
-    page = context.jobs.list_jobs_page(JobListQuery(q="ABP-420"))
+    if duplicate_matching_item:
+        context.items.create_item(
+            job_id=job_id,
+            item_key="item-2",
+            status="completed",
+            source_path=item_kwargs.get("source_path"),
+            dest_path=item_kwargs.get("dest_path"),
+            movie_id=item_kwargs.get("movie_id"),
+        )
+
+    page = context.jobs.list_jobs_page(JobListQuery(q=search_value))
+
     assert [item["id"] for item in page.items] == [job_id]
+
+
+def test_jobs_repository_search_treats_like_metacharacters_as_literals(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    percent_job_id = seed_job_with_item(
+        context,
+        job_id="job-percent",
+        source_path="/incoming/100%.mkv",
+        movie_id="100%",
+    )
+    underscore_job_id = seed_job_with_item(
+        context,
+        job_id="job-underscore",
+        source_path="/incoming/ABC_123.mkv",
+        movie_id="ABC_123",
+    )
+
+    percent_page = context.jobs.list_jobs_page(JobListQuery(q="%"))
+    underscore_page = context.jobs.list_jobs_page(JobListQuery(q="_"))
+
+    assert [item["id"] for item in percent_page.items] == [percent_job_id]
+    assert [item["id"] for item in underscore_page.items] == [underscore_job_id]
 
 
 def test_jobs_repository_filters_by_status_and_origin(tmp_path: Path) -> None:
@@ -305,6 +383,66 @@ def test_jobs_repository_rejects_cursor_when_query_envelope_changes(
         context.jobs.list_jobs_page(
             JobListQuery(limit=1, cursor=first_page.next_cursor, status="completed")
         )
+
+
+def test_jobs_repository_rejects_cursor_when_anchor_row_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    assert first_page.next_cursor is not None
+    tampered_cursor = encode_cursor_payload(
+        {
+            **decode_cursor_payload(first_page.next_cursor),
+            "id": "missing-job",
+        }
+    )
+
+    with pytest.raises(ValueError, match="cursor anchor"):
+        context.jobs.list_jobs_page(
+            JobListQuery(limit=1, cursor=tampered_cursor, status="running")
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate_payload", "match"),
+    [
+        (lambda payload: {**payload, "unexpected": "field"}, "cursor"),
+        (
+            lambda payload: {
+                **payload,
+                "query": {**payload["query"], "unexpected": "field"},
+            },
+            "cursor",
+        ),
+        (lambda payload: {**payload, "id": 123}, "cursor"),
+    ],
+)
+def test_jobs_repository_rejects_tampered_cursor_payload_structure(
+    tmp_path: Path,
+    mutate_payload: Any,
+    match: str,
+) -> None:
+    context = make_history_context(tmp_path)
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    seed_job(context.jobs, kind="sort", status="running", origin="api")
+    first_page = context.jobs.list_jobs_page(JobListQuery(limit=1, status="running"))
+    assert first_page.next_cursor is not None
+    tampered_cursor = encode_cursor_payload(
+        mutate_payload(decode_cursor_payload(first_page.next_cursor))
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _decode_cursor(tampered_cursor)
+
+
+def test_jobs_repository_rejects_limit_greater_than_100(tmp_path: Path) -> None:
+    context = make_history_context(tmp_path)
+
+    with pytest.raises(ValueError, match="limit"):
+        context.jobs.list_jobs_page(JobListQuery(limit=101))
 
 
 def test_supporting_repositories_store_basic_rows(tmp_path: Path) -> None:
@@ -398,82 +536,89 @@ def test_supporting_repositories_store_basic_rows(tmp_path: Path) -> None:
     ]
 
 
-def test_job_events_repository_lists_events_for_one_job(tmp_path: Path) -> None:
+def test_job_events_repository_get_for_job_returns_newest_row_and_isolated_rows(
+    tmp_path: Path,
+) -> None:
     context = make_history_context(tmp_path)
-    first_job_id = seed_job(context.jobs, kind="sort", status="completed")
-    second_job_id = seed_job(context.jobs, kind="sort", status="completed")
-    first_item_id = context.items.create_item(
-        job_id=first_job_id,
-        item_key="item-1",
-        status="completed",
-    )
-    second_item_id = context.items.create_item(
-        job_id=second_job_id,
-        item_key="item-2",
-        status="completed",
-    )
-    first_event_id = context.events.add_event(
-        job_id=first_job_id,
-        job_item_id=first_item_id,
-        event_type="item.created",
-    )
+    first_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-a")
+    second_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-b")
     context.events.add_event(
-        job_id=second_job_id,
-        job_item_id=second_item_id,
+        job_id=first_job_id,
         event_type="item.created",
+        payload_json={"step": 1},
     )
-
-    stored_events = context.events.list_for_job(first_job_id)
-
-    assert [row["id"] for row in stored_events] == [first_event_id]
-    assert [row["job_id"] for row in stored_events] == [first_job_id]
-
-
-def test_job_events_repository_gets_latest_event_for_job(tmp_path: Path) -> None:
-    context = make_history_context(tmp_path)
-    job_id = seed_job(context.jobs, kind="sort", status="completed")
-    context.items.create_item(job_id=job_id, item_key="item-1", status="completed")
-    context.events.add_event(
-        job_id=job_id,
-        event_type="item.created",
-    )
-    latest_event_id = context.events.add_event(
-        job_id=job_id,
+    newest_event_id = context.events.add_event(
+        job_id=first_job_id,
         event_type="item.completed",
+        payload_json={"step": 2},
+    )
+    cross_job_event_id = context.events.add_event(
+        job_id=second_job_id,
+        event_type="item.created",
+        payload_json={"step": 3},
     )
 
-    stored_event = context.events.get_for_job(job_id)
+    newest_event = context.events.get_for_job(first_job_id)
+    second_event = context.events.get_for_job(second_job_id)
 
-    assert stored_event is not None
-    assert stored_event["id"] == latest_event_id
-    assert stored_event["event_type"] == "item.completed"
-    assert stored_event["job_id"] == job_id
+    assert newest_event is not None
+    assert newest_event["id"] == newest_event_id
+    assert newest_event["job_id"] == first_job_id
+    assert newest_event["event_type"] == "item.completed"
+    assert newest_event["payload_json"] == {"step": 2}
+    assert context.events.get_for_job("missing-job") is None
+    assert second_event is not None
+    assert second_event["id"] == cross_job_event_id
+    assert second_event["job_id"] == second_job_id
+    assert second_event["event_type"] == "item.created"
+    assert second_event["payload_json"] == {"step": 3}
 
 
-def test_settings_audit_repository_gets_latest_entry_for_job(tmp_path: Path) -> None:
+def test_settings_audit_repository_get_for_job_returns_newest_row_and_isolated_rows(
+    tmp_path: Path,
+) -> None:
     context = make_history_context(tmp_path)
-    job_id = seed_job(context.jobs, kind="sort", status="completed")
+    first_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-a")
+    second_job_id = seed_job(context.jobs, kind="sort", status="completed", job_id="job-b")
     context.settings_audit.create_entry(
-        job_id=job_id,
+        job_id=first_job_id,
         source_path="/tmp/older.yaml",
         config_version=1,
-    )
-    latest_audit_id = context.settings_audit.create_entry(
-        job_id=job_id,
-        source_path="/tmp/latest.yaml",
-        config_version=2,
         before_json={"database": {"enabled": True}},
-        after_json={"database": {"enabled": False}},
+    )
+    newest_audit_id = context.settings_audit.create_entry(
+        job_id=first_job_id,
+        source_path="/tmp/newest.yaml",
+        config_version=2,
+        before_json={"database": {"enabled": False}},
+        after_json={"database": {"enabled": True}},
+    )
+    cross_job_audit_id = context.settings_audit.create_entry(
+        job_id=second_job_id,
+        source_path="/tmp/other.yaml",
+        config_version=1,
+        change_summary_json={"changed": ["proxy.enabled"]},
     )
 
-    stored_entry = context.settings_audit.get_for_job(job_id)
+    newest_audit = context.settings_audit.get_for_job(first_job_id)
+    second_audit = context.settings_audit.get_for_job(second_job_id)
 
-    assert stored_entry is not None
-    assert stored_entry["id"] == latest_audit_id
-    assert stored_entry["job_id"] == job_id
-    assert stored_entry["source_path"] == "/tmp/latest.yaml"
-    assert stored_entry["before_json"] == {"database": {"enabled": True}}
-    assert stored_entry["after_json"] == {"database": {"enabled": False}}
+    assert newest_audit is not None
+    assert newest_audit["id"] == newest_audit_id
+    assert newest_audit["job_id"] == first_job_id
+    assert newest_audit["source_path"] == "/tmp/newest.yaml"
+    assert newest_audit["config_version"] == 2
+    assert newest_audit["before_json"] == {"database": {"enabled": False}}
+    assert newest_audit["after_json"] == {"database": {"enabled": True}}
+    assert context.settings_audit.get_for_job("missing-job") is None
+    assert second_audit is not None
+    assert second_audit["id"] == cross_job_audit_id
+    assert second_audit["job_id"] == second_job_id
+    assert second_audit["source_path"] == "/tmp/other.yaml"
+    assert second_audit["config_version"] == 1
+    assert second_audit["before_json"] is None
+    assert second_audit["after_json"] is None
+    assert second_audit["change_summary_json"] == {"changed": ["proxy.enabled"]}
 
 
 def test_job_items_enforce_parent_job_foreign_key(tmp_path: Path) -> None:

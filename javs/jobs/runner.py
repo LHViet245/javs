@@ -7,7 +7,7 @@ import asyncio
 from javs.application.models import FindMovieRequest, SortJobRequest, UpdateJobRequest
 from javs.database.repositories.events import JobEventsRepository
 from javs.database.repositories.jobs import JobsRepository, utc_now
-from javs.jobs.events import PlatformJobEvents
+from javs.jobs.events import EventHub, PlatformJobEvents
 from javs.jobs.executor import (
     JobExecutionContext,
     JobExecutor,
@@ -25,9 +25,11 @@ class PlatformJobRunner:
         *,
         jobs: JobsRepository,
         events: JobEventsRepository,
+        hub: EventHub | None = None,
     ) -> None:
         self.jobs = jobs
         self.events = events
+        self.hub = hub
         self.connection = jobs.connection
 
         if events.connection is not self.connection:
@@ -49,12 +51,13 @@ class PlatformJobRunner:
             origin=origin,
             request_json=serialize_job_value(request),
         )
-        job_events = PlatformJobEvents(repository=self.events, job_id=job_id)
+        job_events = PlatformJobEvents(repository=self.events, job_id=job_id, hub=self.hub)
         job_events.emit_job_created(kind=kind, origin=origin, request=request)
 
         self.jobs.mark_started(job_id)
         job_events.emit_job_started(kind=kind, origin=origin)
         self.connection.commit()
+        job_events.flush_live_events()
 
         context = JobExecutionContext(
             job_id=job_id,
@@ -76,6 +79,7 @@ class PlatformJobRunner:
                 summary=execution.summary,
             )
             self.connection.commit()
+            job_events.flush_live_events()
         except asyncio.CancelledError:
             self._mark_cancelled(job_id, job_events)
             raise
@@ -166,6 +170,7 @@ class PlatformJobRunner:
         )
         job_events.emit_job_failed(error=failure)
         self.connection.commit()
+        job_events.flush_live_events()
 
     def _mark_cancelled(
         self,
@@ -187,3 +192,4 @@ class PlatformJobRunner:
         )
         job_events.emit_job_cancelled(error=cancellation)
         self.connection.commit()
+        job_events.flush_live_events()

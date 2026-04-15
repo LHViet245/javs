@@ -12,19 +12,30 @@ import pytest
 from javs.application import (
     FindMovieRequest,
     JobDetail,
+    JobEventSummary,
     JobItemSummary,
+    JobListPage,
+    JobListQuery,
     JobStartResponse,
     JobSummary,
     PlatformFacade,
+    RealtimeEvent,
     SaveSettingsRequest,
     SaveSettingsResponse,
+    SettingsAuditEntry,
+    SettingsAuditRepository,
     SettingsResponse,
     SettingsSaveError,
+    SettingsView,
     SortJobRequest,
     UpdateJobRequest,
     build_job_detail,
     build_job_item_summary,
     build_job_summary,
+    get_job_detail,
+    get_settings_view,
+    list_jobs,
+    normalize_job_summary_payload,
 )
 from javs.config import JavsConfig
 
@@ -43,6 +54,65 @@ def test_find_movie_request_leaves_malformed_movie_id_unrewritten() -> None:
     request = FindMovieRequest(movie_id=" abp420x ")
 
     assert request.movie_id == "ABP420X"
+
+
+def test_job_list_query_defaults_limit_and_normalizes_filters() -> None:
+    query = JobListQuery(
+        cursor="  next-cursor  ",
+        kind="  Sort  ",
+        status="  COMPLETED  ",
+        origin="  API  ",
+        q="  search term  ",
+    )
+
+    assert query.limit == 20
+    assert query.cursor == "next-cursor"
+    assert query.kind == "sort"
+    assert query.status == "completed"
+    assert query.origin == "api"
+    assert query.q == "search term"
+
+
+def test_job_list_page_uses_typed_summary_items() -> None:
+    page = JobListPage(items=[], next_cursor=None)
+
+    assert page.items == []
+    assert page.next_cursor is None
+
+
+def test_history_contracts_are_reexported_from_application_package() -> None:
+    from javs.application import JobListPage, JobListQuery, RealtimeEvent
+
+    assert JobListQuery is not None
+    assert JobListPage is not None
+    assert RealtimeEvent is not None
+
+
+def test_realtime_event_serializes_typed_event_payload() -> None:
+    event = RealtimeEvent(
+        type="job.event",
+        job_id="job-1",
+        event=JobEventSummary(
+            id=7,
+            job_id="job-1",
+            event_type="job.completed",
+            payload={"result": "ok"},
+            created_at="2026-04-08T00:00:00Z",
+        ),
+    )
+
+    assert event.model_dump() == {
+        "type": "job.event",
+        "job_id": "job-1",
+        "event": {
+            "id": 7,
+            "job_id": "job-1",
+            "event_type": "job.completed",
+            "job_item_id": None,
+            "payload": {"result": "ok"},
+            "created_at": "2026-04-08T00:00:00Z",
+        },
+    }
 
 
 def test_job_summary_and_settings_response_expose_expected_fields() -> None:
@@ -65,6 +135,228 @@ def test_job_summary_and_settings_response_expose_expected_fields() -> None:
     assert settings.source_path == "/tmp/config.yaml"
     assert settings.config_version == 1
     assert settings.config.database.path == "~/.javs/platform.db"
+
+
+def test_job_summary_payload_normalizes_missing_summary_shape() -> None:
+    assert normalize_job_summary_payload(None) == {
+        "total": 0,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": [],
+    }
+
+
+def test_job_detail_allows_optional_settings_audit() -> None:
+    detail = JobDetail(
+        job=JobSummary(id="job-1", kind="sort", status="completed", origin="cli")
+    )
+
+    assert detail.settings_audit is None
+    assert detail.events == []
+
+
+def test_build_job_detail_normalizes_missing_summary_shape() -> None:
+    detail = build_job_detail(
+        {
+            "id": "job-1",
+            "kind": "sort",
+            "status": "completed",
+            "origin": "cli",
+        }
+    )
+
+    assert detail.job.summary == {
+        "total": 0,
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": [],
+    }
+
+
+def test_list_jobs_returns_typed_page_with_normalized_summary_payload() -> None:
+    class StubHistoryRepository:
+        def list_jobs(self, *, limit: int | None = None) -> list[dict[str, object]]:
+            jobs = [
+                {
+                    "id": "job-1",
+                    "kind": "sort",
+                    "status": "completed",
+                    "origin": "cli",
+                    "created_at": "2026-04-08T00:00:00Z",
+                    "summary_json": {"processed": 2, "warnings": "slow path"},
+                },
+                {
+                    "id": "job-2",
+                    "kind": "sort",
+                    "status": "failed",
+                    "origin": "api",
+                    "created_at": "2026-04-08T00:01:00Z",
+                    "summary_json": {"failed": 1},
+                },
+            ]
+            return jobs if limit is None else jobs[:limit]
+
+    page = list_jobs(StubHistoryRepository(), JobListQuery(limit=1))
+
+    assert page == JobListPage(
+        items=[
+            JobSummary(
+                id="job-1",
+                kind="sort",
+                status="completed",
+                origin="cli",
+                created_at="2026-04-08T00:00:00Z",
+                summary={
+                    "total": 0,
+                    "processed": 2,
+                    "skipped": 0,
+                    "failed": 0,
+                    "warnings": ["slow path"],
+                },
+            )
+        ],
+        next_cursor=None,
+    )
+
+
+def test_list_jobs_rejects_advanced_query_fields_until_repository_support_exists() -> None:
+    class RejectingHistoryRepository:
+        def list_jobs(self, *, limit: int | None = None) -> list[dict[str, object]]:
+            raise AssertionError("list_jobs should not be called for unsupported queries")
+
+    for field, value in [
+        ("cursor", "missing"),
+        ("kind", "sort"),
+        ("status", "completed"),
+        ("origin", "cli"),
+        ("q", "search"),
+    ]:
+        with pytest.raises(NotImplementedError):
+            list_jobs(RejectingHistoryRepository(), JobListQuery(**{field: value}))
+
+
+def test_get_job_detail_returns_events_and_settings_audit() -> None:
+    class StubHistoryRepository:
+        def get(self, job_id: str) -> dict[str, object] | None:
+            if job_id != "job-1":
+                return None
+            return {
+                "id": "job-1",
+                "kind": "sort",
+                "status": "completed",
+                "origin": "cli",
+                "summary_json": {"processed": 1},
+                "result_json": {"destination": "/sorted"},
+            }
+
+    class StubJobItemsRepository:
+        def list_for_job(self, job_id: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": 7,
+                    "job_id": job_id,
+                    "item_key": "item-1",
+                    "status": "completed",
+                }
+            ]
+
+    class StubJobEventsRepository:
+        def list_for_job(self, job_id: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": 9,
+                    "job_id": job_id,
+                    "event_type": "job.completed",
+                    "payload_json": {"summary": {"processed": 1}},
+                    "created_at": "2026-04-08T00:02:00Z",
+                }
+            ]
+
+    class StubSettingsAuditRepository:
+        def get_for_job(self, job_id: str) -> dict[str, object] | None:
+            if job_id != "job-1":
+                return None
+            return {
+                "id": 11,
+                "job_id": "job-1",
+                "source_path": "/tmp/config.yaml",
+                "config_version": 1,
+                "before_json": {"proxy": {"enabled": False}},
+                "after_json": {"proxy": {"enabled": True}},
+                "change_summary_json": {"changed": ["proxy.enabled"]},
+                "created_at": "2026-04-08T00:03:00Z",
+            }
+
+        def list_entries(self) -> list[dict[str, object]]:
+            return []
+
+    detail = get_job_detail(
+        StubHistoryRepository(),
+        "job-1",
+        job_items=StubJobItemsRepository(),
+        events=StubJobEventsRepository(),
+        settings_audit=StubSettingsAuditRepository(),
+    )
+
+    assert detail == JobDetail(
+        job=JobSummary(
+            id="job-1",
+            kind="sort",
+            status="completed",
+            origin="cli",
+            summary={
+                "total": 0,
+                "processed": 1,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": [],
+            },
+        ),
+        result={"destination": "/sorted"},
+        items=[
+            JobItemSummary(
+                id=7,
+                item_key="item-1",
+                status="completed",
+            )
+        ],
+        events=[
+            JobEventSummary(
+                id=9,
+                job_id="job-1",
+                event_type="job.completed",
+                payload={"summary": {"processed": 1}},
+                created_at="2026-04-08T00:02:00Z",
+            )
+        ],
+        settings_audit=SettingsAuditEntry(
+            id=11,
+            job_id="job-1",
+            source_path="/tmp/config.yaml",
+            config_version=1,
+            before={"proxy": {"enabled": False}},
+            after={"proxy": {"enabled": True}},
+            change_summary={"changed": ["proxy.enabled"]},
+            created_at="2026-04-08T00:03:00Z",
+        ),
+    )
+
+
+def test_get_settings_view_returns_typed_audit_rows() -> None:
+    config = JavsConfig()
+    view = get_settings_view(
+        config=config,
+        source_path="/tmp/config.yaml",
+        config_version=1,
+    )
+
+    assert view == SettingsView(
+        config=config,
+        source_path="/tmp/config.yaml",
+        config_version=1,
+    )
 
 
 def test_history_helpers_map_repository_records_to_contract_models() -> None:
@@ -128,7 +420,23 @@ def test_history_helpers_map_repository_records_to_contract_models() -> None:
         finished_at="2026-04-08T00:01:20Z",
     )
     assert detail == JobDetail(
-        job=summary,
+        job=JobSummary(
+            id="job-1",
+            kind="sort",
+            status="completed",
+            origin="cli",
+            created_at="2026-04-08T00:00:00Z",
+            started_at="2026-04-08T00:01:00Z",
+            finished_at="2026-04-08T00:02:00Z",
+            summary={
+                "total": 0,
+                "processed": 2,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": [],
+            },
+            error=None,
+        ),
         result={"destination": "/library/sorted"},
         items=[item_summary],
     )
@@ -155,6 +463,9 @@ class StubJobEventsRepository:
 class StubSettingsAuditRepository:
     def create_entry(self, **kwargs: object) -> int:
         return 1
+
+    def get_for_job(self, job_id: str) -> dict[str, object] | None:
+        return None
 
     def list_entries(self) -> list[dict[str, object]]:
         return []
@@ -248,6 +559,185 @@ def build_platform_runner(tmp_path: Path):
     )
 
 
+def test_cli_platform_facade_threads_shared_event_hub(tmp_path: Path) -> None:
+    from javs.application import FindMovieRequest
+    from javs.cli import _build_platform_facade
+    from javs.jobs import JobExecutionContext, JobExecutionResult
+
+    cfg = JavsConfig()
+    cfg.database.path = str(tmp_path / "cli-platform.db")
+
+    facade, cleanup = _build_platform_facade(cfg, tmp_path / "config.yaml")
+
+    async def run_job() -> tuple[str, list[object]]:
+        subscriber = facade.runner.hub.subscribe()
+
+        async def successful_executor(
+            context: JobExecutionContext[FindMovieRequest],
+        ) -> JobExecutionResult:
+            assert context.job_id
+            return JobExecutionResult(result={"movie_id": context.request.movie_id})
+
+        job_id = await facade.runner.run_job(
+            kind="find",
+            origin="cli",
+            request=FindMovieRequest(movie_id="ABP-420"),
+            executor=successful_executor,
+        )
+        queued_events = [
+            await asyncio.wait_for(subscriber.get(), timeout=1),
+            await asyncio.wait_for(subscriber.get(), timeout=1),
+            await asyncio.wait_for(subscriber.get(), timeout=1),
+        ]
+        return job_id, queued_events
+
+    try:
+        job_id, queued_events = asyncio.run(run_job())
+    finally:
+        cleanup()
+
+    assert job_id
+    assert [event.event_type for event in queued_events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_platform_job_events_emit_publishes_to_shared_hub(platform_runtime) -> None:
+    from javs.jobs.events import PlatformJobEvents, RealtimeEvent
+
+    job_id = platform_runtime.jobs.create_job(
+        kind="find",
+        origin="cli",
+        request_json={"movie_id": "ABP-420"},
+    )
+    subscriber = platform_runtime.hub.subscribe()
+
+    job_events = PlatformJobEvents(
+        repository=platform_runtime.events,
+        job_id=job_id,
+        hub=platform_runtime.hub,
+    )
+
+    event_id = job_events.emit(
+        "job.started",
+        payload={"kind": "find", "origin": "cli"},
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(subscriber.get(), timeout=0.1)
+
+    job_events.flush_live_events()
+
+    queued_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+
+    assert isinstance(queued_event, RealtimeEvent)
+    assert queued_event.id == event_id
+    assert queued_event.job_id == job_id
+    assert queued_event.event_type == "job.started"
+    assert queued_event.job_item_id is None
+    assert queued_event.payload == {"kind": "find", "origin": "cli"}
+    assert platform_runtime.events.list_for_job(job_id)[0]["event_type"] == "job.started"
+
+
+@pytest.mark.asyncio
+async def test_event_hub_broadcasts_to_multiple_subscribers() -> None:
+    from javs.jobs.events import EventHub, RealtimeEvent
+
+    hub = EventHub()
+    first = hub.subscribe()
+    second = hub.subscribe()
+    event = RealtimeEvent(
+        id=1,
+        job_id="job-1",
+        event_type="job.started",
+        job_item_id=None,
+        payload={"kind": "find"},
+    )
+
+    hub.publish_nowait(event)
+
+    assert await asyncio.wait_for(first.get(), timeout=1) == event
+    assert await asyncio.wait_for(second.get(), timeout=1) == event
+
+
+@pytest.mark.asyncio
+async def test_event_hub_unsubscribe_stops_future_broadcasts() -> None:
+    from javs.jobs.events import EventHub, RealtimeEvent
+
+    hub = EventHub()
+    subscriber = hub.subscribe()
+    first_event = RealtimeEvent(
+        id=1,
+        job_id="job-1",
+        event_type="job.started",
+        job_item_id=None,
+        payload=None,
+    )
+    second_event = RealtimeEvent(
+        id=2,
+        job_id="job-1",
+        event_type="job.completed",
+        job_item_id=None,
+        payload=None,
+    )
+
+    hub.publish_nowait(first_event)
+    assert await asyncio.wait_for(subscriber.get(), timeout=1) == first_event
+
+    hub.unsubscribe(subscriber)
+    hub.publish_nowait(second_event)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(subscriber.get(), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_platform_runner_publishes_live_events_to_shared_hub(platform_runtime) -> None:
+    from javs.application import FindMovieRequest
+    from javs.jobs import JobExecutionContext, JobExecutionResult
+    from javs.jobs.events import RealtimeEvent
+
+    subscriber = platform_runtime.hub.subscribe()
+
+    async def successful_executor(
+        context: JobExecutionContext[FindMovieRequest],
+    ) -> JobExecutionResult:
+        assert context.job_id
+        assert context.events is not None
+        return JobExecutionResult(
+            result={"movie_id": context.request.movie_id},
+            summary={"matched": 1},
+        )
+
+    job_id = await platform_runtime.runner.run_job(
+        kind="find",
+        origin="cli",
+        request=FindMovieRequest(movie_id="ABP-420"),
+        executor=successful_executor,
+    )
+
+    queued_events = [
+        await asyncio.wait_for(subscriber.get(), timeout=1),
+        await asyncio.wait_for(subscriber.get(), timeout=1),
+        await asyncio.wait_for(subscriber.get(), timeout=1),
+    ]
+
+    assert job_id
+    assert [event.event_type for event in queued_events] == [
+        "job.created",
+        "job.started",
+        "job.completed",
+    ]
+    assert all(isinstance(event, RealtimeEvent) for event in queued_events)
+    assert queued_events[-1].payload == {
+        "result": {"movie_id": "ABP-420"},
+        "summary": {"matched": 1},
+    }
+
+
 def load_persisted_job_state(
     db_path: Path,
     job_id: str,
@@ -306,6 +796,168 @@ def test_facade_get_settings_returns_shared_settings_response(tmp_path: Path) ->
         config=load_config(config_path),
         source_path=str(config_path),
         config_version=1,
+    )
+
+
+def build_history_facade(tmp_path: Path) -> tuple[PlatformFacade, Any, Any, Any, Any]:
+    from javs.config import load_config, save_config
+    from javs.database.connection import open_database
+    from javs.database.migrations import initialize_database
+    from javs.database.repositories.events import JobEventsRepository
+    from javs.database.repositories.jobs import JobsRepository
+    from javs.database.repositories.settings_audit import SettingsAuditRepository
+
+    db_path = tmp_path / "history.db"
+    initialize_database(db_path)
+    connection = open_database(db_path)
+    jobs = JobsRepository(connection)
+    events = JobEventsRepository(connection)
+    settings_audit = SettingsAuditRepository(connection)
+    facade = PlatformFacade(
+        jobs=jobs,
+        job_items=StubJobItemsRepository(),
+        events=events,
+        settings_audit=settings_audit,
+        history=StubPlatformHistory(),
+        runner=StubPlatformRunner(),
+        config_loader=load_config,
+        config_saver=save_config,
+    )
+    return facade, connection, jobs, events, settings_audit
+
+
+def test_facade_list_jobs_returns_typed_paginated_results(tmp_path: Path) -> None:
+    facade, connection, jobs, _, _ = build_history_facade(tmp_path)
+
+    try:
+        first_job_id = jobs.create_job(kind="find", origin="cli")
+        second_job_id = jobs.create_job(kind="sort", origin="api")
+        jobs.update_job(first_job_id, summary_json={"processed": 1})
+        jobs.update_job(second_job_id, summary_json={"processed": 2})
+
+        page = facade.list_jobs(JobListQuery(limit=1))
+        next_page = facade.list_jobs(JobListQuery(limit=1, cursor=page.next_cursor))
+    finally:
+        connection.close()
+
+    assert isinstance(page, JobListPage)
+    assert page.next_cursor is not None
+    assert len(page.items) == 1
+    assert len(next_page.items) == 1
+    assert {page.items[0].id, next_page.items[0].id} == {
+        first_job_id,
+        second_job_id,
+    }
+    assert page.items[0].summary["processed"] in {1, 2}
+    assert next_page.items[0].summary["processed"] in {1, 2}
+    assert page.items[0].summary != next_page.items[0].summary
+
+
+def test_facade_list_jobs_forwards_filters_and_cursor_queries(tmp_path: Path) -> None:
+    facade, connection, jobs, _, _ = build_history_facade(tmp_path)
+
+    try:
+        jobs.create_job(kind="find", origin="cli")
+        sort_job_id = jobs.create_job(kind="sort", origin="api")
+        jobs.update_job(sort_job_id, summary_json={"processed": 2})
+
+        page = facade.list_jobs(JobListQuery(limit=10, kind="sort"))
+    finally:
+        connection.close()
+
+    assert page.next_cursor is None
+    assert page.items == [
+        JobSummary(
+            id=sort_job_id,
+            kind="sort",
+            status="pending",
+            origin="api",
+            created_at=page.items[0].created_at,
+            summary={
+                "total": 0,
+                "processed": 2,
+                "skipped": 0,
+                "failed": 0,
+                "warnings": [],
+            },
+        )
+    ]
+
+
+def test_settings_audit_facade_protocol_exposes_get_for_job() -> None:
+    assert hasattr(SettingsAuditRepository, "get_for_job")
+
+
+def test_facade_get_job_returns_detail_with_events_and_settings_audit(
+    tmp_path: Path,
+) -> None:
+    facade, connection, jobs, events, settings_audit = build_history_facade(tmp_path)
+
+    try:
+        job_id = jobs.create_job(kind="save_settings", origin="cli")
+        jobs.update_job(
+            job_id,
+            result_json={
+                "config_version": 1,
+                "source_path": "/tmp/config.yaml",
+            },
+        )
+        events.add_event(
+            job_id=job_id,
+            event_type="job.completed",
+            payload_json={"summary": {"saved": 1}},
+        )
+        settings_audit.create_entry(
+            job_id=job_id,
+            source_path="/tmp/config.yaml",
+            config_version=1,
+            before_json={"proxy": {"enabled": False}},
+            after_json={"proxy": {"enabled": True}},
+            change_summary_json={"changed": ["proxy.enabled"]},
+        )
+
+        detail = facade.get_job(job_id)
+    finally:
+        connection.close()
+
+    assert detail is not None
+    assert detail.job == JobSummary(
+        id=job_id,
+        kind="save_settings",
+        status="pending",
+        origin="cli",
+        created_at=detail.job.created_at,
+        summary={
+            "total": 0,
+            "processed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "warnings": [],
+        },
+    )
+    assert detail.result == {
+        "config_version": 1,
+        "source_path": "/tmp/config.yaml",
+    }
+    assert detail.items == []
+    assert detail.events == [
+        JobEventSummary(
+            id=detail.events[0].id,
+            job_id=job_id,
+            event_type="job.completed",
+            payload={"summary": {"saved": 1}},
+            created_at=detail.events[0].created_at,
+        )
+    ]
+    assert detail.settings_audit == SettingsAuditEntry(
+        id=detail.settings_audit.id,
+        job_id=job_id,
+        source_path="/tmp/config.yaml",
+        config_version=1,
+        before={"proxy": {"enabled": False}},
+        after={"proxy": {"enabled": True}},
+        change_summary={"changed": ["proxy.enabled"]},
+        created_at=detail.settings_audit.created_at,
     )
 
 

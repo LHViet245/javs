@@ -16,11 +16,8 @@ _UNSET = object()
 _MAX_JOB_LIST_LIMIT = 100
 _DEFAULT_JOB_LIST_LIMIT = 20
 _CURSOR_JSON_FIELDS = ("created_at", "id", "query")
-
-
-def utc_now() -> str:
-    """Return an ISO-8601 UTC timestamp."""
-    return datetime.now(UTC).isoformat()
+_CURSOR_QUERY_JSON_FIELDS = ("kind", "status", "origin", "q")
+_LIKE_ESCAPE_CHAR = "\\"
 
 
 @dataclass(slots=True)
@@ -41,6 +38,11 @@ class JobListPageRecord:
 
     items: list[dict[str, Any]] = field(default_factory=list)
     next_cursor: str | None = None
+
+
+def utc_now() -> str:
+    """Return an ISO-8601 UTC timestamp."""
+    return datetime.now(UTC).isoformat()
 
 
 class JobsRepository:
@@ -111,16 +113,46 @@ class JobsRepository:
             parameters.append(value)
 
         if query.q is not None and query.q != "":
-            search_term = f"%{query.q}%"
+            search_term = f"%{_escape_like_term(query.q)}%"
             where_clauses.append(
                 "("
-                "jobs.id LIKE ? COLLATE NOCASE OR "
-                "job_items.movie_id LIKE ? COLLATE NOCASE OR "
-                "job_items.source_path LIKE ? COLLATE NOCASE OR "
-                "job_items.dest_path LIKE ? COLLATE NOCASE"
+                "jobs.id LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+                "job_items.movie_id LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+                "job_items.source_path LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+                "job_items.dest_path LIKE ? COLLATE NOCASE ESCAPE '\\'"
                 ")"
             )
             parameters.extend([search_term, search_term, search_term, search_term])
+
+        base_statement = [
+            "SELECT DISTINCT jobs.id, jobs.created_at",
+            "FROM jobs",
+            "LEFT JOIN job_items ON job_items.job_id = jobs.id",
+        ]
+        if where_clauses:
+            base_statement.append("WHERE " + " AND ".join(where_clauses))
+
+        if cursor_payload is not None:
+            anchor_parameters = list(parameters)
+            anchor_parameters.extend(
+                [
+                    cursor_payload["created_at"],
+                    cursor_payload["id"],
+                ]
+            )
+            anchor_statement = [
+                *base_statement,
+                "AND" if where_clauses else "WHERE",
+                "jobs.created_at = ?",
+                "AND jobs.id = ?",
+                "LIMIT 1",
+            ]
+            anchor_row = self.connection.execute(
+                " ".join(anchor_statement),
+                anchor_parameters,
+            ).fetchone()
+            if anchor_row is None:
+                raise ValueError("cursor anchor is invalid for the active query")
 
         if cursor_payload is not None:
             where_clauses.append(
@@ -227,6 +259,14 @@ def _normalize_limit(limit: int | None) -> int:
     return limit
 
 
+def _escape_like_term(term: str) -> str:
+    return (
+        term.replace(_LIKE_ESCAPE_CHAR, _LIKE_ESCAPE_CHAR * 2)
+        .replace("%", f"{_LIKE_ESCAPE_CHAR}%")
+        .replace("_", f"{_LIKE_ESCAPE_CHAR}_")
+    )
+
+
 def _query_envelope(query: JobListQuery) -> dict[str, str | None]:
     return {
         "kind": query.kind,
@@ -256,22 +296,26 @@ def _decode_cursor(cursor: str) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         raise ValueError("cursor is invalid")
-
-    for json_field in _CURSOR_JSON_FIELDS:
-        if json_field not in payload:
-            raise ValueError("cursor is invalid")
-
-    query = payload.get("query")
-    if not isinstance(query, dict):
+    if set(payload.keys()) != set(_CURSOR_JSON_FIELDS):
+        raise ValueError("cursor is invalid")
+    if type(payload["created_at"]) is not str or type(payload["id"]) is not str:
         raise ValueError("cursor is invalid")
 
+    query = payload["query"]
+    if not isinstance(query, dict):
+        raise ValueError("cursor is invalid")
+    if set(query.keys()) != set(_CURSOR_QUERY_JSON_FIELDS):
+        raise ValueError("cursor is invalid")
+
+    normalized_query: dict[str, str | None] = {}
+    for key in ("kind", "status", "origin", "q"):
+        value = query[key]
+        if value is not None and type(value) is not str:
+            raise ValueError("cursor is invalid")
+        normalized_query[key] = value
+
     return {
-        "created_at": str(payload["created_at"]),
-        "id": str(payload["id"]),
-        "query": {
-            "kind": query.get("kind"),
-            "status": query.get("status"),
-            "origin": query.get("origin"),
-            "q": query.get("q"),
-        },
+        "created_at": payload["created_at"],
+        "id": payload["id"],
+        "query": normalized_query,
     }
